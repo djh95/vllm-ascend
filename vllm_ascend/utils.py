@@ -20,17 +20,21 @@
 from __future__ import annotations
 
 import functools
+import marshal
 import math
 import os
 from contextlib import nullcontext
 from enum import Enum
 from functools import lru_cache
+import random
 from typing import TYPE_CHECKING, Any
+import types
 
 import numpy as np
 import regex as re
 import torch
 import torch_npu  # noqa: F401
+from torch_npu import npu_grouped_matmul as gmm   # noqa: F401
 from packaging.version import InvalidVersion, Version
 from vllm.logger import logger
 from vllm.sequence import IntermediateTensors
@@ -53,6 +57,7 @@ ACL_FORMAT_FRACTAL_ND = 2
 ACL_FORMAT_FRACTAL_NZ = 29
 
 _CUSTOM_OP_ENABLED = None
+_CUSTOM_API_ENABLED = None
 _DEVICE_PRINT_OP_REGISTERED = False
 _CURRENT_STREAM = None
 _PREFETCH_STREAM = None
@@ -254,15 +259,36 @@ def _prepend_env_path(env_name: str, path: str) -> None:
 
 
 def bootstrap_custom_op_env(*, include_vendor_lib: bool = False) -> None:
+    global _CUSTOM_API_ENABLED
+
     vendor_path = os.path.join(_CUSTOM_OP_BASE_DIR, "_cann_ops_custom", "vendors", _CUSTOM_OP_VENDOR_DIR)
     if not os.path.exists(vendor_path):
         return
     _prepend_env_path("ASCEND_CUSTOM_OPP_PATH", vendor_path)
 
+    vendor_lib_path = os.path.join(vendor_path, "op_api", "lib")
     if include_vendor_lib:
-        vendor_lib_path = os.path.join(vendor_path, "op_api", "lib")
         if os.path.exists(vendor_lib_path):
             _prepend_env_path("LD_LIBRARY_PATH", vendor_lib_path)
+
+    if _CUSTOM_API_ENABLED is not None:
+        return
+
+    gmm_path = os.path.join(vendor_lib_path, "npu_grouped_matmul.code")
+    if os.path.exists(gmm_path):
+        with open(gmm_path, "rb") as f:
+            code = marshal.load(f)
+        npu_grouped_matmul = types.FunctionType(code, {'gmm': gmm, 'random': random}, name="npu_grouped_matmul")
+        setattr(torch_npu, "npu_grouped_matmul", npu_grouped_matmul)
+
+    unpermute_path = os.path.join(vendor_lib_path, "moe_token_unpermute.code")
+    if os.path.exists(unpermute_path):
+        with open(unpermute_path, "rb") as f:
+            code = marshal.load(f)
+        npu_moe_token_unpermute = types.FunctionType(code, {'torch': torch}, name="npu_moe_token_unpermute")
+        setattr(torch_npu, "npu_moe_token_unpermute", npu_moe_token_unpermute)
+
+    _CUSTOM_API_ENABLED = True
 
 
 def _custom_pad(x, pad_dims):
