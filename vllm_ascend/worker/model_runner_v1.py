@@ -20,9 +20,10 @@
 import gc
 import logging
 import math
+import pdb
 import sys
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from copy import copy, deepcopy
@@ -347,6 +348,11 @@ class NPUModelRunner(GPUModelRunner):
         # use_hybrid_blocks: if hybrid blocks is used.
         self.use_hybrid_blocks: bool = False
         self.need_accepted_tokens: bool = False
+        self._mtp_acceptance_history: dict[str, deque[tuple[int, int]]] = defaultdict(deque)
+        self._mtp_acceptance_window = 10
+        self._current_step_debug_log_full_requests: dict[str, bool] = {}
+        self._mtp_acceptance_threshold = 0.1
+        self._mtp_low_acceptance_logged: set[str] = set()
 
         self.is_multimodal_model = self.model_config.is_multimodal_model
         self.block_size = vllm_config.cache_config.block_size
@@ -2415,7 +2421,7 @@ class NPUModelRunner(GPUModelRunner):
             # async scheduling + pipeline parallelism so downstream code
             # (e.g., PCP input preparation) can access them.
             if self.use_async_scheduling and pp.world_size > 1 and not skip_pp_pd_broadcast:
-                self._pp_receive_prev_sampled_token_ids_to_input_batch()
+                self._pp_receive_prev_sampled_token_ids_to_input_batch() # 中间段不需要执行
             if not kv_connector_output:
                 return None  # noqa
             # In case of PP with kv transfer, we need to pass through the
@@ -2537,6 +2543,7 @@ class NPUModelRunner(GPUModelRunner):
             ec_connector_output=ec_connector_output if self.supports_mm_inputs else None,
             cudagraph_stats=cudagraph_stats,
             routed_experts=None,
+            debug_log_full=self._current_step_debug_log_full_requests,
         )
         if self.ascend_config.profiling_chunk_config.need_timing and hasattr(self, '_execution_start_time'):
             self._sync_device()
@@ -2612,11 +2619,184 @@ class NPUModelRunner(GPUModelRunner):
         )
         return async_output
 
+    def _record_mtp_acceptance_rate(
+        self,
+        req_idx: int,
+        req_id: str,
+        req_state: Any,
+        sampled_ids: list[int] | None = None,
+        draft_token_ids: list[int] | None = None,
+        debug_log_full_by_req_id: dict[str, bool] | None = None,
+    ) -> None:
+        if not req_id or not self.need_accepted_tokens:
+            return
+
+        draft_len = getattr(req_state, "prev_num_draft_len", 0) or 0
+        if draft_len <= 0 or not draft_token_ids or draft_len != len(draft_token_ids):
+            logger.warning(
+                "[Garbled-MTP draft len is wrong] req_id=%s draft_len=%d draft_token_ids=%s",
+                req_id,
+                draft_len,
+                draft_token_ids,
+            )
+            return
+
+        accepted_tokens = (
+            int(self.input_batch.num_accepted_tokens_cpu[req_idx])
+            if req_idx < len(self.input_batch.num_accepted_tokens_cpu)
+            else 0
+        )
+        sampled_ids = list(sampled_ids or [])
+        draft_token_ids = list(draft_token_ids or [])
+        history = self._mtp_acceptance_history[req_id]
+        history.append((accepted_tokens, draft_len))
+        if len(history) > self._mtp_acceptance_window:
+            history.popleft()
+
+        accepted_token_ids = sampled_ids[:accepted_tokens] if accepted_tokens > 0 else []
+        prompt_token_ids = getattr(req_state, "prompt_token_ids", None)
+        output_token_ids = getattr(req_state, "output_token_ids", None)
+        prompt_token_ids = list(prompt_token_ids) if prompt_token_ids is not None else []
+        output_token_ids = list(output_token_ids) if output_token_ids is not None else []
+
+        accepted_sum = sum(accepted for accepted, _ in history)
+        draft_sum = sum(draft for _, draft in history)
+        acceptance_rate = accepted_sum / draft_sum if draft_sum > 0 else 0.0
+
+        logger.info(
+            "[Garbled-MTP step short] req_id=%s draft_len=%d accepted_count=%d",
+            req_id,
+            draft_len,
+            accepted_tokens,
+        )
+        logger.info(
+            "[Garbled-MTP acceptance short] req_id=%s recent_accept_rate=%.4f recent_window=%d accepted=%d drafted=%d",
+            req_id,
+            acceptance_rate,
+            len(history),
+            accepted_sum,
+            draft_sum,
+        )
+        logger.info(
+            "[Garbled-MTP tokens length short] req_id=%s prompt_token_count=%d output_token_count=%d",
+            req_id,
+            len(prompt_token_ids) if prompt_token_ids is not None else 0,
+            len(output_token_ids) if output_token_ids is not None else 0,
+        )
+
+        if len(history) < self._mtp_acceptance_window:
+            return
+
+        should_log_full = bool(
+            acceptance_rate < self._mtp_acceptance_threshold
+            and len(history) >= self._mtp_acceptance_window
+        )
+        if debug_log_full_by_req_id is not None:
+            debug_log_full_by_req_id[req_id] = should_log_full
+
+        if not should_log_full:
+            self._mtp_low_acceptance_logged.discard(req_id)
+            return
+
+        if req_id in self._mtp_low_acceptance_logged:
+            return
+
+        self._mtp_low_acceptance_logged.add(req_id)
+
+        # 本轮MTP候选token列表
+        logger.warning(
+            "[Garbled-MTP Draft Tokens] req_id=%s draft_token_ids=%s",
+            req_id,
+            draft_token_ids
+        )
+
+        # 主模型采样得到的token列表
+        logger.warning(
+            "[Garbled-MTP Sampled Tokens] req_id=%s sampled_token_ids=%s",
+            req_id,
+            sampled_ids
+        )
+
+        # 本轮校验通过的accepted token列表
+        logger.warning(
+            "[Garbled-MTP Accepted Tokens] req_id=%s accepted_token_ids=%s",
+            req_id,
+            accepted_token_ids
+        )
+
+        # 当前请求Prompt完整token序列，看和output_processor的prompt_token_ids是否一致
+        # 先打印长度，当日志过长截断时可以识别
+        logger.warning(
+            "[Garbled-MTP Prompt Tokens Length] req_id=%s prompt_token_count=%d",
+            req_id,
+            len(prompt_token_ids) if prompt_token_ids is not None else 0
+        )
+        logger.warning(
+            "[Garbled-MTP Prompt Tokens] req_id=%s prompt_token_ids=%s",
+            req_id,
+            prompt_token_ids
+        )
+
+        # 当前请求已生成完整输出token序列，看和output_processor的output_token_ids是否一致
+        logger.warning(
+            "[Garbled-MTP Output Tokens Length] req_id=%s output_token_count=%d",
+            req_id,
+            len(output_token_ids) if output_token_ids is not None else 0
+        )
+        logger.warning(
+            "[Garbled-MTP Output Tokens] req_id=%s output_token_ids=%s",
+            req_id,
+            output_token_ids
+        )
+
     # overwrite _sample for lmhead_tp_enable and need_accepted_tokens
     def _sample(self, logits, spec_decode_metadata):
         # Sample the next token and get logprobs if needed.
         self.input_batch.update_async_output_token_ids()
         sampling_metadata = self.input_batch.sampling_metadata
+        # 打印用于复现的 sampling 参数
+        pdb.set_trace()
+        batch_size = len(sampling_metadata.output_token_ids)
+        # 遍历每条请求
+        for req_idx in range(batch_size):
+            # 单请求采样参数
+            temp = sampling_metadata.temperature[req_idx].item() if sampling_metadata.temperature is not None else None
+            topk = sampling_metadata.top_k[req_idx].item() if sampling_metadata.top_k is not None else None
+            topp = sampling_metadata.top_p[req_idx].item() if sampling_metadata.top_p is not None else None
+
+            freq_pen = sampling_metadata.frequency_penalties[req_idx].item()
+            pres_pen = sampling_metadata.presence_penalties[req_idx].item()
+            rep_pen = sampling_metadata.repetition_penalties[req_idx].item()
+
+            req_bad_words = sampling_metadata.bad_words_token_ids.get(req_idx, [])
+            req_output_tokens = sampling_metadata.output_token_ids[req_idx]
+            req_spec_tokens = sampling_metadata.spec_token_ids[req_idx] if sampling_metadata.spec_token_ids else None
+            if sampling_metadata.logprob_token_ids:
+                req_logprob_tokens = sampling_metadata.logprob_token_ids.get(req_idx, [])
+            else:
+                req_logprob_tokens = None
+
+            logger.info(
+                "[Per Request SamplingMeta] req_idx=%d "
+                "temperature=%.4f top_k=%s top_p=%.4f "
+                "freq_pen=%.4f pres_pen=%.4f rep_pen=%.4f "
+                "bad_words_group_num=%d output_tokens_len=%d spec_tokens_len=%s logprob_target_tokens_len=%s "
+                "all_greedy=%s all_random=%s max_num_logprobs=%s",
+                req_idx,
+                temp if temp is not None else -1,
+                topk,
+                topp if topp is not None else 1.0,
+                freq_pen,
+                pres_pen,
+                rep_pen,
+                len(req_bad_words),
+                len(req_output_tokens),
+                len(req_spec_tokens) if req_spec_tokens else None,
+                len(req_logprob_tokens) if req_logprob_tokens else None,
+                sampling_metadata.all_greedy,
+                sampling_metadata.all_random,
+                sampling_metadata.max_num_logprobs
+            )
         if spec_decode_metadata is None:
             if lmhead_tp_enable() and logits is not None:
                 logits = logits[: self.input_batch.num_reqs]
@@ -2727,6 +2907,8 @@ class NPUModelRunner(GPUModelRunner):
                 req_id: i for i, req_id in enumerate(self.input_batch.req_ids) if i not in invalid_req_indices_set
             }
 
+        self._current_step_debug_log_full_requests = {}
+
         # Cache the sampled tokens in the model runner, so that the scheduler
         # doesn't need to send them back.
         # NOTE(woosuk): As an exception, when using PP, the scheduler sends
@@ -2760,6 +2942,17 @@ class NPUModelRunner(GPUModelRunner):
             req_id = req_ids[req_idx]
             req_state = self.requests[req_id]
             req_state.output_token_ids.extend(sampled_ids)
+            draft_token_ids = None
+            if self.input_batch.sampling_metadata.spec_token_ids:
+                draft_token_ids = self.input_batch.sampling_metadata.spec_token_ids[req_idx]
+            self._record_mtp_acceptance_rate(
+                req_idx,
+                req_id,
+                req_state,
+                sampled_ids=sampled_ids,
+                draft_token_ids=draft_token_ids,
+                debug_log_full_by_req_id=self._current_step_debug_log_full_requests,
+            )
 
         # logprobs_lists is already set above:
         # - max_gen_len == 1: logprobs_tensors.tolists() (no cu_num_tokens)
