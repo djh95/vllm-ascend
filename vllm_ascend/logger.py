@@ -13,6 +13,7 @@ Provides two logging mechanisms:
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 
 from vllm import envs
@@ -20,7 +21,16 @@ from vllm.logger import init_logger
 from vllm.logging_utils import ColoredFormatter, NewLineFormatter
 
 _FORMAT = "%(levelname)s %(asctime)s [%(fileinfo)s:%(lineno)d] %(message)s"
+# Second-level strftime pattern; milliseconds are appended in formatTime.
 _DATE_FORMAT = "%m-%d %H:%M:%S"
+
+
+def _format_time_ms(formatter: logging.Formatter, record: logging.LogRecord, datefmt: str | None = None) -> str:
+    """Format record time with millisecond precision (strftime has no %f here)."""
+    ct = formatter.converter(record.created)
+    s = time.strftime(datefmt or _DATE_FORMAT, ct)
+    return f"{s}.{int(record.msecs):03d}"
+
 
 _LOG_DIR = os.path.join(os.path.expanduser("~"), "ascend", "log", "vllm_ascend")
 _LOG_MAX_BYTES = 20 * 1024 * 1024
@@ -89,12 +99,18 @@ def _format_with_ascend_prefix(self, record, super_format):
 class AscendFormatter(NewLineFormatter):
     """Extends NewLineFormatter with [vllm-ascend] prefix and module name."""
 
+    def formatTime(self, record, datefmt=None):
+        return _format_time_ms(self, record, datefmt)
+
     def format(self, record):
         return _format_with_ascend_prefix(self, record, super().format)
 
 
 class AscendColoredFormatter(ColoredFormatter):
     """Extends ColoredFormatter with [vllm-ascend] prefix and module name."""
+
+    def formatTime(self, record, datefmt=None):
+        return _format_time_ms(self, record, datefmt)
 
     def format(self, record):
         return _format_with_ascend_prefix(self, record, super().format)

@@ -27,12 +27,12 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from vllm.config.compilation import CUDAGraphMode
-from vllm.distributed.parallel_state import get_pp_group
+from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 
 from vllm_ascend.logger import init_logger_ascend
 
 logger = init_logger_ascend(__name__)
-logger.error("Dumper initialized in vllm_ascend namespace%s", __name__)
+logger.error("Dumper initialized ---------------------------- name%s", __name__)
 if TYPE_CHECKING:
     from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
     from vllm_ascend.worker.v2.model_runner import NPUModelRunner as NPUModelRunnerV2
@@ -89,6 +89,12 @@ class Dumper:
         self._dump_needs_forward = False
         self._dump_forward_seen = False
         self._debugger_started = False
+        # Async cross-rank alignment: check only arms pending; execute_model
+        # entry ANDs last-PP TP pending (early PP skipped; no PP broadcast).
+        self._pending_dump = False
+        self._pending_dump_req_id: str | None = None
+        self._dump_sync_fail_count = 0
+        self._dump_sync_max_fail = 5
         # Keep an internal alias so all debug-log-full writes are centralized.
         self._debug_log_full_by_req_id: dict[str, bool] = self.full_log_requests_this_step
 
@@ -144,31 +150,66 @@ class Dumper:
         self._debugger = AclGraphDumper(dump_cfg)
         return self._debugger
 
+    def _dump_rank_tag(self) -> str:
+        tp = getattr(self.runner, "tp_rank", "?")
+        dp = getattr(self.runner, "dp_rank", "?")
+        try:
+            pp = get_pp_group().rank_in_group
+        except Exception:
+            pp = "?"
+        return f"dp={dp} tp={tp} pp={pp}"
+
+    def _dump_state_tag(self) -> str:
+        return (
+            f"active={self._msprobe_dump_active} "
+            f"needs_fwd={self._dump_needs_forward} "
+            f"fwd_seen={self._dump_forward_seen} "
+            f"dbg_started={self._debugger_started} "
+            f"pending={self._pending_dump} "
+        )
+
     def start_dump_data(self) -> None:
         # Always clear per-step flags, even when debugger is inactive.
         self.full_log_requests_this_step.clear()
-        if self._debugger is None or self._debugger_started:
+        if self._debugger is None:
             return
+        if self._debugger_started:
+            return
+
+        will_mark_forward_seen = bool(self._msprobe_dump_active and self._dump_needs_forward)
         self._debugger.start(self.runner.model)
         self._debugger_started = True
         # Mark that a dump-capable forward has begun after enable.
-        if self._msprobe_dump_active and self._dump_needs_forward:
+        if will_mark_forward_seen:
             self._dump_forward_seen = True
+            logger.info(
+                "[Anomaly msprobe] start dump-forward %s %s",
+                self._dump_rank_tag(),
+                self._dump_state_tag(),
+            )
 
     def finalize_dump_data(self, **kwargs) -> None:
         if self._debugger is None or not self._debugger_started:
             return
+        dump_kw = kwargs.get("dump", True)
+        dumping = bool(self._msprobe_dump_active)
         if hasattr(self._debugger, "stop"):
             self._debugger.stop()
             self._debugger_started = False
 
         self._debugger.step(**kwargs)
-        # capture/dummy (dump=False): must not consume the pending dump window.
-        if kwargs.get("dump", True) is False:
+        # capture/dummy (dump=False): must not consume the pending dump-forward window.
+        if dump_kw is False:
             if self._dump_needs_forward:
                 self._dump_forward_seen = False
             return
         self.disable_msprobe_dump_if_needed()
+        if dumping:
+            logger.debug(
+                "[Anomaly msprobe] finalize after dump-forward %s %s",
+                self._dump_rank_tag(),
+                self._dump_state_tag(),
+            )
 
     def check_spec_acceptance_anomaly(
         self,
@@ -209,7 +250,7 @@ class Dumper:
         acceptance_len = accepted_sum / len(history) if history else 0.0
 
         if log_leader:
-            logger.info(
+            logger.debug(
                 "[Anomaly spec short] req_id=%s draft_len=%d "
                 "accepted_count=%d accepted_draft_count=%d "
                 "accept_rate=%.4f accept_len=%.4f window=%d accepted=%d drafted=%d "
@@ -305,16 +346,29 @@ class Dumper:
         # Async check may enable dump after this step's start (or even after
         # forward). Keep dump_enable until a later start→finalize pair runs.
         if self._dump_needs_forward and not self._dump_forward_seen:
+            logger.debug(
+                "[Anomaly msprobe] disable deferred (needs forward) %s %s",
+                self._dump_rank_tag(),
+                self._dump_state_tag(),
+            )
             return
         if not self.set_msprobe_dump_state(False):
             return
         self._msprobe_dump_active = False
         self._dump_needs_forward = False
         self._dump_forward_seen = False
-        logger.info("[Anomaly msprobe] disable msprobe dump succeeded.")
-        self._debugger._maybe_reload_config(force=True)
+        logger.info(
+            "[Anomaly msprobe] disable succeeded %s",
+            self._dump_rank_tag(),
+        )
 
     def set_msprobe_dump_state(self, dump_state: bool) -> bool:
+        """Write dump_enable and reload debugger config under the same lock.
+
+        Reload must stay next to the write: any work between them (logging,
+        sample-param dump, another thread's start/finalize, or another TP
+        flipping the shared JSON) can make start() see a stale in-memory flag.
+        """
         dump_cfg = self.runner.ascend_config.dump_config_path
         if not dump_cfg:
             logger.error("[Anomaly msprobe] set msprobe dump state failed, because dump_config_path is empty")
@@ -346,6 +400,10 @@ class Dumper:
                     with config_path.open("w", encoding="utf-8") as f:
                         json.dump(config_obj, f, ensure_ascii=False, indent=2)
                         f.write("\n")
+                # Reload while still holding the lock so this process picks up
+                # the value we just wrote before another rank can change it.
+                if self._debugger is not None:
+                    self._debugger._maybe_reload_config(force=True)
             return True
         except Exception as e:
             logger.error(
@@ -422,6 +480,120 @@ class Dumper:
             return req_id in requests
         return True
 
+    def _anomaly_dump_feature_enabled(self) -> bool:
+        if self._dynamic_dump_max_times == 0:
+            return False
+        return self._enable_spec_acceptance_check or self._enable_token_logprob_check
+
+    def _use_pending_dump_sync(self) -> bool:
+        """Async scheduling defers dump_enable until cross-rank AND at execute."""
+        return bool(getattr(self.runner, "use_async_scheduling", False))
+
+    def _clear_pending_dump(self, *, timeout: bool) -> None:
+        req_id = self._pending_dump_req_id
+        self._pending_dump = False
+        self._pending_dump_req_id = None
+        self._dump_sync_fail_count = 0
+        if timeout and req_id is not None:
+            # Allow the same request to re-arm after cooldown.
+            self._msprobe_dumped_req_ids.discard(req_id)
+
+    def _activate_msprobe_dump(self, req_id: str | None) -> bool:
+        """Turn on dump_enable + reload on this rank (called after sync decide)."""
+        if self._debugger is None:
+            logger.error(
+                "[Anomaly msprobe] skip dump activate req_id=%s: debugger is None",
+                req_id,
+            )
+            return False
+        if self._msprobe_dump_active:
+            return True
+        if not self.set_msprobe_dump_state(True):
+            logger.error(
+                "[Anomaly msprobe] set dump state failed req_id=%s",
+                req_id,
+            )
+            return False
+        self._msprobe_dump_active = True
+        self._dump_needs_forward = True
+        self._dump_forward_seen = False
+        if req_id is not None:
+            self._msprobe_dumped_req_ids.add(req_id)
+        self._msprobe_dump_total_count += 1
+        self._msprobe_last_dump_ts = time.time()
+
+        if req_id is not None and self.runner.tp_rank == 0 and get_pp_group().is_last_rank:
+            self.save_sample_param(target_req_id=req_id)
+
+        logger.info(
+            "[Anomaly msprobe] activate ok req_id=%s count=%d/%d %s",
+            req_id,
+            self._msprobe_dump_total_count,
+            self._dynamic_dump_max_times,
+            self._dump_rank_tag(),
+        )
+        return True
+
+    def begin_step_dump_decision(self, *, async_mode: bool, allow_arm: bool = True) -> bool:
+        """Align dump among last-PP TP ranks at execute_model entry.
+
+        Only **last PP** dumps (precision compare usually needs the final stage).
+        Early PP skip entirely — no PP broadcast.
+
+        Async path on last PP: AND ``pending_dump`` across TP (CPU collective);
+        when all ready, activate ``dump_enable`` together for this forward.
+
+        ``allow_arm``: False on dummy/capture — last-PP TPs still join the
+        all_reduce (avoid deadlock) but do not activate or clear pending.
+        """
+        if not self._anomaly_dump_feature_enabled():
+            return False
+        if not async_mode or not self._use_pending_dump_sync():
+            return self._msprobe_dump_active
+
+        pp_group = get_pp_group()
+        if not pp_group.is_last_rank:
+            return False
+
+        tp_group = get_tp_group()
+        local = 1 if self._pending_dump else 0
+        # CPU int32 SUM: any=sum>0, AND=sum==tp_size.
+        # tp_group.world_size is TP size only (e.g. DP2/PP2/TP2 → 2, not 8).
+        pending_t = torch.tensor([local], dtype=torch.int32)
+        if tp_group.world_size > 1:
+            torch.distributed.all_reduce(pending_t, group=tp_group.cpu_group)
+        sum_pending = int(pending_t.item())
+        any_pending = sum_pending > 0
+        all_ready = sum_pending == tp_group.world_size
+
+        if all_ready:
+            self._dump_sync_fail_count = 0
+        elif any_pending:
+            self._dump_sync_fail_count += 1
+            if self._dump_sync_fail_count >= self._dump_sync_max_fail:
+                logger.warning(
+                    "[Anomaly msprobe] pending_dump AND failed %d times; "
+                    "clearing pending to avoid stall. local_pending=%s",
+                    self._dump_sync_fail_count,
+                    self._pending_dump,
+                )
+                self._clear_pending_dump(timeout=True)
+            return False
+        else:
+            self._dump_sync_fail_count = 0
+            return False
+
+        if not allow_arm:
+            return False
+
+        req_id = self._pending_dump_req_id
+        if not self._activate_msprobe_dump(req_id):
+            if self._pending_dump:
+                logger.error("[Anomaly msprobe] dump activate failed after AND; keep pending")
+            return False
+        self._clear_pending_dump(timeout=False)
+        return True
+
     def enable_msprobe_dump_if_needed(
         self,
         req_id: str,
@@ -439,6 +611,9 @@ class Dumper:
             return False
         if not skip_related_check and not self.is_related_local_request(req_id, req_idx):
             return False
+        if self._pending_dump or self._msprobe_dump_active:
+            # Already armed / dumping this cycle.
+            return True
         if req_id in self._msprobe_dumped_req_ids:
             return False
         if self._msprobe_dump_total_count >= self._dynamic_dump_max_times:
@@ -449,31 +624,22 @@ class Dumper:
         if elapsed is not None and elapsed < self._dynamic_dump_cooldown_seconds:
             return False
 
-        if not self.set_msprobe_dump_state(True):
-            logger.error(
-                "[Anomaly msprobe] set dump state failed req_id=%s",
+        # Async: only arm pending; dump_enable + reload happen after AND at
+        # execute_model entry so all last-PP TP ranks dump together.
+        if self._use_pending_dump_sync():
+            self._pending_dump = True
+            self._pending_dump_req_id = req_id
+            self._msprobe_dumped_req_ids.add(req_id)
+            self._msprobe_last_dump_ts = now_ts
+            logger.info(
+                "[Anomaly msprobe] req_id=%s armed pending_dump (await AND sync). local_dump_count=%d/%d",
                 req_id,
+                self._msprobe_dump_total_count,
+                self._dynamic_dump_max_times,
             )
-            return False
-        self._msprobe_dump_active = True
-        # Require one start after this enable before finalize may disable.
-        self._dump_needs_forward = True
-        self._dump_forward_seen = False
-        self._msprobe_dumped_req_ids.add(req_id)
-        self._msprobe_dump_total_count += 1
-        self._msprobe_last_dump_ts = now_ts
+            return True
 
-        if self.runner.tp_rank == 0 and get_pp_group().is_last_rank:
-            self.save_sample_param(target_req_id=req_id)
-
-        logger.info(
-            "[Anomaly msprobe] req_id=%s set msprobe dump state succeeded. local_dump_count=%d/%d",
-            req_id,
-            self._msprobe_dump_total_count,
-            self._dynamic_dump_max_times,
-        )
-        self._debugger._maybe_reload_config(force=True)
-        return True
+        return self._activate_msprobe_dump(req_id)
 
     def check_all_spec_acceptance(
         self,
@@ -489,6 +655,9 @@ class Dumper:
         if not self._enable_spec_acceptance_check:
             return
         if self._dynamic_dump_max_times == 0:
+            return
+        # Pending / already dumping: skip further anomaly checks until dump finishes.
+        if self._pending_dump or self._msprobe_dump_active:
             return
         if not getattr(self.runner, "need_accepted_tokens", False):
             return
@@ -558,6 +727,9 @@ class Dumper:
             return
         if self._dynamic_dump_max_times == 0:
             return
+        # Pending / already dumping: skip further anomaly checks until dump finishes.
+        if self._pending_dump or self._msprobe_dump_active:
+            return
         if not get_pp_group().is_last_rank:
             return
         if sampled_token_ids is None or logprobs_lists is None:
@@ -599,18 +771,22 @@ class Dumper:
                 log_leader=log_leader,
             )
 
-        if log_leader:
-            msg = "[Anomaly token_logprob] step num_reqs=%d appended=%d extract_fail=%d active_bufs=%d"
-            args = (
+        if log_leader and num_extract_fail > 0:
+            logger.warning(
+                "[Anomaly token_logprob] step num_reqs=%d appended=%d extract_fail=%d active_bufs=%d",
                 len(req_ids),
                 num_appended,
                 num_extract_fail,
                 len(self._token_logprob_buf),
             )
-            if num_extract_fail > 0:
-                logger.warning(msg, *args)
-            else:
-                logger.info(msg, *args)
+        elif log_leader:
+            logger.debug(
+                "[Anomaly token_logprob] step num_reqs=%d appended=%d extract_fail=%d active_bufs=%d",
+                len(req_ids),
+                num_appended,
+                num_extract_fail,
+                len(self._token_logprob_buf),
+            )
 
     def check_token_logprob_anomaly(
         self,
@@ -666,16 +842,23 @@ class Dumper:
             return
         hits = self._ill_window_hits[req_id]
         hits[ill_type] += 1
+        hit_count = hits[ill_type]
+        if hit_count < thresh:
+            logger.debug(
+                "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d",
+                req_id,
+                ill_type,
+                hit_count,
+                thresh,
+            )
+            return
         logger.info(
-            "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d active_reqs=%d",
+            "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d (trigger dump)",
             req_id,
             ill_type,
-            hits[ill_type],
+            hit_count,
             thresh,
-            len(self._token_logprob_buf),
         )
-        if hits[ill_type] < thresh:
-            return
         # Token/logprob check uses output snapshots (esp. async get_output);
         # live input_batch may already be empty, so skip related-local gate.
         if not self.enable_msprobe_dump_if_needed(req_id, req_idx=req_idx, skip_related_check=True):

@@ -2022,7 +2022,16 @@ class NPUModelRunner(GPUModelRunner):
                 self._execution_start_time = time.perf_counter()
         if self.execute_model_state is not None:
             raise RuntimeError("State error: sample_tokens() must be called after execute_model() returns None.")
-       
+
+        # Last-PP TP ranks AND pending_dump here (no PP broadcast; early PP skip).
+        logger.info_once(
+            "Dumper sync: tp_group.world_size=%s tp_rank=%s pp_last=%s",
+            get_tp_group().world_size,
+            get_tp_group().rank_in_group,
+            get_pp_group().is_last_rank,
+        )
+        self.dumper.begin_step_dump_decision(async_mode=self.use_async_scheduling)
+
         # If ngram_gpu is used, we need to copy the scheduler_output to avoid
         # the modification has influence on the scheduler_output in engine core process.
         # The replace is much faster than deepcopy.

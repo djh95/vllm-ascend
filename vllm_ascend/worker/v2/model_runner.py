@@ -25,7 +25,8 @@ import numpy as np
 import torch
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
-from vllm.distributed.parallel_state import get_tp_group
+from vllm.distributed.parallel_state import get_pp_group, get_tp_group
+from vllm.logger import logger
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
@@ -212,6 +213,18 @@ class NPUModelRunner(GPUModelRunner):
                 torch.npu.synchronize()
                 self._execution_start_time = time.perf_counter()
 
+        # Last-PP TP AND pending_dump before start; early PP no-op.
+        # Dummy still joins last-PP all_reduce but must not arm dump_enable.
+        logger.info_once(
+            "Dumper sync: tp_group.world_size=%s tp_rank=%s pp_last=%s",
+            get_tp_group().world_size,
+            get_tp_group().rank_in_group,
+            get_pp_group().is_last_rank,
+        )
+        self.dumper.begin_step_dump_decision(
+            async_mode=self.use_async_scheduling,
+            allow_arm=not dummy_run,
+        )
         # start/finalize wrap the forward path; sample_tokens runs afterwards.
         self.dumper.start_dump_data()
         try:
