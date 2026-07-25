@@ -94,7 +94,7 @@ class Dumper:
         self._pending_dump = False
         self._pending_dump_req_id: str | None = None
         self._dump_sync_fail_count = 0
-        self._dump_sync_max_fail = 5
+        self._dump_sync_max_fail = 1000
         # Keep an internal alias so all debug-log-full writes are centralized.
         self._debug_log_full_by_req_id: dict[str, bool] = self.full_log_requests_this_step
 
@@ -562,6 +562,7 @@ class Dumper:
         pending_t = torch.tensor([local], dtype=torch.int32)
         if tp_group.world_size > 1:
             torch.distributed.all_reduce(pending_t, group=tp_group.cpu_group)
+        logger.error("pending_t: %s tp_group.world_size=%s", pending_t, tp_group.world_size)
         sum_pending = int(pending_t.item())
         any_pending = sum_pending > 0
         all_ready = sum_pending == tp_group.world_size
