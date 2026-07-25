@@ -278,15 +278,7 @@ class AscendAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
     def get_output(self) -> ModelRunnerOutput:
         output = super().get_output()
         if self._dumper is None:
-            logger.info("[Anomaly token_logprob][dbg] get_output: dumper is None")
             return output
-        logger.info(
-            "[Anomaly token_logprob][dbg] get_output: sampled=%s logprobs=%s",
-            "None"
-            if output.sampled_token_ids is None
-            else f"len={len(output.sampled_token_ids)}",
-            "None" if output.logprobs is None else type(output.logprobs).__name__,
-        )
         self._dumper.check_all_token_logprobs(
             sampled_token_ids=output.sampled_token_ids,
             logprobs_lists=output.logprobs,
@@ -2658,26 +2650,6 @@ class NPUModelRunner(GPUModelRunner):
             )
 
         if not self.use_async_scheduling:
-            max_num_logprobs = getattr(
-                getattr(self.input_batch, "sampling_metadata", None),
-                "max_num_logprobs",
-                "N/A",
-            )
-            logger.info(
-                "[Anomaly token_logprob][dbg] call-site sync async=%s "
-                "sampled=%s logprobs=%s sampler_logprobs_tensors=%s "
-                "max_num_logprobs=%s need_accepted=%s",
-                self.use_async_scheduling,
-                "None"
-                if valid_sampled_token_ids is None
-                else f"len={len(valid_sampled_token_ids)}",
-                "None" if logprobs_lists is None else type(logprobs_lists).__name__,
-                "None"
-                if sampler_output.logprobs_tensors is None
-                else type(sampler_output.logprobs_tensors).__name__,
-                max_num_logprobs,
-                self.need_accepted_tokens,
-            )
             self.dumper.check_all_token_logprobs(
                 sampled_token_ids=valid_sampled_token_ids,
                 logprobs_lists=logprobs_lists,
@@ -2686,10 +2658,6 @@ class NPUModelRunner(GPUModelRunner):
             # Snapshot after check so later start_dump_data().clear() cannot wipe
             # this step's flags. Async: deferred to AscendAsyncGPUModelRunnerOutput.
             model_runner_output.debug_log_full = dict(self.dumper.full_log_requests_this_step)
-        else:
-            logger.info(
-                "[Anomaly token_logprob][dbg] call-site defer-to-get_output async=True"
-            )
 
         if not self.use_async_scheduling:
             if self.routed_experts_initialized:

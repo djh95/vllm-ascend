@@ -16,6 +16,7 @@ import sys
 from datetime import datetime
 
 from vllm import envs
+from vllm.logger import init_logger
 from vllm.logging_utils import ColoredFormatter, NewLineFormatter
 
 _FORMAT = "%(levelname)s %(asctime)s [%(fileinfo)s:%(lineno)d] %(message)s"
@@ -23,6 +24,11 @@ _DATE_FORMAT = "%m-%d %H:%M:%S"
 
 _LOG_DIR = os.path.join(os.path.expanduser("~"), "ascend", "log", "vllm_ascend")
 _LOG_MAX_BYTES = 20 * 1024 * 1024
+
+
+def init_logger_ascend(name: str) -> logging.Logger:
+    name = f"vllm.{name}"
+    return init_logger(name)
 
 
 def _use_color() -> bool:

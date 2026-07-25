@@ -65,11 +65,13 @@
 2. 执行阶段
 - v2 重写 `execute_model()`，在 `super().execute_model(...)` 前后包裹
   - `self.dumper.start_dump_data()`
-  - `self.dumper.finalize_dump_data()`
+  - `self.dumper.finalize_dump_data(dump=not dummy_run)`（dummy/capture 不消费 dump-forward 窗口）
 
 3. 采样后阶段
-- v2 未重写 `sample_tokens()`，使用父类流程
-- 通过重写 `postprocess_sampled()` 接入 dumper 的 MTP 标记更新
+- `postprocess_sampled()`：`check_all_spec_acceptance`
+- `sample_tokens()`：
+  - sync：`super()` 已 `get_output()` → 当场 `check_all_token_logprobs`
+  - async：包装为 `AscendAsyncOutput`，在 `get_output()`（D2H 后）再 check，并 snapshot `debug_log_full`
 
 ## 5. DP / PP / TP 下谁打日志、谁 dump
 

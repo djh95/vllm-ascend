@@ -28,8 +28,9 @@ from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.kv_cache_interface import KVCacheConfig
-from vllm.v1.outputs import ModelRunnerOutput
+from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 from vllm.v1.worker.gpu import model_runner as vllm_model_runner
+from vllm.v1.worker.gpu.async_utils import AsyncOutput
 from vllm.v1.worker.gpu.buffer_utils import async_copy_to_gpu
 from vllm.v1.worker.gpu.cudagraph_utils import BatchExecutionDescriptor
 from vllm.v1.worker.gpu.input_batch import (
@@ -58,6 +59,31 @@ from vllm_ascend.worker.v2.spec_decode import init_speculator
 from vllm_ascend.worker.v2.spec_decode.eagle.speculator import AscendEagleSpeculator
 from vllm_ascend.worker.v2.states import AscendRequestState
 from vllm_ascend.worker.v2.utils import torch_cuda_wrapper
+
+
+class AscendAsyncOutput(AsyncModelRunnerOutput):
+    """Run token/logprob anomaly checks after AsyncOutput D2H completes.
+
+    Mirrors v1 ``AscendAsyncGPUModelRunnerOutput``: under async scheduling the
+    upstream ``sample_tokens`` returns ``AsyncOutput`` before CPU materialization;
+    detection must wait until ``get_output()``.
+    """
+
+    def __init__(self, inner: AsyncOutput, dumper: Dumper):
+        self._inner = inner
+        self._dumper = dumper
+
+    def get_output(self) -> ModelRunnerOutput:
+        output = self._inner.get_output()
+        self._dumper.check_all_token_logprobs(
+            sampled_token_ids=output.sampled_token_ids,
+            logprobs_lists=output.logprobs,
+            req_ids=output.req_ids,
+        )
+        # Snapshot after check; a later start_dump_data() may clear the dict
+        # under async overlap with the next step.
+        output.debug_log_full = dict(self._dumper.full_log_requests_this_step)
+        return output
 
 
 class NPUModelRunner(GPUModelRunner):
@@ -197,17 +223,40 @@ class NPUModelRunner(GPUModelRunner):
                 is_profile=is_profile,
             )
         finally:
-            self.dumper.finalize_dump_data()
+            # dummy/capture must not consume the pending dump-forward window.
+            self.dumper.finalize_dump_data(dump=not dummy_run)
 
     def sample_tokens(self, grammar_output=None):
+        finished_req_ids = None
+        if self.execute_model_state is not None:
+            finished_req_ids = self.execute_model_state.finished_req_ids
+
         output = super().sample_tokens(grammar_output)
-        self._attach_observability_fields(output)
+        self.dumper.clear_finished_requests(finished_req_ids)
+
+        if isinstance(output, AsyncOutput):
+            # Async: defer token/logprob check until D2H in get_output().
+            wrapped = AscendAsyncOutput(output, self.dumper)
+            self._attach_observability_fields(wrapped)
+            return wrapped
+
+        if isinstance(output, ModelRunnerOutput):
+            # Sync: super() already called get_output(); check immediately.
+            self.dumper.check_all_token_logprobs(
+                sampled_token_ids=output.sampled_token_ids,
+                logprobs_lists=output.logprobs,
+                req_ids=output.req_ids,
+            )
+            self._attach_observability_fields(output)
         return output
 
     def _attach_observability_fields(self, output: Any) -> None:
         model_runner_output: ModelRunnerOutput | None = None
         if isinstance(output, ModelRunnerOutput):
             model_runner_output = output
+        elif isinstance(output, AscendAsyncOutput):
+            # Timing can attach early; debug_log_full is set in get_output after check.
+            model_runner_output = output._inner.model_runner_output
         elif hasattr(output, "model_runner_output"):
             candidate = getattr(output, "model_runner_output", None)
             if isinstance(candidate, ModelRunnerOutput):
@@ -216,9 +265,10 @@ class NPUModelRunner(GPUModelRunner):
         if model_runner_output is None:
             return
 
-        model_runner_output_fields = getattr(ModelRunnerOutput, "__dataclass_fields__", {})
-        if "debug_log_full" in model_runner_output_fields and self.dumper.full_log_requests_this_step:
-            model_runner_output.debug_log_full = dict(self.dumper.full_log_requests_this_step)
+        if isinstance(output, ModelRunnerOutput):
+            model_runner_output_fields = getattr(ModelRunnerOutput, "__dataclass_fields__", {})
+            if "debug_log_full" in model_runner_output_fields:
+                model_runner_output.debug_log_full = dict(self.dumper.full_log_requests_this_step)
 
         if self.ascend_config.profiling_chunk_config.need_timing and hasattr(self, "_execution_start_time"):
             torch.npu.synchronize()

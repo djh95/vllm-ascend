@@ -114,3 +114,4 @@ MTP / 投机：一步多个 accepted token → 多行 logprobs，按序 append�
 2. 中途无 eos → tk2cat 可能不可用。
 3. v2 runner 可按同样 API 在 `postprocess_sampled` / `sample_tokens` 后接入。
 4. 若需更激进：减小 `window`/`stride`，或将 `ill_repet_window_thresh` 设为 `1`。
+5. v2：`AscendAsyncOutput` 包装上游 `AsyncOutput`；sync 在 `sample_tokens` 当场 check，async 在 `get_output` 后 check（与 v1 对齐）。

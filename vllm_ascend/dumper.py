@@ -28,8 +28,11 @@ from typing import TYPE_CHECKING, Any
 import torch
 from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed.parallel_state import get_pp_group
-from vllm.logger import logger
 
+from vllm_ascend.logger import init_logger_ascend
+
+logger = init_logger_ascend(__name__)
+logger.error("Dumper initialized in vllm_ascend namespace%s", __name__)
 if TYPE_CHECKING:
     from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
     from vllm_ascend.worker.v2.model_runner import NPUModelRunner as NPUModelRunnerV2
@@ -178,15 +181,12 @@ class Dumper:
         if not req_id:
             return
         if not get_pp_group().is_last_rank:
-            logger.warning("[Anomaly spec] req_id=%s not last pp rank", req_id)
             return
         if not self.is_related_local_request(req_id, req_idx):
             return
         log_leader = self.runner.tp_rank == 0
         draft_len = getattr(req_state, "prev_num_draft_len", 0) or 0
         if draft_len <= 0:
-            if log_leader:
-                logger.warning("[Anomaly spec] req_id=%s draft_len=%d", req_id, draft_len)
             return
         self._debug_log_full_by_req_id.pop(req_id, None)
         accepted_draft_tokens = max(0, accepted_token_num - 1)
@@ -305,10 +305,6 @@ class Dumper:
         # Async check may enable dump after this step's start (or even after
         # forward). Keep dump_enable until a later start→finalize pair runs.
         if self._dump_needs_forward and not self._dump_forward_seen:
-            logger.info(
-                "[Anomaly msprobe] defer disable: waiting for a dump forward "
-                "(enable happened without a subsequent start)."
-            )
             return
         if not self.set_msprobe_dump_state(False):
             return
@@ -434,50 +430,28 @@ class Dumper:
         skip_related_check: bool = False,
     ) -> bool:
         if self._debugger is None:
-            logger.info(
-                "[Anomaly msprobe][dbg] skip dump req_id=%s: debugger is None (dump_config / init failed?)",
+            logger.error(
+                "[Anomaly msprobe] skip dump req_id=%s: debugger is None",
                 req_id,
             )
             return False
         if not get_pp_group().is_last_rank:
-            logger.info("[Anomaly msprobe][dbg] skip dump req_id=%s: not last PP", req_id)
             return False
         if not skip_related_check and not self.is_related_local_request(req_id, req_idx):
-            logger.info(
-                "[Anomaly msprobe][dbg] skip dump req_id=%s idx=%s: not related local "
-                "(live input_batch may already be empty/reordered under async)",
-                req_id,
-                req_idx,
-            )
             return False
         if req_id in self._msprobe_dumped_req_ids:
-            logger.info(
-                "[Anomaly msprobe][dbg] skip dump req_id=%s: already dumped once",
-                req_id,
-            )
             return False
         if self._msprobe_dump_total_count >= self._dynamic_dump_max_times:
-            logger.info(
-                "[Anomaly msprobe][dbg] skip dump req_id=%s: reached max dump times=%d",
-                req_id,
-                self._dynamic_dump_max_times,
-            )
             return False
 
         now_ts = time.time()
         elapsed = None if self._msprobe_last_dump_ts is None else now_ts - self._msprobe_last_dump_ts
         if elapsed is not None and elapsed < self._dynamic_dump_cooldown_seconds:
-            logger.info(
-                "[Anomaly msprobe][dbg] skip dump req_id=%s: cooldown elapsed=%.2fs remaining=%.2fs",
-                req_id,
-                elapsed,
-                self._dynamic_dump_cooldown_seconds - elapsed,
-            )
             return False
 
         if not self.set_msprobe_dump_state(True):
-            logger.info(
-                "[Anomaly msprobe][dbg] skip dump req_id=%s: set_msprobe_dump_state(True) failed",
+            logger.error(
+                "[Anomaly msprobe] set dump state failed req_id=%s",
                 req_id,
             )
             return False
@@ -580,98 +554,41 @@ class Dumper:
         Finished-request cleanup is the caller's responsibility via
         ``clear_finished_requests`` (done once before MTP + token checks in v1).
         """
-        # TEMP DEBUG: every-step traces (remove after diagnosis).
-        pp_last = get_pp_group().is_last_rank
-        tp_rank = getattr(self.runner, "tp_rank", -1)
-        logger.info(
-            "[Anomaly token_logprob][dbg] enter enable=%s max_times=%d "
-            "pp_last=%s tp_rank=%d sampled=%s logprobs=%s req_ids_arg=%s",
-            self._enable_token_logprob_check,
-            self._dynamic_dump_max_times,
-            pp_last,
-            tp_rank,
-            "None"
-            if sampled_token_ids is None
-            else f"len={len(sampled_token_ids)} lens={[len(x) for x in sampled_token_ids[:8]]}",
-            "None" if logprobs_lists is None else type(logprobs_lists).__name__,
-            "None" if req_ids is None else f"len={len(req_ids)}",
-        )
         if not self._enable_token_logprob_check:
-            logger.info("[Anomaly token_logprob][dbg] return: enable_token_logprob_check=False")
             return
         if self._dynamic_dump_max_times == 0:
-            logger.info("[Anomaly token_logprob][dbg] return: dynamic_dump_max_times=0")
             return
-        if not pp_last:
-            logger.info("[Anomaly token_logprob][dbg] return: not last PP rank")
+        if not get_pp_group().is_last_rank:
             return
         if sampled_token_ids is None or logprobs_lists is None:
-            logger.info(
-                "[Anomaly token_logprob][dbg] return: missing data "
-                "sampled_token_ids=%s logprobs_lists=%s "
-                "(need request logprobs=N or chat logprobs=true)",
-                "None" if sampled_token_ids is None else f"len={len(sampled_token_ids)}",
-                type(logprobs_lists).__name__ if logprobs_lists is not None else "None",
-            )
             return
 
         if req_ids is None:
             input_batch = getattr(self.runner, "input_batch", None)
             req_ids = getattr(input_batch, "req_ids", None) if input_batch is not None else None
         if not req_ids:
-            logger.info(
-                "[Anomaly token_logprob][dbg] return: empty req_ids (pass req_ids snapshot aligned with sampled tokens)"
-            )
             return
 
         detector = self._get_ill_detector()
         if detector is None:
-            logger.info("[Anomaly token_logprob][dbg] return: ILLDetector is None")
+            logger.error("[Anomaly token_logprob] ILLDetector unavailable")
             return
 
-        log_leader = tp_rank == 0
+        log_leader = getattr(self.runner, "tp_rank", -1) == 0
         model_config = self._model_config_for_detector()
-        logger.info(
-            "[Anomaly token_logprob][dbg] process num_reqs=%d log_leader=%s model=%s",
-            len(req_ids),
-            log_leader,
-            model_config,
-        )
+        num_appended = 0
+        num_extract_fail = 0
         for batch_idx, req_id in enumerate(req_ids):
             if batch_idx >= len(sampled_token_ids):
-                logger.info(
-                    "[Anomaly token_logprob][dbg] break: batch_idx=%d >= sampled_len=%d",
-                    batch_idx,
-                    len(sampled_token_ids),
-                )
                 break
             token_ids = sampled_token_ids[batch_idx]
             if not token_ids:
-                logger.info(
-                    "[Anomaly token_logprob][dbg] skip req: req_id=%s idx=%d empty tokens",
-                    req_id,
-                    batch_idx,
-                )
                 continue
             topk_rows = self._extract_req_topk_logprobs(logprobs_lists, batch_idx, len(token_ids))
             if topk_rows is None:
-                cu = getattr(logprobs_lists, "cu_num_generated_tokens", None)
-                logger.info(
-                    "[Anomaly token_logprob][dbg] skip extract: req_id=%s idx=%d num_tokens=%d cu=%s rows=%s",
-                    req_id,
-                    batch_idx,
-                    len(token_ids),
-                    list(cu) if cu is not None else None,
-                    len(getattr(logprobs_lists, "logprob_token_ids", []) or []),
-                )
+                num_extract_fail += 1
                 continue
-            logger.info(
-                "[Anomaly token_logprob][dbg] append req_id=%s idx=%d n_tokens=%d n_topk_rows=%d",
-                req_id,
-                batch_idx,
-                len(token_ids),
-                len(topk_rows),
-            )
+            num_appended += 1
             self.check_token_logprob_anomaly(
                 req_idx=batch_idx,
                 req_id=req_id,
@@ -681,6 +598,19 @@ class Dumper:
                 detector=detector,
                 log_leader=log_leader,
             )
+
+        if log_leader:
+            msg = "[Anomaly token_logprob] step num_reqs=%d appended=%d extract_fail=%d active_bufs=%d"
+            args = (
+                len(req_ids),
+                num_appended,
+                num_extract_fail,
+                len(self._token_logprob_buf),
+            )
+            if num_extract_fail > 0:
+                logger.warning(msg, *args)
+            else:
+                logger.info(msg, *args)
 
     def check_token_logprob_anomaly(
         self,
@@ -693,12 +623,6 @@ class Dumper:
         log_leader: bool,
     ) -> None:
         if not token_ids or not topk_logprobs:
-            logger.info(
-                "[Anomaly token_logprob][dbg] anomaly skip empty req_id=%s tokens=%d topk=%d",
-                req_id,
-                len(token_ids) if token_ids else 0,
-                len(topk_logprobs) if topk_logprobs else 0,
-            )
             return
         n = min(len(token_ids), len(topk_logprobs))
         buf = self._token_logprob_buf.get(req_id)
@@ -711,36 +635,15 @@ class Dumper:
         self._token_logprob_since_check[req_id] += n
 
         if len(buf) < self._token_logprob_window:
-            logger.info(
-                "[Anomaly token_logprob][dbg] buffering req_id=%s buf=%d/%d since_check=%d",
-                req_id,
-                len(buf),
-                self._token_logprob_window,
-                self._token_logprob_since_check[req_id],
-            )
             return
         already_checked = req_id in self._token_logprob_checked
         if already_checked and self._token_logprob_since_check[req_id] < self._token_logprob_stride:
-            logger.info(
-                "[Anomaly token_logprob][dbg] wait stride req_id=%s since_check=%d/%d",
-                req_id,
-                self._token_logprob_since_check[req_id],
-                self._token_logprob_stride,
-            )
             return
 
         self._token_logprob_since_check[req_id] = 0
         self._token_logprob_checked.add(req_id)
         tokens = [tid for tid, _ in buf]
         topk_dicts = [lp for _, lp in buf]
-
-        logger.info(
-            "[Anomaly token_logprob][dbg] detect req_id=%s window=%d active_reqs=%d log_leader=%s",
-            req_id,
-            len(buf),
-            len(self._token_logprob_buf),
-            log_leader,
-        )
 
         try:
             result = detector.detector(topk_dicts, tokens, model_config)
@@ -750,19 +653,13 @@ class Dumper:
 
         is_ill = bool(getattr(result, "is_ill", False))
         ill_type = int(getattr(result, "ill_type", 0) or 0)
-        logger.info(
-            "[Anomaly token_logprob][dbg] result req_id=%s is_ill=%s ill_type=%d",
-            req_id,
-            is_ill,
-            ill_type,
-        )
         if not is_ill:
             return
 
         thresh = self._ill_window_thresh.get(ill_type)
         if thresh is None:
-            logger.info(
-                "[Anomaly token_logprob][dbg] unknown ill_type=%d req_id=%s",
+            logger.warning(
+                "[Anomaly token_logprob] unknown ill_type=%d req_id=%s",
                 ill_type,
                 req_id,
             )
