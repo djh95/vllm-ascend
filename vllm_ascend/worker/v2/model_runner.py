@@ -213,7 +213,7 @@ class NPUModelRunner(GPUModelRunner):
                 torch.npu.synchronize()
                 self._execution_start_time = time.perf_counter()
 
-        # Last-PP TP AND pending_dump before start; early PP no-op.
+        # Last-PP TP OR pending_dump before start; early PP no-op.
         # Dummy still joins last-PP all_reduce but must not arm dump_enable.
         logger.info_once(
             "Dumper sync: tp_group.world_size=%s tp_rank=%s pp_last=%s",

@@ -2023,7 +2023,7 @@ class NPUModelRunner(GPUModelRunner):
         if self.execute_model_state is not None:
             raise RuntimeError("State error: sample_tokens() must be called after execute_model() returns None.")
 
-        # Last-PP TP ranks AND pending_dump here (no PP broadcast; early PP skip).
+        # Last-PP TP ranks OR pending_dump here (no PP broadcast; early PP skip).
         logger.info_once(
             "Dumper sync: tp_group.world_size=%s tp_rank=%s pp_last=%s",
             get_tp_group().world_size,

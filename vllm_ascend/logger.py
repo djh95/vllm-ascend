@@ -165,15 +165,15 @@ def _setup_file_logging(log_dir: str | None = None) -> None:
     file_handler = RotatingAscendFileHandler(target_dir)
     vllm_logger = logging.getLogger("vllm")
     ascend_logger = logging.getLogger("vllm_ascend")
-    log_level = logging.INFO
-    if vllm_logger.handlers:
-        log_level = vllm_logger.handlers[0].level
-    file_handler.setLevel(log_level)
+    file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(AscendFormatter(fmt=_FORMAT, datefmt=_DATE_FORMAT))
     vllm_logger.addHandler(file_handler)
     ascend_logger.addHandler(file_handler)
     _file_handler = file_handler
     _file_logging_configured = True
+
+    dumper_logger = logging.getLogger("vllm.vllm_ascend.dumper")
+    dumper_logger.setLevel(logging.DEBUG)
 
 
 def configure_ascend_file_logging() -> None:

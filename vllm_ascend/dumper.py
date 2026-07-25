@@ -90,13 +90,9 @@ class Dumper:
         self._dump_forward_seen = False
         self._debugger_started = False
         # Async cross-rank alignment: check only arms pending; execute_model
-        # entry ANDs last-PP TP pending (early PP skipped; no PP broadcast).
+        # entry ORs last-PP TP pending (early PP skipped; no PP broadcast).
         self._pending_dump = False
         self._pending_dump_req_id: str | None = None
-        self._dump_sync_fail_count = 0
-        self._dump_sync_max_fail = 1000
-        # Per-process counter for correlating token_logprob checks across TP.
-        self._token_logprob_check_step = 0
         # Keep an internal alias so all debug-log-full writes are centralized.
         self._debug_log_full_by_req_id: dict[str, bool] = self.full_log_requests_this_step
 
@@ -488,17 +484,27 @@ class Dumper:
         return self._enable_spec_acceptance_check or self._enable_token_logprob_check
 
     def _use_pending_dump_sync(self) -> bool:
-        """Async scheduling defers dump_enable until cross-rank AND at execute."""
+        """Async scheduling defers dump_enable until cross-rank OR at execute."""
         return bool(getattr(self.runner, "use_async_scheduling", False))
 
-    def _clear_pending_dump(self, *, timeout: bool) -> None:
-        req_id = self._pending_dump_req_id
+    def _should_run_anomaly_check(self) -> bool:
+        """Whether this rank should evaluate anomaly detectors.
+
+        Last PP only. Under async, multiproc only materializes ``get_output()``
+        on output_rank (TP0 of last PP), so token_logprob already runs there
+        alone; keep spec-acceptance on the same rank so ``pending_dump`` is
+        armed once and OR-synced at ``begin_step``. Sync: every last-PP TP
+        checks and activates independently (no collective).
+        """
+        if not get_pp_group().is_last_rank:
+            return False
+        if self._use_pending_dump_sync():
+            return int(getattr(self.runner, "tp_rank", 0)) == 0
+        return True
+
+    def _clear_pending_dump(self) -> None:
         self._pending_dump = False
         self._pending_dump_req_id = None
-        self._dump_sync_fail_count = 0
-        if timeout and req_id is not None:
-            # Allow the same request to re-arm after cooldown.
-            self._msprobe_dumped_req_ids.discard(req_id)
 
     def _activate_msprobe_dump(self, req_id: str | None) -> bool:
         """Turn on dump_enable + reload on this rank (called after sync decide)."""
@@ -542,8 +548,9 @@ class Dumper:
         Only **last PP** dumps (precision compare usually needs the final stage).
         Early PP skip entirely — no PP broadcast.
 
-        Async path on last PP: AND ``pending_dump`` across TP (CPU collective);
-        when all ready, activate ``dump_enable`` together for this forward.
+        Async path on last PP: OR ``pending_dump`` across TP (CPU collective);
+        if any rank armed (typically TP0 after check), all last-PP TPs activate
+        ``dump_enable`` together for this forward.
 
         ``allow_arm``: False on dummy/capture — last-PP TPs still join the
         all_reduce (avoid deadlock) but do not activate or clear pending.
@@ -559,37 +566,12 @@ class Dumper:
 
         tp_group = get_tp_group()
         local = 1 if self._pending_dump else 0
-        # CPU int32 SUM: any=sum>0, AND=sum==tp_size.
-        # tp_group.world_size is TP size only (e.g. DP2/PP2/TP2 → 2, not 8).
+        # CPU int32 SUM: OR = sum > 0. tp_group.world_size is TP size only
+        # (e.g. DP2/PP2/TP2 → 2, not 8).
         pending_t = torch.tensor([local], dtype=torch.int32)
         if tp_group.world_size > 1:
             torch.distributed.all_reduce(pending_t, group=tp_group.cpu_group)
-        logger.error(
-            "local=%s pending_t=%s tp_rank=%s tp_group.world_size=%s",
-            local,
-            pending_t,
-            tp_group.rank_in_group,
-            tp_group.world_size,
-        )
-        sum_pending = int(pending_t.item())
-        any_pending = sum_pending > 0
-        all_ready = sum_pending == tp_group.world_size
-
-        if all_ready:
-            self._dump_sync_fail_count = 0
-        elif any_pending:
-            self._dump_sync_fail_count += 1
-            if self._dump_sync_fail_count >= self._dump_sync_max_fail:
-                logger.warning(
-                    "[Anomaly msprobe] pending_dump AND failed %d times; "
-                    "clearing pending to avoid stall. local_pending=%s",
-                    self._dump_sync_fail_count,
-                    self._pending_dump,
-                )
-                self._clear_pending_dump(timeout=True)
-            return False
-        else:
-            self._dump_sync_fail_count = 0
+        if int(pending_t.item()) <= 0:
             return False
 
         if not allow_arm:
@@ -598,9 +580,9 @@ class Dumper:
         req_id = self._pending_dump_req_id
         if not self._activate_msprobe_dump(req_id):
             if self._pending_dump:
-                logger.error("[Anomaly msprobe] dump activate failed after AND; keep pending")
+                logger.error("[Anomaly msprobe] dump activate failed after OR; keep pending")
             return False
-        self._clear_pending_dump(timeout=False)
+        self._clear_pending_dump()
         return True
 
     def enable_msprobe_dump_if_needed(
@@ -633,7 +615,7 @@ class Dumper:
         if elapsed is not None and elapsed < self._dynamic_dump_cooldown_seconds:
             return False
 
-        # Async: only arm pending; dump_enable + reload happen after AND at
+        # Async: only arm pending; dump_enable + reload happen after OR at
         # execute_model entry so all last-PP TP ranks dump together.
         if self._use_pending_dump_sync():
             self._pending_dump = True
@@ -641,7 +623,7 @@ class Dumper:
             self._msprobe_dumped_req_ids.add(req_id)
             self._msprobe_last_dump_ts = now_ts
             logger.info(
-                "[Anomaly msprobe] req_id=%s armed pending_dump (await AND sync). local_dump_count=%d/%d",
+                "[Anomaly msprobe] req_id=%s armed pending_dump (await OR sync). local_dump_count=%d/%d",
                 req_id,
                 self._msprobe_dump_total_count,
                 self._dynamic_dump_max_times,
@@ -664,6 +646,8 @@ class Dumper:
         if not self._enable_spec_acceptance_check:
             return
         if self._dynamic_dump_max_times == 0:
+            return
+        if not self._should_run_anomaly_check():
             return
         # Pending / already dumping: skip further anomaly checks until dump finishes.
         if self._pending_dump or self._msprobe_dump_active:
@@ -716,29 +700,6 @@ class Dumper:
             self._token_logprob_checked.discard(req_id)
             self._ill_window_hits.pop(req_id, None)
 
-    @staticmethod
-    def _format_topk_rows_for_log(
-        topk_rows: list[dict[int, float]],
-        *,
-        max_pos: int = 4,
-        max_k: int = 3,
-    ) -> str:
-        """Compact topk preview: first/last positions, top-k (id:lp) each."""
-
-        def _row_preview(row: dict[int, float]) -> str:
-            items = sorted(row.items(), key=lambda kv: kv[1], reverse=True)[:max_k]
-            return "[" + ",".join(f"{tid}:{lp:.3f}" for tid, lp in items) + "]"
-
-        if not topk_rows:
-            return "[]"
-        if len(topk_rows) <= max_pos * 2:
-            parts = [f"{i}:{_row_preview(r)}" for i, r in enumerate(topk_rows)]
-            return "{" + "; ".join(parts) + "}"
-        head = [f"{i}:{_row_preview(topk_rows[i])}" for i in range(max_pos)]
-        tail_start = len(topk_rows) - max_pos
-        tail = [f"{i}:{_row_preview(topk_rows[i])}" for i in range(tail_start, len(topk_rows))]
-        return "{" + "; ".join(head) + "; ...; " + "; ".join(tail) + "}"
-
     def check_all_token_logprobs(
         self,
         sampled_token_ids: list[list[int]] | None,
@@ -759,90 +720,35 @@ class Dumper:
             return
         if self._dynamic_dump_max_times == 0:
             return
-
-        try:
-            tp_rank = get_tp_group().rank_in_group
-        except Exception:
-            tp_rank = getattr(self.runner, "tp_rank", -1)
-        self._token_logprob_check_step += 1
-        check_step = self._token_logprob_check_step
-
+        if not self._should_run_anomaly_check():
+            return
         # Pending / already dumping: skip further anomaly checks until dump finishes.
         if self._pending_dump or self._msprobe_dump_active:
-            logger.error(
-                "[DBG token_logprob] check_step=%d tp_rank=%s skip: pending=%s active=%s",
-                check_step,
-                tp_rank,
-                self._pending_dump,
-                self._msprobe_dump_active,
-            )
-            return
-        if not get_pp_group().is_last_rank:
             return
         if sampled_token_ids is None or logprobs_lists is None:
-            logger.error(
-                "[DBG token_logprob] check_step=%d tp_rank=%s skip: sampled=%s logprobs=%s",
-                check_step,
-                tp_rank,
-                sampled_token_ids is not None,
-                logprobs_lists is not None,
-            )
             return
 
         if req_ids is None:
             input_batch = getattr(self.runner, "input_batch", None)
             req_ids = getattr(input_batch, "req_ids", None) if input_batch is not None else None
         if not req_ids:
-            logger.error(
-                "[DBG token_logprob] check_step=%d tp_rank=%s skip: empty req_ids",
-                check_step,
-                tp_rank,
-            )
             return
 
         detector = self._get_ill_detector()
         if detector is None:
-            logger.error(
-                "[DBG token_logprob] check_step=%d tp_rank=%s ILLDetector unavailable",
-                check_step,
-                tp_rank,
-            )
             return
 
-        log_leader = tp_rank == 0
+        log_leader = int(getattr(self.runner, "tp_rank", 0)) == 0
         model_config = self._model_config_for_detector()
-        num_appended = 0
-        num_extract_fail = 0
-        logger.error(
-            "[DBG token_logprob] check_step=%d tp_rank=%s enter num_reqs=%d",
-            check_step,
-            tp_rank,
-            len(req_ids),
-        )
         for batch_idx, req_id in enumerate(req_ids):
             if batch_idx >= len(sampled_token_ids):
                 break
             token_ids = sampled_token_ids[batch_idx]
             if not token_ids:
-                logger.error(
-                    "[DBG token_logprob] check_step=%d tp_rank=%s req_id=%s empty token_ids",
-                    check_step,
-                    tp_rank,
-                    req_id,
-                )
                 continue
             topk_rows = self._extract_req_topk_logprobs(logprobs_lists, batch_idx, len(token_ids))
             if topk_rows is None:
-                num_extract_fail += 1
-                logger.error(
-                    "[DBG token_logprob] check_step=%d tp_rank=%s req_id=%s extract_fail token_ids=%s",
-                    check_step,
-                    tp_rank,
-                    req_id,
-                    token_ids,
-                )
                 continue
-            num_appended += 1
             self.check_token_logprob_anomaly(
                 req_idx=batch_idx,
                 req_id=req_id,
@@ -851,18 +757,7 @@ class Dumper:
                 model_config=model_config,
                 detector=detector,
                 log_leader=log_leader,
-                check_step=check_step,
-                tp_rank=tp_rank,
             )
-
-        logger.error(
-            "[DBG token_logprob] check_step=%d tp_rank=%s done appended=%d extract_fail=%d active_bufs=%d",
-            check_step,
-            tp_rank,
-            num_appended,
-            num_extract_fail,
-            len(self._token_logprob_buf),
-        )
 
     def check_token_logprob_anomaly(
         self,
@@ -873,8 +768,6 @@ class Dumper:
         model_config: Any,
         detector: Any,
         log_leader: bool,
-        check_step: int = -1,
-        tp_rank: int = -1,
     ) -> None:
         if not token_ids or not topk_logprobs:
             return
@@ -888,31 +781,10 @@ class Dumper:
             buf.append((int(token_ids[i]), topk_logprobs[i]))
         self._token_logprob_since_check[req_id] += n
 
-        logger.error(
-            "[DBG token_logprob] check_step=%d tp_rank=%s req_id=%s append "
-            "new_token_ids=%s new_logprobs=%s buf_len=%d/%d since_check=%d",
-            check_step,
-            tp_rank,
-            req_id,
-            [int(x) for x in token_ids[:n]],
-            self._format_topk_rows_for_log(topk_logprobs[:n]),
-            len(buf),
-            self._token_logprob_window,
-            self._token_logprob_since_check[req_id],
-        )
-
         if len(buf) < self._token_logprob_window:
             return
         already_checked = req_id in self._token_logprob_checked
         if already_checked and self._token_logprob_since_check[req_id] < self._token_logprob_stride:
-            logger.error(
-                "[DBG token_logprob] check_step=%d tp_rank=%s req_id=%s skip stride since_check=%d<%d",
-                check_step,
-                tp_rank,
-                req_id,
-                self._token_logprob_since_check[req_id],
-                self._token_logprob_stride,
-            )
             return
 
         self._token_logprob_since_check[req_id] = 0
@@ -924,9 +796,7 @@ class Dumper:
             result = detector.detector(topk_dicts, tokens, model_config)
         except Exception as e:
             logger.error(
-                "[DBG token_logprob] check_step=%d tp_rank=%s req_id=%s detector failed error=%s",
-                check_step,
-                tp_rank,
+                "[Anomaly token_logprob] detector failed req_id=%s error=%s",
                 req_id,
                 e,
             )
@@ -934,17 +804,6 @@ class Dumper:
 
         is_ill = bool(getattr(result, "is_ill", False))
         ill_type = int(getattr(result, "ill_type", 0) or 0)
-        logger.error(
-            "[DBG token_logprob] check_step=%d tp_rank=%s req_id=%s detector "
-            "is_ill=%s ill_type=%s window_token_ids=%s window_logprobs=%s",
-            check_step,
-            tp_rank,
-            req_id,
-            is_ill,
-            ill_type,
-            tokens,
-            self._format_topk_rows_for_log(topk_dicts),
-        )
         if not is_ill:
             return
 
@@ -959,24 +818,14 @@ class Dumper:
         hits = self._ill_window_hits[req_id]
         hits[ill_type] += 1
         hit_count = hits[ill_type]
-        logger.error(
-            "[DBG token_logprob] check_step=%d tp_rank=%s req_id=%s hits=%d/%d",
-            check_step,
-            tp_rank,
-            req_id,
-            hit_count,
-            thresh,
-        )
         if hit_count < thresh:
             return
         logger.info(
-            "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d (trigger dump) check_step=%d tp_rank=%s",
+            "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d (trigger dump)",
             req_id,
             ill_type,
             hit_count,
             thresh,
-            check_step,
-            tp_rank,
         )
         # Token/logprob check uses output snapshots (esp. async get_output);
         # live input_batch may already be empty, so skip related-local gate.

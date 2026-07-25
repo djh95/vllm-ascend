@@ -46,7 +46,7 @@
 
 请求侧需设置 `logprobs >= 1`（建议 `>= 20`），否则 worker 无 topk 数据，检测跳过。
 
-`--async-scheduling`：token/logprob 在采样返回时尚在 device 上，检测改在 async `get_output()`（D2H 完成并 parse 之后）执行（v1：`AscendAsyncGPUModelRunnerOutput`；v2：`AscendAsyncOutput`）。仍仅 last PP 处理；详细 hit 日志见 dumper 日志级别约定。命中后 **async 只置 `pending_dump`**，在下一拍（或随后齐步拍）`execute_model` 入口由 last-PP 全体 TP `all_reduce(AND)` 后再写 `dump_enable`（详见 [dumper_design.md](./dumper_design.md) §5）。
+`--async-scheduling`：token/logprob 在采样返回时尚在 device 上，检测改在 async `get_output()`（D2H 完成并 parse 之后）执行（v1：`AscendAsyncGPUModelRunnerOutput`；v2：`AscendAsyncOutput`）。multiproc 仅 `output_rank`（last-PP TP0）会 `get_output()`，故 **async 仅 TP0 check**；命中后只置 `pending_dump`，下一拍 `execute_model` 入口 last-PP TP `all_reduce(OR)` 后再全体写 `dump_enable`（详见 [dumper_design.md](./dumper_design.md) §5）。
 
 ## 3. 架构
 
@@ -105,7 +105,7 @@ MTP / 投机：一步多个 accepted token → 多行 logprobs，按序 append�
 ## 6. 与 dump 共用策略
 
 - 冷却 / 最大次数 / 每请求只 dump 一次：沿用 `enable_msprobe_dump_if_needed`。
-- **Async**：check 只 arm `pending_dump`；last-PP TP AND 齐后再 `_activate`（写 JSON + reload）。**Sync**：check 内直接 activate。
+- **Async**：仅 TP0 check，arm `pending_dump`；last-PP TP OR 后全体 `_activate`（写 JSON + reload）。**Sync**：各 last-PP TP check 内直接 activate。
 - 已 `pending` / `dump_active` 时跳过后续 token_logprob / spec check，避免重复 arm。
 - TP0 打详细日志；dump 仅 last PP；状态写 msprobe 配置文件。
 - `debug_log_full` 在 dump 使能成功后置位，snapshot 到 `ModelRunnerOutput`。

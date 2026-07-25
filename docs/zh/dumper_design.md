@@ -32,7 +32,7 @@
 
 4. dump 开关与跨 TP 齐步
 - `enable_msprobe_dump_if_needed()`：门控（冷却、最大次数、每请求一次）；**async** 只置 `pending_dump`，**sync** 直接 `_activate_msprobe_dump`
-- `begin_step_dump_decision()`：仅在 **last PP** 的 TP 组上对 `pending_dump` 做 CPU `all_reduce`（AND）；齐则全体 last-PP TP `activate`；early PP 直接跳过（不 dump、不 broadcast）
+- `begin_step_dump_decision()`：仅在 **last PP** 的 TP 组上对 `pending_dump` 做 CPU `all_reduce`（OR）；任一 armed 则全体 last-PP TP `activate`；early PP 直接跳过（不 dump、不 broadcast）
 - `disable_msprobe_dump_if_needed()`：`activate` 后置 `_dump_needs_forward`；仅当后续又经历一次 dump 向的 `start`（`_dump_forward_seen`）后的 finalize 才回滚
 - `set_msprobe_dump_state()`：持锁写 JSON `dump_enable` 并立刻 `_maybe_reload_config`
 
@@ -61,26 +61,25 @@
 ## 5. Async 跨 TP dump 齐步（last PP）
 
 ```text
-get_output / check 命中（各 last-PP TP，可乱序）:
+check 命中（async 仅 last-PP TP0）:
   pending_dump = True          # 不写 dump_enable
 
 execute_model 入口（仅 last PP）:
   all_reduce(SUM, pending) on tp_group.cpu_group
-  all_ready = (sum == tp_world_size)
-  if all_ready and allow_arm:
+  any_pending = (sum > 0)
+  if any_pending and allow_arm:
       各 TP: activate(dump_enable=true + reload)
       clear pending
-  else if any_pending 连续失败 >= 5:
-      clear pending（超时）
 
 start → forward → finalize → disable（需 _dump_forward_seen）
 ```
 
 说明：
 
-- **不区分 req_id**；AND 的是「是否 pending」布尔。
+- **不区分 req_id**；OR 的是「是否 pending」布尔。
+- **async 仅 TP0 check**：multiproc 只在 `output_rank`（last-PP TP0）调用 `get_output()`；spec / token_logprob 均走 `_should_run_anomaly_check()`，与之一致。
 - **early PP 不参与 dump**（精度对比通常只看最后一段），无需 PP broadcast。
-- **Sync** 仍在 check 时直接 activate；各 TP 同拍 check 后下一拍一起 dump，不做 AND。
+- **Sync** 仍在 check 时直接 activate；各 last-PP TP 同拍 check 后下一拍一起 dump，不做 OR。
 - feature 关闭（两 check 关或 `max_times==0`）时整条齐步路径跳过。
 - pending / dump_active 期间跳过后续 anomaly check，避免重复 arm。
 
@@ -88,13 +87,14 @@ start → forward → finalize → disable（需 _dump_forward_seen）
 
 ### 6.1 PP
 
-- check / enable / `begin_step` AND / activate：仅 **last PP**
+- check / enable / `begin_step` OR / activate：仅 **last PP**
 - early PP：不 dump
 
 ### 6.2 TP
 
 - 日志：`tp_rank == 0`
-- dump：last PP 上各 TP 均需 pending 齐后一起 activate（async）
+- **async check**：仅 TP0；**async dump**：OR 后 last-PP 全体 TP activate
+- **sync check + dump**：各 last-PP TP 独立
 
 ### 6.3 DP
 
@@ -111,4 +111,4 @@ start → forward → finalize → disable（需 _dump_forward_seen）
 1. `forward_seen` 只表示「activate 后调用过 start」，不保证 msprobe 一定写出文件。
 2. v1 EC producer 短路径（`has_ec_transfer && is_producer`）可能在 activate 后用 encoder-only `start→finalize` 消费窗口；普通文本 serving 无此路径。
 3. async 下 last PP 每步 CPU all_reduce（全员参与）；不能「仅 pending 的 rank 进 collective」。
-4. Sync 不做 AND；依赖同拍 check 语义。
+4. Sync 不做 OR；依赖同拍各 TP check 语义。
