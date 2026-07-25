@@ -218,7 +218,7 @@ def configure_ascend_logging() -> None:
         stream = sys.stderr
 
     handler = logging.StreamHandler(stream)
-    handler.setLevel(envs.VLLM_LOGGING_LEVEL)
+    handler.setLevel(logging.DEBUG)
 
     if _use_color():
         handler.setFormatter(AscendColoredFormatter(fmt=_FORMAT, datefmt=_DATE_FORMAT))
@@ -228,3 +228,6 @@ def configure_ascend_logging() -> None:
     ascend_logger.addHandler(handler)
     ascend_logger.setLevel(envs.VLLM_LOGGING_LEVEL)
     ascend_logger.propagate = False
+
+    dumper_logger = logging.getLogger("vllm.vllm_ascend.dumper")
+    dumper_logger.setLevel(logging.DEBUG)
