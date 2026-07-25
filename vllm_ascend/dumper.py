@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import time
 from collections import defaultdict, deque
@@ -32,7 +33,7 @@ from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 from vllm_ascend.logger import init_logger_ascend
 
 logger = init_logger_ascend(__name__)
-logger.error("Dumper initialized ---------------------------- name%s", __name__)
+logger.setLevel(logging.DEBUG)
 if TYPE_CHECKING:
     from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
     from vllm_ascend.worker.v2.model_runner import NPUModelRunner as NPUModelRunnerV2
