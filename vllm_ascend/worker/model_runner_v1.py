@@ -2030,7 +2030,7 @@ class NPUModelRunner(GPUModelRunner):
             get_tp_group().rank_in_group,
             get_pp_group().is_last_rank,
         )
-        self.dumper.begin_step_dump_decision(async_mode=self.use_async_scheduling)
+        self.dumper.begin_step_dump_decision()
 
         # If ngram_gpu is used, we need to copy the scheduler_output to avoid
         # the modification has influence on the scheduler_output in engine core process.

@@ -194,6 +194,7 @@ class NPUModelRunner(GPUModelRunner):
         # Align with v1 load_model: start debugger early when graphs are enabled.
         # v2 has no separate dummy_run finalize; capture/dummy goes through
         # execute_model(..., dummy_run=True) whose finally calls finalize_dump_data().
+        # Keep the debugger started here so it covers that first graph capture.
         if self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE:
             self.dumper.start_dump_data()
 
@@ -221,10 +222,7 @@ class NPUModelRunner(GPUModelRunner):
             get_tp_group().rank_in_group,
             get_pp_group().is_last_rank,
         )
-        self.dumper.begin_step_dump_decision(
-            async_mode=self.use_async_scheduling,
-            allow_arm=not dummy_run,
-        )
+        self.dumper.begin_step_dump_decision(allow_arm=not dummy_run)
         # start/finalize wrap the forward path; sample_tokens runs afterwards.
         self.dumper.start_dump_data()
         try:

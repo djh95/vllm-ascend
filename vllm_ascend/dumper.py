@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import fcntl
 import json
-import logging
 import os
 import time
 from collections import defaultdict, deque
@@ -33,7 +32,6 @@ from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 from vllm_ascend.logger import init_logger_ascend
 
 logger = init_logger_ascend(__name__)
-logger.setLevel(logging.DEBUG)
 if TYPE_CHECKING:
     from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
     from vllm_ascend.worker.v2.model_runner import NPUModelRunner as NPUModelRunnerV2
@@ -94,8 +92,6 @@ class Dumper:
         # entry ORs last-PP TP pending (early PP skipped; no PP broadcast).
         self._pending_dump = False
         self._pending_dump_req_id: str | None = None
-        # Keep an internal alias so all debug-log-full writes are centralized.
-        self._debug_log_full_by_req_id: dict[str, bool] = self.full_log_requests_this_step
 
         logger.info_once(
             "Dynamic dump config applied: enable_spec_acceptance_check=%s "
@@ -172,13 +168,14 @@ class Dumper:
         self.full_log_requests_this_step.clear()
         if self._debugger is None:
             return
-        if self._debugger_started:
-            return
 
+        # Mark dump-forward even when debugger was pre-started (e.g. load_model
+        # graph hook): early-return must not skip _dump_forward_seen or disable
+        # stays deferred forever.
         will_mark_forward_seen = bool(self._msprobe_dump_active and self._dump_needs_forward)
-        self._debugger.start(self.runner.model)
-        self._debugger_started = True
-        # Mark that a dump-capable forward has begun after enable.
+        if not self._debugger_started:
+            self._debugger.start(self.runner.model)
+            self._debugger_started = True
         if will_mark_forward_seen:
             self._dump_forward_seen = True
             logger.info(
@@ -187,18 +184,20 @@ class Dumper:
                 self._dump_state_tag(),
             )
 
-    def finalize_dump_data(self, **kwargs) -> None:
+    def finalize_dump_data(self, *, dump: bool = True) -> None:
         if self._debugger is None or not self._debugger_started:
             return
-        dump_kw = kwargs.get("dump", True)
         dumping = bool(self._msprobe_dump_active)
         if hasattr(self._debugger, "stop"):
             self._debugger.stop()
             self._debugger_started = False
 
-        self._debugger.step(**kwargs)
+        if dump:
+            self._debugger.step()
+        else:
+            self._debugger.step(dump=False)
         # capture/dummy (dump=False): must not consume the pending dump-forward window.
-        if dump_kw is False:
+        if not dump:
             if self._dump_needs_forward:
                 self._dump_forward_seen = False
             return
@@ -228,7 +227,6 @@ class Dumper:
         draft_len = getattr(req_state, "prev_num_draft_len", 0) or 0
         if draft_len <= 0:
             return
-        self._debug_log_full_by_req_id.pop(req_id, None)
         accepted_draft_tokens = max(0, accepted_token_num - 1)
         history = self._spec_acceptance_history[req_id]
         history.append((accepted_draft_tokens, draft_len))
@@ -286,7 +284,7 @@ class Dumper:
             return
 
         if log_leader:
-            self._debug_log_full_by_req_id[req_id] = True
+            self.full_log_requests_this_step[req_id] = True
             self.log_spec_token_details(
                 req_id=req_id,
                 sampled_ids=self._normalize_token_ids(sampled_ids),
@@ -543,7 +541,7 @@ class Dumper:
         )
         return True
 
-    def begin_step_dump_decision(self, *, async_mode: bool, allow_arm: bool = True) -> bool:
+    def begin_step_dump_decision(self, *, allow_arm: bool = True) -> bool:
         """Align dump among last-PP TP ranks at execute_model entry.
 
         Only **last PP** dumps (precision compare usually needs the final stage).
@@ -551,14 +549,15 @@ class Dumper:
 
         Async path on last PP: OR ``pending_dump`` across TP (CPU collective);
         if any rank armed (typically TP0 after check), all last-PP TPs activate
-        ``dump_enable`` together for this forward.
+        ``dump_enable`` together for this forward. Sync path skips the collective
+        and just reports whether dump is already active.
 
         ``allow_arm``: False on dummy/capture — last-PP TPs still join the
         all_reduce (avoid deadlock) but do not activate or clear pending.
         """
         if not self._anomaly_dump_feature_enabled():
             return False
-        if not async_mode or not self._use_pending_dump_sync():
+        if not self._use_pending_dump_sync():
             return self._msprobe_dump_active
 
         pp_group = get_pp_group()
@@ -616,17 +615,16 @@ class Dumper:
         if elapsed is not None and elapsed < self._dynamic_dump_cooldown_seconds:
             return False
 
-        # Async: only arm pending; dump_enable + reload happen after OR at
-        # execute_model entry so all last-PP TP ranks dump together.
+        # Async: only arm pending; dump_enable + reload, dumped_req_ids, and
+        # cooldown timestamp happen in _activate_msprobe_dump after OR sync so
+        # a failed activate does not permanently blacklist the request.
         if self._use_pending_dump_sync():
             self._pending_dump = True
             self._pending_dump_req_id = req_id
-            self._msprobe_dumped_req_ids.add(req_id)
-            self._msprobe_last_dump_ts = now_ts
             logger.info(
-                "[Anomaly msprobe] req_id=%s armed pending_dump (await OR sync). local_dump_count=%d/%d",
+                "[Anomaly msprobe] req_id=%s armed pending_dump (await OR sync). next_activation_count=%d/%d",
                 req_id,
-                self._msprobe_dump_total_count,
+                self._msprobe_dump_total_count + 1,
                 self._dynamic_dump_max_times,
             )
             return True
@@ -833,7 +831,7 @@ class Dumper:
         if not self.enable_msprobe_dump_if_needed(req_id, req_idx=req_idx, skip_related_check=True):
             return
         if log_leader:
-            self._debug_log_full_by_req_id[req_id] = True
+            self.full_log_requests_this_step[req_id] = True
 
     def _get_ill_detector(self) -> Any | None:
         if self._ill_detector is not None:
