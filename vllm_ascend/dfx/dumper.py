@@ -132,8 +132,18 @@ class Dumper:
         Runner owns :meth:`~DfxRuntimeConfig.sync_dfx_config`; call this only
         after a successful reload so Dumper never drives config I/O.
         """
+        prev_max = self._dynamic_dump_max_times
+        prev_cd = self._dynamic_dump_cooldown_seconds
         self._sync_dump_limits_from_config()
         self._apply_observability_switches()
+        logger.info(
+            "[DFX dumper] config applied dump.max_times=%d→%d cooldown=%d→%d %s",
+            prev_max,
+            self._dynamic_dump_max_times,
+            prev_cd,
+            self._dynamic_dump_cooldown_seconds,
+            self._dump_rank_tag(),
+        )
 
     def handle_anomaly_alert(
         self,

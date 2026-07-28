@@ -82,8 +82,9 @@ _DEFAULTS: dict[str, Any] = {
     # broadcast: rank0 reads JSON, world-broadcasts; file: each rank polls path
     "sync_mode": SYNC_BROADCAST,
     # Kept in JSON for visibility; effective hot-reload interval is set at
-    # process start via additional_config.dfx_config_reload_interval (default 0=off).
-    "reload_interval_seconds": 0,
+    # process start via additional_config.dfx_config_reload_interval (default 5).
+    # Set 0 at startup to disable. JSON field alone cannot re-enable after start.
+    "reload_interval_seconds": 5,
     "dump": {
         "enabled": True,
         "max_times": 0,
@@ -226,10 +227,10 @@ class DfxRuntimeConfig:
             self.config_path,
             str(report_dir) if report_dir is not None else None,
         )
-        # Startup override: 0/None → hot reload off; >0 → poll/broadcast every N seconds.
+        # Startup override: None → default 5s hot reload; 0 → off; >0 → every N seconds.
         # This is authoritative and is not re-enabled by JSON after load.
         if reload_interval_seconds is None:
-            self._reload_interval = 0.0
+            self._reload_interval = 5.0
         else:
             self._reload_interval = float(reload_interval_seconds)
         if self._reload_interval < 0:
@@ -269,7 +270,7 @@ class DfxRuntimeConfig:
             logger.info_once(
                 "[DFX runtime_config] hot-reload disabled "
                 "(set additional_config.dfx_config_reload_interval > 0 to enable; "
-                "dump.dump_once also requires interval > 0)"
+                "default is 5; dump.dump_once also requires interval > 0)"
             )
 
     def _read_json_object(self) -> dict[str, Any]:
@@ -722,16 +723,20 @@ class DfxRuntimeConfig:
         self._data = merged
         self._mtime = version
         self._version = version
-        logger.info_once(
+        # Log every apply so hot-reload / broadcast updates are visible (not info_once).
+        logger.info(
             "[DFX runtime_config] applied path=%s sync_mode=%s version=%.6f "
-            "dump.enabled=%s log.level=%s metrics.enabled=%s trace.enabled=%s",
+            "dump.enabled=%s dump.max_times=%s dump.cooldown=%s log.level=%s "
+            "spec_check=%s token_logprob_check=%s",
             str(self.config_path),
             self.sync_mode,
             self._version,
             self.dump_enabled(),
+            self.dump_max_times(),
+            self.dump_cooldown_seconds(),
             self.log_level(),
-            self.metrics_enabled(),
-            self.trace_enabled(),
+            self.detector_get("enable_spec_acceptance_check"),
+            self.detector_get("enable_token_logprob_check"),
         )
         return True
 

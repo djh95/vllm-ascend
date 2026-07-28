@@ -98,15 +98,15 @@ class AscendConfig:
             raise ValueError(
                 f"additional_config.dfx_config_path must be a string, got {type(self.dfx_config_path).__name__}."
             )
-        raw_reload = additional_config.get("dfx_config_reload_interval", 0)
+        raw_reload = additional_config.get("dfx_config_reload_interval", 5)
         if raw_reload is None:
-            raw_reload = 0
+            raw_reload = 5
         try:
             self.dfx_config_reload_interval = float(raw_reload)
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 "additional_config.dfx_config_reload_interval must be a number of seconds "
-                f"(0 disables hot-reload), got {raw_reload!r}."
+                f"(0 disables hot-reload; default 5), got {raw_reload!r}."
             ) from exc
         if self.dfx_config_reload_interval < 0:
             raise ValueError(

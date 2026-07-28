@@ -74,7 +74,7 @@ The following table lists additional configuration options available in vLLM Asc
 | `dump_config`                       | dict | `None`  | Inline msprobe dump configuration. vLLM-Ascend will materialize it to a temporary JSON file and pass that file to the debugger. |
 | `dump_config_path`                  | str  | `None`  | Configuration file path for msprobe dump (compatible legacy option).                                      |
 | `dfx_config_path` / `dfx-config`    | str  | `None`  | Path to DFX runtime JSON (dump/log/metrics/trace/detector). Default: `<cwd>/dfx/config/dfx_config.json`. Prefer this over `dynamic_dump_config` for multi-node hot reload (rank0 read + world broadcast). |
-| `dfx_config_reload_interval`        | float| `0`     | DFX JSON hot-reload period in seconds. `0` (default) disables periodic refresh (config loaded once at startup). Set e.g. `5` to re-read / broadcast every 5s. **Required `> 0` for `dump.dump_once`.** |
+| `dfx_config_reload_interval`        | float| `5`     | DFX JSON hot-reload period in seconds. Default `5`. Set `0` to disable periodic refresh. Also written into JSON as `reload_interval_seconds` for visibility; the startup value remains authoritative. **Required `> 0` for `dump.dump_once`.** |
 | `dfx_report_dir`                    | str  | `None`  | Directory for short anomaly reports. Default: sibling `dfx/report` next to the config dir. |
 | `dynamic_dump_config`               | dict | `{}`    | **Legacy** flat options for anomaly-triggered dump. Only **explicit** keys overlay DFX JSON (explicit > JSON > defaults); empty `{}` does not clobber JSON. Prefer `dfx_config_path`. |
 | `enable_async_exponential`          | bool | `False` | Whether to enable asynchronous exponential overlap. To enable asynchronous exponential, set this config to True.        |
@@ -177,9 +177,12 @@ If omitted, vLLM-Ascend uses `<cwd>/dfx/config/dfx_config.json` (created with de
 
 **dfx_config_reload_interval**
 
-Hot-reload period in seconds for the DFX JSON. Default `0` means **off** (load once at startup only).
-Set a positive value (e.g. `5`) to refresh on workers every N seconds (`broadcast` or `file` sync).
-This startup setting is authoritative; it is not turned back on by fields inside the JSON.
+Hot-reload period in seconds for the DFX JSON. Default `5`. Set `0` to disable
+periodic refresh (config loaded once at startup only). The same value is persisted
+into the DFX JSON as `reload_interval_seconds` for visibility; changing only the
+JSON field does not override the startup setting.
+This startup setting is authoritative; it is not turned back on by fields inside the JSON
+after the process has started with `0`.
 
 On **API / EngineCore** (processes without `RANK`), the same interval also starts a daemon
 thread that file-polls the JSON and applies DFX `log` level only — it does **not** join the

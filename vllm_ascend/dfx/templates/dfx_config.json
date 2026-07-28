@@ -1,6 +1,6 @@
 {
   "sync_mode": "broadcast",
-  "reload_interval_seconds": 0,
+  "reload_interval_seconds": 5,
   "dump": {
     "enabled": true,
     "max_times": 0,

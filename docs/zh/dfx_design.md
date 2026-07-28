@@ -47,7 +47,7 @@ Worker: runner.dfx = DfxProcessor(runner)
 
 | 参数 | 默认 | 含义 |
 |------|------|------|
-| `dfx_config_reload_interval` | `0` | `0`=关闭周期刷新（仅启动加载一次）；`>0`=每隔 N 秒 `maybe_reload` |
+| `dfx_config_reload_interval` | `5` | 启动项（也可写入 JSON 的 `reload_interval_seconds` 供查看）。`0`=关闭周期刷新；默认 `5`=每隔 5 秒热更。**以启动 `additional_config` 为准**，仅改 JSON 不能重新打开 |
 
 报告目录默认：与 config 同级的 `dfx/report/`（可用 `dfx_report_dir` 覆盖）。  
 模板：`vllm_ascend/dfx/templates/dfx_config.json`。首次启动若文件不存在会按默认内容创建。
@@ -238,14 +238,14 @@ vllm serve <model> --additional-config '{
 }'
 ```
 
-或默认路径（进程 cwd 下自动创建；默认不热更新）：
+或默认路径（进程 cwd 下自动创建；默认热更间隔 5s）：
 
 ```text
 ./dfx/config/dfx_config.json
 ./dfx/report/anomaly_YYYYMMDD.log
 ```
 
-开启 `dfx_config_reload_interval` 后，在线改 `dump.max_times` / detector 阈值约 N 秒内各 worker 生效（broadcast）。
+开启默认（或显式配置）`dfx_config_reload_interval` 后，在线改 `dump.max_times` / detector 阈值约 N 秒内各 worker 生效（broadcast）。
 
 ## 8. 相关文档
 
