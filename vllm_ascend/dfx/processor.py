@@ -128,6 +128,68 @@ class DfxProcessor:
         ):
             self._handle_alert(alert, detector=self.token_logprob_detector)
 
+    def ensure_logprobs_for_detection(self) -> None:
+        """Bump per-request top-k logprobs so TokenLogprobDetector can run.
+
+        Clients need not set ``logprobs`` on the request when
+        ``enable_token_logprob_check`` is on (and dump quota allows detection).
+        Safe no-op when the check is disabled or the batch has no sampling state.
+        """
+        det = self.token_logprob_detector
+        det.refresh_from_config()
+        if not det.enabled:
+            return
+        # Same gate as detectors: avoid paying top-k cost when dump/check is off.
+        if not self.dumper._anomaly_dump_feature_enabled():
+            return
+        topk = det.topk
+        if topk <= 0:
+            return
+        runner = self.runner
+        # v1 InputBatch: dict[str, int] num_logprobs + SamplingMetadata
+        input_batch = getattr(runner, "input_batch", None)
+        num_logprobs = getattr(input_batch, "num_logprobs", None) if input_batch is not None else None
+        if isinstance(num_logprobs, dict):
+            req_ids = getattr(input_batch, "req_ids", None) or []
+            changed = False
+            for req_id in req_ids:
+                cur = num_logprobs.get(req_id)
+                # None / missing: no logprobs. Keep full-vocab requests as-is.
+                if cur is None or (0 <= cur < topk):
+                    num_logprobs[req_id] = topk
+                    changed = True
+            if changed and hasattr(input_batch, "_make_sampling_metadata"):
+                input_batch.sampling_metadata = input_batch._make_sampling_metadata()
+                logger.info_once(
+                    "[Anomaly token_logprob] forcing request top-k logprobs=%d for detection",
+                    topk,
+                )
+            return
+
+        # v2 SamplingStates: num_logprobs[req_state_idx], -1 == none
+        sampler = getattr(runner, "sampler", None)
+        states = getattr(sampler, "sampling_states", None) if sampler is not None else None
+        if states is None or input_batch is None:
+            return
+        idx_mapping_np = getattr(input_batch, "idx_mapping_np", None)
+        num_reqs = int(getattr(input_batch, "num_reqs", 0) or 0)
+        if idx_mapping_np is None or num_reqs <= 0:
+            return
+        arr = states.num_logprobs
+        changed = False
+        for batch_i in range(num_reqs):
+            req_state_idx = int(idx_mapping_np[batch_i])
+            cur = int(arr[req_state_idx])
+            # v2: -1 means no logprobs; positive N means top-N.
+            if cur < 0 or cur < topk:
+                arr[req_state_idx] = topk
+                changed = True
+        if changed:
+            logger.info_once(
+                "[Anomaly token_logprob] forcing request top-k logprobs=%d for detection (v2)",
+                topk,
+            )
+
     def _handle_alert(
         self,
         alert: AnomalyAlert,

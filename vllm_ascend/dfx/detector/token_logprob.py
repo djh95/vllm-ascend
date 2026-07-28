@@ -78,6 +78,10 @@ class TokenLogprobDetector(AnomalyDetector):
             return
         self._apply_values(self._dfx_config.detector)
 
+    @property
+    def topk(self) -> int:
+        return self._topk
+
     def clear_finished(self, req_id: str) -> None:
         self._buf.pop(req_id, None)
         self._since_check.pop(req_id, None)
@@ -93,17 +97,30 @@ class TokenLogprobDetector(AnomalyDetector):
         """Batch entry: return alerts for the model runner to hand to Dumper."""
         if not self._precheck():
             return []
-        if sampled_token_ids is None or logprobs_lists is None:
+        runner = self._runner
+        log_leader = int(getattr(runner, "tp_rank", 0) if runner is not None else 0) == 0
+        if sampled_token_ids is None:
+            if log_leader:
+                logger.info("[Anomaly token_logprob short] skip: sampled_token_ids is None")
+            return []
+        if logprobs_lists is None:
+            if log_leader:
+                logger.info(
+                    "[Anomaly token_logprob short] skip: no logprobs (enable check should force topk=%d before sample)",
+                    self._topk,
+                )
             return []
 
         if req_ids is None:
-            input_batch = getattr(self._runner, "input_batch", None) if self._runner is not None else None
+            input_batch = getattr(runner, "input_batch", None) if runner is not None else None
             req_ids = getattr(input_batch, "req_ids", None) if input_batch is not None else None
         if not req_ids:
             return []
 
         detector = self._get_ill_detector()
         if detector is None:
+            if log_leader:
+                logger.info("[Anomaly token_logprob short] skip: ILLDetector unavailable")
             return []
 
         model_config = self._model_config_for_detector()
@@ -116,6 +133,12 @@ class TokenLogprobDetector(AnomalyDetector):
                 continue
             topk_rows = self._extract_req_topk_logprobs(logprobs_lists, batch_idx, len(token_ids))
             if topk_rows is None:
+                if log_leader:
+                    logger.info(
+                        "[Anomaly token_logprob short] req_id=%s skip: extract topk failed num_tokens=%d",
+                        req_id,
+                        len(token_ids),
+                    )
                 continue
             alert = self.check_one(
                 req_idx=batch_idx,
@@ -124,6 +147,7 @@ class TokenLogprobDetector(AnomalyDetector):
                 topk_logprobs=topk_rows,
                 model_config=model_config,
                 detector=detector,
+                log_leader=log_leader,
             )
             if alert is not None:
                 alerts.append(alert)
@@ -137,6 +161,7 @@ class TokenLogprobDetector(AnomalyDetector):
         topk_logprobs: list[dict[int, float]],
         model_config: Any,
         detector: Any,
+        log_leader: bool = False,
     ) -> AnomalyAlert | None:
         if not token_ids or not topk_logprobs:
             return None
@@ -150,10 +175,24 @@ class TokenLogprobDetector(AnomalyDetector):
             buf.append((int(token_ids[i]), topk_logprobs[i]))
         self._since_check[req_id] += n
 
-        if len(buf) < self._window:
-            return None
+        buf_len = len(buf)
+        since = self._since_check[req_id]
         already_checked = req_id in self._checked
-        if already_checked and self._since_check[req_id] < self._stride:
+        window_ready = buf_len >= self._window
+        due = window_ready and (not already_checked or since >= self._stride)
+
+        if not due:
+            if log_leader:
+                logger.info(
+                    "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=%d stride=%d new=%d alert=False reason=%s",
+                    req_id,
+                    buf_len,
+                    self._window,
+                    since,
+                    self._stride,
+                    n,
+                    "filling" if not window_ready else "stride",
+                )
             return None
 
         self._since_check[req_id] = 0
@@ -178,6 +217,16 @@ class TokenLogprobDetector(AnomalyDetector):
             skip_related_check=True,
         )
         if alert is None:
+            if log_leader:
+                logger.info(
+                    "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=0 stride=%d "
+                    "new=%d alert=False reason=not_ill",
+                    req_id,
+                    buf_len,
+                    self._window,
+                    self._stride,
+                    n,
+                )
             return None
 
         thresh = self._ill_window_thresh.get(alert.ill_type)
@@ -191,7 +240,22 @@ class TokenLogprobDetector(AnomalyDetector):
         hits = self._ill_window_hits[req_id]
         hits[alert.ill_type] += 1
         hit_count = hits[alert.ill_type]
-        if hit_count < thresh:
+        should_alert = hit_count >= thresh
+        if log_leader:
+            logger.info(
+                "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=0 stride=%d "
+                "new=%d ill_type=%d hits=%d/%d alert=%s",
+                req_id,
+                buf_len,
+                self._window,
+                self._stride,
+                n,
+                alert.ill_type,
+                hit_count,
+                thresh,
+                should_alert,
+            )
+        if not should_alert:
             return None
         logger.info(
             "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d window_token_ids=%s",

@@ -93,3 +93,39 @@ def test_save_sample_param_skips_non_tp0():
         pp.return_value.is_last_rank = True
         proc.save_sample_param("r1")
     # No crash; non-TP0 returns before needing sampling_metadata.
+
+
+def test_ensure_logprobs_for_detection_bumps_v1_num_logprobs():
+    proc = DfxProcessor.__new__(DfxProcessor)
+    proc.dumper = MagicMock()
+    proc.dumper._anomaly_dump_feature_enabled.return_value = True
+    det = MagicMock()
+    det.enabled = True
+    det.topk = 20
+    proc.token_logprob_detector = det
+
+    input_batch = MagicMock()
+    input_batch.req_ids = ["r1", "r2"]
+    input_batch.num_logprobs = {"r2": 5}  # r1 missing; r2 too small
+    input_batch._make_sampling_metadata.return_value = "meta"
+    proc.runner = MagicMock(input_batch=input_batch)
+
+    proc.ensure_logprobs_for_detection()
+
+    assert input_batch.num_logprobs["r1"] == 20
+    assert input_batch.num_logprobs["r2"] == 20
+    input_batch._make_sampling_metadata.assert_called_once()
+    assert input_batch.sampling_metadata == "meta"
+
+
+def test_ensure_logprobs_noop_when_disabled():
+    proc = DfxProcessor.__new__(DfxProcessor)
+    proc.dumper = MagicMock()
+    det = MagicMock()
+    det.enabled = False
+    proc.token_logprob_detector = det
+    proc.runner = MagicMock()
+
+    proc.ensure_logprobs_for_detection()
+
+    proc.dumper._anomaly_dump_feature_enabled.assert_not_called()

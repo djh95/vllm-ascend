@@ -728,6 +728,26 @@ class NPUModelRunner(GPUModelRunner):
 
         return max_tokens_across_dp, num_tokens_after_padding, synced_cudagraph_mode
 
+    @staticmethod
+    def _dfx_accepted_token_counts(sampled_token_ids: Any) -> Any:
+        """Count accepted tokens per req from rejection-sampler output (non-hybrid MTP)."""
+        if sampled_token_ids is None:
+            return []
+        if torch.is_tensor(sampled_token_ids):
+            if sampled_token_ids.numel() == 0:
+                return torch.zeros(sampled_token_ids.size(0), dtype=torch.int32)
+            return (sampled_token_ids != PLACEHOLDER_TOKEN_ID).sum(dim=-1).to(dtype=torch.int32).cpu()
+        counts: list[int] = []
+        for row in sampled_token_ids:
+            if row is None:
+                counts.append(0)
+                continue
+            if torch.is_tensor(row):
+                counts.append(int((row != PLACEHOLDER_TOKEN_ID).sum().item()))
+            else:
+                counts.append(sum(1 for t in row if t != PLACEHOLDER_TOKEN_ID))
+        return counts
+
     def get_model(self) -> nn.Module:
         # get raw model out of the aclgraph wrapper.
         if isinstance(self.model, ACLGraphWrapper):
@@ -2657,12 +2677,21 @@ class NPUModelRunner(GPUModelRunner):
             ):
                 global_stream().wait_event(self.sampling_done_event)
                 self._update_states_after_model_execute(sampler_output.sampled_token_ids, scheduler_output)
-            # Wait for D2H of num_accepted_tokens_cpu before spec acceptance anomaly checks.
-            if self.num_accepted_tokens_event is not None:
-                self.num_accepted_tokens_event.synchronize()
+
+        # Spec acceptance DFX: run for any speculative config (MTP/Eagle/…),
+        # not only hybrid MambaSpec (``need_accepted_tokens``).
+        if self.speculative_config is not None:
+            if self.need_accepted_tokens:
+                if self.num_accepted_tokens_event is not None:
+                    self.num_accepted_tokens_event.synchronize()
+                accepted_token_nums = self.input_batch.num_accepted_tokens_cpu
+            else:
+                accepted_token_nums = self._dfx_accepted_token_counts(
+                    sampler_output.sampled_token_ids
+                )
             self.dfx.check_spec_acceptance(
                 sampled_tokens=sampler_output.sampled_token_ids,
-                accepted_token_nums=self.input_batch.num_accepted_tokens_cpu,
+                accepted_token_nums=accepted_token_nums,
             )
 
         if not self.use_async_scheduling:
@@ -2729,6 +2758,9 @@ class NPUModelRunner(GPUModelRunner):
     def _sample(self, logits, spec_decode_metadata):
         # Sample the next token and get logprobs if needed.
         self.input_batch.update_async_output_token_ids()
+        # TokenLogprobDetector needs top-k logprobs even when the client
+        # did not set sampling_params.logprobs.
+        self.dfx.ensure_logprobs_for_detection()
         sampling_metadata = self.input_batch.sampling_metadata
         if spec_decode_metadata is None:
             if lmhead_tp_enable() and logits is not None:

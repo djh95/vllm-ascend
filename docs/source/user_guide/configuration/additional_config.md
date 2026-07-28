@@ -222,7 +222,7 @@ Example:
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `enable_spec_acceptance_check` | bool | `True` | Enable speculative acceptance-rate anomaly detection. |
-| `enable_token_logprob_check` | bool | `False` | Enable token/logprob anomaly detection via msprobe `ILLDetector`. Requires request `logprobs` and `dynamic_dump_max_times > 0`. |
+| `enable_token_logprob_check` | bool | `False` | Enable token/logprob anomaly detection via msprobe `ILLDetector`. When enabled (and dump quota allows), the worker forces at least `token_logprob_topk` logprobs per request before sampling. |
 | `spec_acceptance_window` | int | `10` | Sliding window size used to aggregate speculative acceptance behavior. |
 | `spec_acceptance_low_threshold` | float | `0.3` | Low acceptance-rate threshold for triggering detailed anomaly logging and dump. |
 | `spec_acceptance_len_low_threshold` | float | `1.4` | Low accepted-length threshold paired with `spec_acceptance_low_threshold`. |

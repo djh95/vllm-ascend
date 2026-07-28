@@ -153,6 +153,7 @@ Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在
 - `refresh_from_config()`：从 live `DfxRuntimeConfig.detector` 拉开关/阈值
 - `check_all` / `check_one`：返回 `list[AnomalyAlert]` / `AnomalyAlert | None`（**不**调用 Dumper）
 - `on_alert_armed(alert)`：dump 成功后的可选日志钩子
+- **Spec 检测条件**：runner 上存在 `speculative_config`（MTP/Eagle 等），**不**依赖仅 hybrid/Mamba 才置位的 `need_accepted_tokens`
 
 调用链（``DfxProcessor`` 编排，runner 只挂接）：
 

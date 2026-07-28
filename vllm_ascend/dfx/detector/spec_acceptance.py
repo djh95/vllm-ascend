@@ -89,7 +89,11 @@ class SpecAcceptanceDetector(AnomalyDetector):
         if not self._precheck():
             return []
         runner = self._runner
-        if runner is None or not getattr(runner, "need_accepted_tokens", False):
+        if runner is None:
+            return []
+        # Spec check needs speculative decoding, not only MambaSpec
+        # (``need_accepted_tokens``). Plain MTP / Eagle also produce accept stats.
+        if getattr(runner, "speculative_config", None) is None:
             return []
         input_batch = getattr(runner, "input_batch", None)
         if input_batch is None or not getattr(input_batch, "req_ids", None):
@@ -148,10 +152,14 @@ class SpecAcceptanceDetector(AnomalyDetector):
         runner = self._runner
         log_leader = int(getattr(runner, "tp_rank", 0) if runner is not None else 0) == 0
         draft_len = getattr(req_state, "prev_num_draft_len", 0) or 0
+        sampled_norm = self._normalize_token_ids(sampled_ids)
+        if draft_len <= 0:
+            # Fallback when prev_num_draft_len was not populated (common on
+            # non-hybrid MTP): treat last dim of sampled row as draft+bonus.
+            draft_len = max(0, len(sampled_norm) - 1)
         if draft_len <= 0:
             return None
         accepted_draft_tokens = max(0, accepted_token_num - 1)
-        sampled_norm = self._normalize_token_ids(sampled_ids)
         accepted_norm = sampled_norm[:accepted_token_num] if accepted_token_num > 0 else []
         history = self._history[req_id]
         history.append((accepted_draft_tokens, draft_len, sampled_norm, accepted_norm))
@@ -172,12 +180,21 @@ class SpecAcceptanceDetector(AnomalyDetector):
         acceptance_rate = accepted_sum / draft_sum if draft_sum > 0 else 0.0
         acceptance_len = accepted_sum / len(history) if history else 0.0
 
+        window_ready = len(history) >= self._window
+        should_alert = False
+        if window_ready:
+            should_alert = bool(
+                (acceptance_rate < self._low_threshold and acceptance_len < self._len_low_threshold)
+                or (acceptance_rate > self._high_threshold and acceptance_len > self._len_high_threshold)
+            )
+
         if log_leader:
-            logger.debug(
+            logger.info(
                 "[Anomaly spec short] req_id=%s draft_len=%d "
                 "accepted_count=%d accepted_draft_count=%d "
-                "accept_rate=%.4f accept_len=%.4f window=%d accepted=%d drafted=%d "
-                "prompt_tokens=%d output_tokens=%d",
+                "accept_rate=%.4f accept_len=%.4f window=%d/%d accepted=%d drafted=%d "
+                "prompt_tokens=%d output_tokens=%d "
+                "low=(%.2f,%.2f) high=(%.2f,%.2f) alert=%s",
                 req_id,
                 draft_len,
                 accepted_token_num,
@@ -185,20 +202,19 @@ class SpecAcceptanceDetector(AnomalyDetector):
                 acceptance_rate,
                 acceptance_len,
                 len(history),
+                self._window,
                 accepted_sum,
                 draft_sum,
                 prompt_token_count,
                 output_token_count,
+                self._low_threshold,
+                self._len_low_threshold,
+                self._high_threshold,
+                self._len_high_threshold,
+                should_alert,
             )
 
-        if len(history) < self._window:
-            return None
-
-        should_alert = bool(
-            (acceptance_rate < self._low_threshold and acceptance_len < self._len_low_threshold)
-            or (acceptance_rate > self._high_threshold and acceptance_len > self._len_high_threshold)
-        )
-        if not should_alert:
+        if not window_ready or not should_alert:
             return None
 
         window_sampled_token_ids = [step_sampled for _, _, step_sampled, _ in history]

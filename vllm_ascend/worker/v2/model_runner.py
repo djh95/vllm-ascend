@@ -243,6 +243,9 @@ class NPUModelRunner(GPUModelRunner):
         if self.execute_model_state is not None:
             finished_req_ids = self.execute_model_state.finished_req_ids
 
+        # TokenLogprobDetector needs top-k logprobs even when the client
+        # did not set sampling_params.logprobs.
+        self.dfx.ensure_logprobs_for_detection()
         output = super().sample_tokens(grammar_output)
         self.dfx.clear_finished(finished_req_ids)
 
