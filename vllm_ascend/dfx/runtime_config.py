@@ -400,32 +400,18 @@ class DfxRuntimeConfig:
                 self._version = 0.0
         else:
             self._data = merged
-            if overwrite_default and self.config_path.exists():
-                # Deferred persist: drop stale default JSON so API/EngineCore
-                # background reload cannot re-apply old disk content before the
-                # worker leader writes defaults←startup.
-                try:
-                    self.config_path.unlink()
-                    logger.info(
-                        "[DFX runtime_config] removed stale default json path=%s "
-                        "(overwrite+deferred persist; awaiting worker leader)",
-                        self.config_path,
-                    )
-                except OSError as exc:
-                    logger.warning(
-                        "[DFX runtime_config] failed to remove stale default json path=%s error=%s",
-                        self.config_path,
-                        exc,
-                    )
-                self._mtime = None
-                self._version = 0.0
-            elif self.config_path.exists():
+            # Do NOT delete the default-path JSON here. Non-leader workers used to
+            # unlink "stale" files while awaiting leader persist, which raced and
+            # removed the file the leader had just written — service ends with no
+            # dfx_config.json. Leader ``ensure_persisted`` overwrites defaults.
+            if self.config_path.exists():
                 try:
                     self._mtime = self.config_path.stat().st_mtime
                     self._version = float(self._mtime)
                 except OSError:
                     self._version = 0.0
             else:
+                self._mtime = None
                 self._version = 0.0
             if persist and not _is_json_writer():
                 logger.info(

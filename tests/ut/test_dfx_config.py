@@ -376,8 +376,8 @@ def test_save_prefers_disk_over_stale_memory(tmp_path: Path, monkeypatch):
     assert cfg.dump_max_times() == 5
 
 
-def test_overwrite_deferred_removes_stale_default_json(tmp_path: Path, monkeypatch):
-    """API-style bootstrap must not leave stale default JSON for the reloader."""
+def test_overwrite_deferred_keeps_file_until_leader_persists(tmp_path: Path, monkeypatch):
+    """API/non-persist bootstrap must not delete default JSON (race with leader)."""
     monkeypatch.delenv("RANK", raising=False)
     root = tmp_path / "cwd"
     root.mkdir()
@@ -394,13 +394,37 @@ def test_overwrite_deferred_removes_stale_default_json(tmp_path: Path, monkeypat
         sync_mode="file",
         reload_interval_seconds=5,
     )
+    # In-memory overwrite; disk kept until leader ensure_persisted.
     assert cfg.dump_max_times() == 2
-    assert not cfg_path.exists()
-    # Worker leader later materializes.
+    assert cfg_path.exists()
+    assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["max_times"] == 9
     monkeypatch.setenv("RANK", "0")
     assert cfg.ensure_persisted() is True
     assert cfg_path.exists()
     assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["max_times"] == 2
+
+
+def test_non_leader_bootstrap_does_not_delete_leader_json(tmp_path: Path, monkeypatch):
+    """RANK!=0 must not unlink the default-path file the leader just wrote."""
+    root = tmp_path / "cwd"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    cfg_path = root / "dfx" / "config" / "dfx_config.json"
+    cfg_path.parent.mkdir(parents=True)
+    # Leader already materialized defaults.
+    cfg_path.write_text(json.dumps({"dump": {"max_times": 0}, "log": {"level": "INFO"}}), encoding="utf-8")
+
+    monkeypatch.setenv("RANK", "1")
+    cfg = DfxRuntimeConfig(
+        None,
+        report_dir=tmp_path / "report",
+        ensure_file=False,
+        sync_mode="file",
+        reload_interval_seconds=5,
+    )
+    assert cfg.ensure_persisted() is False
+    assert cfg_path.exists()
+    assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["max_times"] == 0
 
 
 def test_ensure_persisted_skip_non_leader(tmp_path: Path, monkeypatch):
