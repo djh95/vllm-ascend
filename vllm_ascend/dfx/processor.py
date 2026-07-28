@@ -80,7 +80,7 @@ class DfxProcessor:
 
     def refresh_config(self) -> bool:
         """All-rank DFX config sync. Must not be skipped on early PP."""
-        logger.info("[DFX sync] enter stage=refresh_config")
+        logger.debug("[DFX sync] enter stage=refresh_config")
         changed = self.dfx_config.sync_dfx_config()
         if changed:
             self.dumper.apply_dfx_config()
@@ -96,14 +96,14 @@ class DfxProcessor:
         self.spec_detector.refresh_from_config()
         self.token_logprob_detector.refresh_from_config()
         self.manual_dump_detector.refresh_from_config()
-        logger.info("[DFX sync] leave stage=refresh_config changed=%s", changed)
+        logger.debug("[DFX sync] leave stage=refresh_config changed=%s", changed)
         return changed
 
     def sync_dump_pending_or(self, *, allow_arm: bool = True) -> bool:
         """Last-PP TP dump OR only (see ``Dumper.sync_dump_pending_or``)."""
-        logger.info("[DFX sync] enter stage=sync_dump_pending_or allow_arm=%s", allow_arm)
+        logger.debug("[DFX sync] enter stage=sync_dump_pending_or allow_arm=%s", allow_arm)
         ok = self.dumper.sync_dump_pending_or(allow_arm=allow_arm)
-        logger.info("[DFX sync] leave stage=sync_dump_pending_or ok=%s", ok)
+        logger.debug("[DFX sync] leave stage=sync_dump_pending_or ok=%s", ok)
         return ok
 
     # ---- sample / get_output hooks ----------------------------------------

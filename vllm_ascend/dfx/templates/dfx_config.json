@@ -7,8 +7,7 @@
     "cooldown_seconds": 300,
     "dump_once": false
   },
-  "log": {
-    "enabled": true,
+  "ascend_log": {
     "level": "INFO"
   },
   "metrics": {

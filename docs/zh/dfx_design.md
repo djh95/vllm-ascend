@@ -9,7 +9,7 @@
 |------|------|------|
 | 1. Runtime Config | `runtime_config.py`（`DfxRuntimeConfig`） | 一份 JSON；可选热更新（启动项控制周期） |
 | 2. Detector | `detector/` | 异常检测，只产出 `AnomalyAlert` |
-| 3. Dump / 观测开关 | `dumper.py`（`Dumper`） | msprobe dump 生命周期；log / metrics / trace 开关 |
+| 3. Dump / 观测开关 | `dumper.py`（`Dumper`） | msprobe dump 生命周期；`ascend_log` / metrics / trace 开关 |
 | 4. Report | `report.py`（`DfxReportWriter`） | 异常短日志落盘到 `dfx/report/` |
 
 兼容入口：`from vllm_ascend.dfx import Dumper`；旧路径 `vllm_ascend/dumper.py` 仅为 re-export。
@@ -70,7 +70,7 @@ Worker: runner.dfx = DfxProcessor(runner)
 
 Detector / dump / report **只跑在 worker**。
 
-`log` 开关：当 `dfx_config_reload_interval > 0` 且进程 **未**设置 `RANK` 时，`AscendConfig` 会启动守护线程 `dfx-non-worker-reload`，按间隔 **本地 file 轮询** JSON 并 `apply_log_switches`（**不**进 worker world broadcast，**不**落盘）。
+`ascend_log` 级别：当 `dfx_config_reload_interval > 0` 且进程 **未**设置 `RANK` 时，`AscendConfig` 会启动守护线程 `dfx-non-worker-reload`，按间隔 **本地 file 轮询** JSON 并 `apply_ascend_log_level`（**不**进 worker world broadcast，**不**落盘）。Worker 在 `refresh_config` / `apply_dfx_config` 时同样应用。
 
 Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在 worker 上再起并行热更线程。
 
@@ -92,7 +92,7 @@ Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在
     "cooldown_seconds": 300,
     "dump_once": false
   },
-  "log": { "enabled": true, "level": "INFO" },
+  "ascend_log": { "level": "INFO" },
   "metrics": { "enabled": true, "level": "INFO" },
   "trace": { "enabled": false, "level": "INFO", "otlp_endpoint": null },
   "detector": {
@@ -117,7 +117,8 @@ Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在
 | 段 | 含义 |
 |----|------|
 | `dump` | `enabled` / `max_times` / `cooldown_seconds`；`dump_once`：手动改 JSON 为 `true` 后下一次热更触发一次 dump（不计次数、忽略冷却，触发后自动写回 `false`）。**必须** `dfx_config_reload_interval > 0`，否则改 JSON 不会被读到 |
-| `log` / `metrics` / `trace` | 观测开关与级别（log level 会落到 DFX 相关 logger） |
+| `ascend_log` | `level`：控制 `vllm_ascend`（含 `dfx/`）logger 级别；设为 `DEBUG` 可打出 dfx 下 debug 日志。无 `enabled` |
+| `metrics` / `trace` | 观测开关与级别（仍待引擎接线） |
 | `detector` | 各检测器开关与阈值 |
 
 ### 2.4 与 `dynamic_dump_config` 的关系
@@ -219,7 +220,7 @@ Dumper **不**调用 config reload，也 **不**写 report（report 在 processo
 ### 6.1 非 worker（API / EngineCore）
 
 Detector / dump / report **只跑在 worker**。  
-`log` 级别：热更开启且无 `RANK` 时由后台 file 轮询线程跟随 JSON（见 §2.2.1）。`metrics` / `trace` 仍待接线。
+`ascend_log.level`：热更开启且无 `RANK` 时由后台 file 轮询线程跟随 JSON（见 §2.2.1）；worker 在 config sync 后 `apply_ascend_log_level`。`metrics` / `trace` 仍待接线。
 
 ### 6.2 外部多 engine DP
 

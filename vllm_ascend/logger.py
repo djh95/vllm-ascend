@@ -172,17 +172,6 @@ def _setup_file_logging(log_dir: str | None = None) -> None:
     _file_handler = file_handler
     _file_logging_configured = True
 
-    for name in (
-        "vllm.vllm_ascend.dfx.dumper",
-        "vllm.vllm_ascend.dfx.detector.spec_acceptance",
-        "vllm.vllm_ascend.dfx.detector.token_logprob",
-        "vllm.vllm_ascend.dfx.detector.manual_dump",
-        "vllm.vllm_ascend.dfx.runtime_config",
-        "vllm.vllm_ascend.dfx.report",
-        "vllm.vllm_ascend.dfx.processor",
-    ):
-        logging.getLogger(name).setLevel(logging.DEBUG)
-
 
 def configure_ascend_file_logging() -> None:
     global _file_logging_configured, _file_handler
@@ -237,13 +226,5 @@ def configure_ascend_logging() -> None:
     ascend_logger.setLevel(envs.VLLM_LOGGING_LEVEL)
     ascend_logger.propagate = False
 
-    for name in (
-        "vllm.vllm_ascend.dfx.dumper",
-        "vllm.vllm_ascend.dfx.detector.spec_acceptance",
-        "vllm.vllm_ascend.dfx.detector.token_logprob",
-        "vllm.vllm_ascend.dfx.detector.manual_dump",
-        "vllm.vllm_ascend.dfx.runtime_config",
-        "vllm.vllm_ascend.dfx.report",
-        "vllm.vllm_ascend.dfx.processor",
-    ):
-        logging.getLogger(name).setLevel(logging.DEBUG)
+    # DFX / package logger levels are owned by DFX ``ascend_log.level``
+    # (``DfxRuntimeConfig.apply_ascend_log_level``); do not force DEBUG here.

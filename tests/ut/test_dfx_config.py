@@ -9,8 +9,8 @@ from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig, _leaf_changes
 
 
 def test_leaf_changes_reports_only_diffs():
-    old = {"dump": {"max_times": 0, "enabled": True}, "log": {"level": "INFO"}}
-    new = {"dump": {"max_times": 3, "enabled": True}, "log": {"level": "INFO"}}
+    old = {"dump": {"max_times": 0, "enabled": True}, "ascend_log": {"level": "INFO"}}
+    new = {"dump": {"max_times": 3, "enabled": True}, "ascend_log": {"level": "INFO"}}
     assert _leaf_changes(old, new) == ["dump.max_times: 0 -> 3"]
 
 
@@ -28,12 +28,12 @@ def test_dfx_config_hot_reload_and_defaults(tmp_path: Path):
     assert cfg_path.exists()
     assert cfg.hot_reload_enabled is True
     assert cfg.dump_max_times() == 0
-    assert cfg.log_level() == "INFO"
+    assert cfg.ascend_log_level() == "INFO"
     assert cfg.detector_get("enable_spec_acceptance_check") is True
 
     payload = json.loads(cfg_path.read_text(encoding="utf-8"))
     payload["dump"]["max_times"] = 3
-    payload["log"]["level"] = "DEBUG"
+    payload["ascend_log"]["level"] = "DEBUG"
     payload["detector"]["enable_token_logprob_check"] = True
     cfg_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -41,7 +41,7 @@ def test_dfx_config_hot_reload_and_defaults(tmp_path: Path):
     cfg._last_reload_ts = 0.0
     assert cfg.maybe_reload() is True
     assert cfg.dump_max_times() == 3
-    assert cfg.log_level() == "DEBUG"
+    assert cfg.ascend_log_level() == "DEBUG"
     assert cfg.detector_get("enable_token_logprob_check") is True
 
 
@@ -241,7 +241,7 @@ def test_no_explicit_path_without_overlay_resets_to_defaults(tmp_path: Path, mon
     cfg_path = root / "dfx" / "config" / "dfx_config.json"
     cfg_path.parent.mkdir(parents=True)
     cfg_path.write_text(
-        json.dumps({"dump": {"max_times": 9}, "log": {"level": "DEBUG"}}),
+        json.dumps({"dump": {"max_times": 9}, "ascend_log": {"level": "DEBUG"}}),
         encoding="utf-8",
     )
     cfg = DfxRuntimeConfig(
@@ -252,10 +252,10 @@ def test_no_explicit_path_without_overlay_resets_to_defaults(tmp_path: Path, mon
         reload_interval_seconds=5,
     )
     assert cfg.dump_max_times() == 0
-    assert cfg.log_level() == "INFO"
+    assert cfg.ascend_log_level() == "INFO"
     saved = json.loads(cfg_path.read_text(encoding="utf-8"))
     assert saved["dump"]["max_times"] == 0
-    assert saved["log"]["level"] == "INFO"
+    assert saved["ascend_log"]["level"] == "INFO"
 
 
 def test_bootstrap_and_save_skip_persist_on_non_leader(tmp_path: Path, monkeypatch):
@@ -264,7 +264,7 @@ def test_bootstrap_and_save_skip_persist_on_non_leader(tmp_path: Path, monkeypat
     cfg_path = tmp_path / "dfx_config.json"
     prior = {
         "dump": {"enabled": True, "max_times": 9, "cooldown_seconds": 10, "dump_once": False},
-        "log": {"enabled": True, "level": "INFO"},
+        "ascend_log": {"level": "INFO"},
         "metrics": {"enabled": True, "level": "INFO"},
         "trace": {"enabled": False, "level": "INFO", "otlp_endpoint": None},
         "detector": {"spec_acceptance_window": 33},
@@ -334,7 +334,7 @@ def test_ensure_persisted_skips_rewrite_when_file_exists(tmp_path: Path, monkeyp
     monkeypatch.setenv("RANK", "0")
     cfg_path = tmp_path / "dfx_config.json"
     cfg_path.write_text(
-        json.dumps({"dump": {"max_times": 7}, "log": {"level": "WARNING"}}),
+        json.dumps({"dump": {"max_times": 7}, "ascend_log": {"level": "WARNING"}}),
         encoding="utf-8",
     )
     mtime_before = cfg_path.stat().st_mtime
@@ -384,7 +384,7 @@ def test_overwrite_deferred_keeps_file_until_leader_persists(tmp_path: Path, mon
     monkeypatch.chdir(root)
     cfg_path = root / "dfx" / "config" / "dfx_config.json"
     cfg_path.parent.mkdir(parents=True)
-    cfg_path.write_text(json.dumps({"dump": {"max_times": 9}, "log": {"level": "DEBUG"}}), encoding="utf-8")
+    cfg_path.write_text(json.dumps({"dump": {"max_times": 9}, "ascend_log": {"level": "DEBUG"}}), encoding="utf-8")
 
     cfg = DfxRuntimeConfig(
         None,
@@ -412,7 +412,7 @@ def test_non_leader_bootstrap_does_not_delete_leader_json(tmp_path: Path, monkey
     cfg_path = root / "dfx" / "config" / "dfx_config.json"
     cfg_path.parent.mkdir(parents=True)
     # Leader already materialized defaults.
-    cfg_path.write_text(json.dumps({"dump": {"max_times": 0}, "log": {"level": "INFO"}}), encoding="utf-8")
+    cfg_path.write_text(json.dumps({"dump": {"max_times": 0}, "ascend_log": {"level": "INFO"}}), encoding="utf-8")
 
     monkeypatch.setenv("RANK", "1")
     cfg = DfxRuntimeConfig(
@@ -483,10 +483,10 @@ def test_reload_noop_when_file_missing(tmp_path: Path):
     assert cfg.dump_max_times() == 0
 
 
-def test_apply_log_switches_sets_dfx_logger_level(tmp_path: Path):
+def test_apply_ascend_log_level_sets_vllm_ascend_loggers(tmp_path: Path):
     import logging
 
-    from vllm_ascend.dfx.runtime_config import DFX_LOGGER_NAMES
+    from vllm_ascend.dfx.runtime_config import ASCEND_DFX_LOGGER_NAMES
 
     cfg = DfxRuntimeConfig(
         tmp_path / "dfx_config.json",
@@ -495,10 +495,29 @@ def test_apply_log_switches_sets_dfx_logger_level(tmp_path: Path):
         sync_mode="file",
         reload_interval_seconds=0,
     )
-    assert cfg.save({"log": {"enabled": True, "level": "WARNING"}})
-    cfg.apply_log_switches()
-    for name in DFX_LOGGER_NAMES:
+    assert cfg.save({"ascend_log": {"level": "WARNING"}})
+    cfg.apply_ascend_log_level()
+    assert logging.getLogger("vllm_ascend").level == logging.WARNING
+    for name in ASCEND_DFX_LOGGER_NAMES:
         assert logging.getLogger(name).level == logging.WARNING
+
+
+def test_legacy_log_section_migrates_to_ascend_log(tmp_path: Path):
+    cfg_path = tmp_path / "dfx_config.json"
+    cfg_path.write_text(
+        json.dumps({"dump": {"max_times": 1}, "log": {"enabled": True, "level": "DEBUG"}}),
+        encoding="utf-8",
+    )
+    cfg = DfxRuntimeConfig(
+        cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=False,
+        sync_mode="file",
+        reload_interval_seconds=0,
+    )
+    assert cfg.ascend_log_level() == "DEBUG"
+    assert "log" not in cfg._data
+    assert "enabled" not in cfg.ascend_log
 
 
 def test_broadcast_sync_applies_leader_payload_to_follower(tmp_path: Path):

@@ -106,14 +106,13 @@ class Dumper:
 
         logger.info_once(
             "DFX ready config=%s report_dir=%s dump.enabled=%s dump.max_times=%d "
-            "log=%s/%s metrics=%s/%s trace=%s/%s "
+            "ascend_log.level=%s metrics=%s/%s trace=%s/%s "
             "spec_check=%s token_logprob_check=%s",
             str(self.dfx_config.config_path),
             str(self.dfx_config.report_dir),
             self.dfx_config.dump_enabled(),
             self._dynamic_dump_max_times,
-            self.dfx_config.log_enabled(),
-            self.dfx_config.log_level(),
+            self.dfx_config.ascend_log_level(),
             self.dfx_config.metrics_enabled(),
             self.dfx_config.metrics_level(),
             self.dfx_config.trace_enabled(),
@@ -130,8 +129,8 @@ class Dumper:
         self._dynamic_dump_max_times = self.dfx_config.dump_max_times()
 
     def _apply_observability_switches(self) -> None:
-        """Apply log switches from live config (metrics/trace still wiring TBD)."""
-        self.dfx_config.apply_log_switches()
+        """Apply ascend_log level from live config (metrics/trace still wiring TBD)."""
+        self.dfx_config.apply_ascend_log_level()
         # metrics / trace: switches are exposed for engine wiring; dump path
         # respects dump.enabled via _anomaly_dump_feature_enabled.
 
@@ -593,7 +592,7 @@ class Dumper:
         # anomaly detectors are off). A peer with dump_once pending must not
         # hang alone in all_reduce.
         local = 1 if self._pending_dump else 0
-        logger.info(
+        logger.debug(
             "[DFX sync] enter stage=dump_pending_or local=%d allow_arm=%s tp_world=%s %s",
             local,
             allow_arm,
@@ -606,7 +605,7 @@ class Dumper:
         if tp_group.world_size > 1:
             torch.distributed.all_reduce(pending_t, group=tp_group.cpu_group)
         pending_sum = int(pending_t.item())
-        logger.info(
+        logger.debug(
             "[DFX sync] leave stage=dump_pending_or sum=%d %s",
             pending_sum,
             tag,
@@ -619,7 +618,7 @@ class Dumper:
 
         req_id = self._pending_dump_req_id
         consume_quota = not self._pending_dump_skip_quota
-        logger.info(
+        logger.debug(
             "[DFX sync] enter stage=dump_activate req_id=%s consume_quota=%s %s",
             req_id,
             consume_quota,
@@ -628,10 +627,10 @@ class Dumper:
         if not self._activate_msprobe_dump(req_id, consume_quota=consume_quota):
             if self._pending_dump:
                 logger.error("[Anomaly msprobe] dump activate failed after OR; keep pending")
-            logger.info("[DFX sync] leave stage=dump_activate ok=False %s", tag)
+            logger.debug("[DFX sync] leave stage=dump_activate ok=False %s", tag)
             return False
         self._clear_pending_dump()
-        logger.info("[DFX sync] leave stage=dump_activate ok=True %s", tag)
+        logger.debug("[DFX sync] leave stage=dump_activate ok=True %s", tag)
         return True
 
     def enable_msprobe_dump_if_needed(

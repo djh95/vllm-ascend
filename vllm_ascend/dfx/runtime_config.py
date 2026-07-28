@@ -53,8 +53,16 @@ DEFAULT_CONFIG_FILENAME = "dfx_config.json"
 SYNC_BROADCAST = "broadcast"
 SYNC_FILE = "file"
 
-# Logger names updated by ``apply_log_switches`` / ascend logging setup.
-DFX_LOGGER_NAMES: tuple[str, ...] = (
+# Logger names updated by ``apply_ascend_log_level``.
+# ``init_logger_ascend(__name__)`` uses ``vllm_ascend.*``; older lists used ``vllm.vllm_ascend.*``.
+ASCEND_DFX_LOGGER_NAMES: tuple[str, ...] = (
+    "vllm_ascend.dfx.dumper",
+    "vllm_ascend.dfx.detector.spec_acceptance",
+    "vllm_ascend.dfx.detector.token_logprob",
+    "vllm_ascend.dfx.detector.manual_dump",
+    "vllm_ascend.dfx.runtime_config",
+    "vllm_ascend.dfx.report",
+    "vllm_ascend.dfx.processor",
     "vllm.vllm_ascend.dfx.dumper",
     "vllm.vllm_ascend.dfx.detector.spec_acceptance",
     "vllm.vllm_ascend.dfx.detector.token_logprob",
@@ -63,6 +71,8 @@ DFX_LOGGER_NAMES: tuple[str, ...] = (
     "vllm.vllm_ascend.dfx.report",
     "vllm.vllm_ascend.dfx.processor",
 )
+# Backward-compatible alias.
+DFX_LOGGER_NAMES = ASCEND_DFX_LOGGER_NAMES
 
 
 def default_dfx_root() -> Path:
@@ -93,8 +103,7 @@ _DEFAULTS: dict[str, Any] = {
         # Requires additional_config.dfx_config_reload_interval > 0. Does not consume max_times / cooldown.
         "dump_once": False,
     },
-    "log": {
-        "enabled": True,
+    "ascend_log": {
         "level": "INFO",
     },
     "metrics": {
@@ -197,6 +206,24 @@ def _legacy_dynamic_dump_to_sections(legacy: dict[str, Any] | None) -> dict[str,
         out["dump"] = dump
     if detector:
         out["detector"] = detector
+    return out
+
+
+def _normalize_config_sections(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate legacy ``log`` → ``ascend_log`` (level only; drop enabled)."""
+    out = dict(data)
+    legacy_log = out.pop("log", None)
+    ascend = out.get("ascend_log")
+    if not isinstance(ascend, dict):
+        ascend = {}
+    else:
+        ascend = dict(ascend)
+    if isinstance(legacy_log, dict) and "level" not in ascend and "level" in legacy_log:
+        ascend["level"] = legacy_log["level"]
+    ascend.pop("enabled", None)
+    if "level" not in ascend:
+        ascend["level"] = "INFO"
+    out["ascend_log"] = ascend
     return out
 
 
@@ -350,7 +377,7 @@ class DfxRuntimeConfig:
         # Persist startup hot-reload interval for visibility (runtime gate is still
         # ``self._reload_interval`` only).
         merged["reload_interval_seconds"] = self._reload_interval
-        return merged
+        return _normalize_config_sections(merged)
 
     def _write_data_unlocked(self, data: dict[str, Any]) -> None:
         """Atomic write; caller must hold config lock / own the path."""
@@ -507,8 +534,13 @@ class DfxRuntimeConfig:
         return self._data["dump"]
 
     @property
+    def ascend_log(self) -> dict[str, Any]:
+        return self._data["ascend_log"]
+
+    @property
     def log(self) -> dict[str, Any]:
-        return self._data["log"]
+        """Deprecated alias for :attr:`ascend_log`."""
+        return self.ascend_log
 
     @property
     def metrics(self) -> dict[str, Any]:
@@ -561,11 +593,12 @@ class DfxRuntimeConfig:
                 )
         return True
 
-    def log_enabled(self) -> bool:
-        return bool(self.log.get("enabled", True))
+    def ascend_log_level(self) -> str:
+        return str(self.ascend_log.get("level", "INFO")).upper()
 
     def log_level(self) -> str:
-        return str(self.log.get("level", "INFO")).upper()
+        """Deprecated alias for :meth:`ascend_log_level`."""
+        return self.ascend_log_level()
 
     def metrics_enabled(self) -> bool:
         return bool(self.metrics.get("enabled", True))
@@ -586,15 +619,28 @@ class DfxRuntimeConfig:
     def detector_get(self, key: str, default: Any = None) -> Any:
         return self.detector.get(key, default)
 
-    def apply_log_switches(self) -> None:
-        """Apply ``log.enabled`` / ``log.level`` to DFX loggers (this process only)."""
+    def apply_ascend_log_level(self) -> None:
+        """Apply ``ascend_log.level`` to ``vllm_ascend`` (and DFX) loggers.
+
+        Setting ``DEBUG`` makes ``logger.debug`` under ``vllm_ascend.dfx.*`` visible.
+        """
         import logging
 
-        if not self.log_enabled():
-            return
-        level = getattr(logging, self.log_level(), logging.INFO)
-        for name in DFX_LOGGER_NAMES:
+        level = getattr(logging, self.ascend_log_level(), logging.INFO)
+        for name in ("vllm_ascend", "vllm.vllm_ascend"):
             logging.getLogger(name).setLevel(level)
+        for name in ASCEND_DFX_LOGGER_NAMES:
+            logging.getLogger(name).setLevel(level)
+        # Any already-created child loggers under the package.
+        for name in list(logging.Logger.manager.loggerDict):
+            if not isinstance(name, str):
+                continue
+            if name.startswith("vllm_ascend.") or name.startswith("vllm.vllm_ascend."):
+                logging.getLogger(name).setLevel(level)
+
+    def apply_log_switches(self) -> None:
+        """Deprecated alias for :meth:`apply_ascend_log_level`."""
+        self.apply_ascend_log_level()
 
     def start_non_worker_background_reload(self) -> bool:
         """Daemon thread: file-poll JSON and apply log switches (API / EngineCore).
@@ -638,7 +684,7 @@ class DfxRuntimeConfig:
                     # process is outside the worker world group.
                     # Content diffs are logged inside ``_apply_loaded``.
                     if self._maybe_reload_local():
-                        self.apply_log_switches()
+                        self.apply_ascend_log_level()
                 except Exception as exc:
                     logger.warning(
                         "[DFX runtime_config] non-worker reload error path=%s error=%s",
@@ -678,12 +724,12 @@ class DfxRuntimeConfig:
         world = _world_group_or_none()
         if self.sync_mode == SYNC_BROADCAST and world is not None and world.world_size > 1:
             return self._maybe_reload_broadcast(world)
-        logger.info(
+        logger.debug(
             "[DFX sync] enter stage=config_local_reload %s",
             _process_role_tag(),
         )
         changed = self._maybe_reload_local()
-        logger.info(
+        logger.debug(
             "[DFX sync] leave stage=config_local_reload changed=%s %s",
             changed,
             _process_role_tag(),
@@ -704,7 +750,7 @@ class DfxRuntimeConfig:
         interval = self.reload_interval_seconds
         due_local = 1.0 if ((not self._initial_broadcast_done) or (now - self._last_reload_ts >= interval)) else 0.0
         role = _process_role_tag()
-        logger.info(
+        logger.debug(
             "[DFX sync] enter stage=config_all_reduce due_local=%.0f initial_done=%s %s",
             due_local,
             self._initial_broadcast_done,
@@ -717,7 +763,7 @@ class DfxRuntimeConfig:
             group=world.cpu_group,
         )
         due = float(due_t.item())
-        logger.info("[DFX sync] leave stage=config_all_reduce due=%.0f %s", due, role)
+        logger.debug("[DFX sync] leave stage=config_all_reduce due=%.0f %s", due, role)
         if due < 0.5:
             return False
 
@@ -725,10 +771,10 @@ class DfxRuntimeConfig:
         changed = False
         payload: dict[str, Any] | None = None
         if world.is_first_rank:
-            logger.info("[DFX sync] enter stage=config_reload_file %s", role)
+            logger.debug("[DFX sync] enter stage=config_reload_file %s", role)
             # Always re-stat; reload() no-ops when mtime unchanged.
             changed = self.reload(force=False)
-            logger.info(
+            logger.debug(
                 "[DFX sync] leave stage=config_reload_file changed=%s version=%.6f %s",
                 changed,
                 float(self._version),
@@ -738,9 +784,9 @@ class DfxRuntimeConfig:
                 "version": float(self._version),
                 "data": deepcopy(self._data),
             }
-        logger.info("[DFX sync] enter stage=config_broadcast %s", role)
+        logger.debug("[DFX sync] enter stage=config_broadcast %s", role)
         payload = world.broadcast_object(payload, src=0)
-        logger.info("[DFX sync] leave stage=config_broadcast %s", role)
+        logger.debug("[DFX sync] leave stage=config_broadcast %s", role)
         first_sync = not self._initial_broadcast_done
         self._initial_broadcast_done = True
         if payload is None or not isinstance(payload, dict):
@@ -785,7 +831,7 @@ class DfxRuntimeConfig:
                 logger.error("[DFX runtime_config] root must be object, got %s", type(loaded).__name__)
                 return False
             merged = _deep_merge(_DEFAULTS, loaded)
-            return self._apply_loaded(merged, version=mtime)
+            return self._apply_loaded(_normalize_config_sections(merged), version=mtime)
         except Exception as exc:
             logger.error("[DFX runtime_config] reload failed path=%s error=%s", self.config_path, exc)
             return False
@@ -797,6 +843,7 @@ class DfxRuntimeConfig:
         version: float,
         announce: bool = True,
     ) -> bool:
+        merged = _normalize_config_sections(merged)
         self._validate(merged)
         changes = _leaf_changes(self._data, merged)
         self._data = merged
@@ -840,6 +887,7 @@ class DfxRuntimeConfig:
                 data = _deep_merge(deepcopy(self._data), on_disk) if on_disk else deepcopy(self._data)
                 if updates:
                     data = _deep_merge(data, updates)
+                data = _normalize_config_sections(data)
                 self._validate(data)
                 self._write_data_unlocked(data)
                 self._data = data
@@ -871,7 +919,7 @@ class DfxRuntimeConfig:
 
     @staticmethod
     def _validate(data: dict[str, Any]) -> None:
-        for section in ("dump", "log", "metrics", "trace", "detector"):
+        for section in ("dump", "ascend_log", "metrics", "trace", "detector"):
             if section not in data or not isinstance(data[section], dict):
                 raise ValueError(f"dfx config missing object section '{section}'")
         interval = data.get("reload_interval_seconds", 0)
@@ -880,14 +928,14 @@ class DfxRuntimeConfig:
         sync_mode = str(data.get("sync_mode", SYNC_BROADCAST)).lower()
         if sync_mode not in (SYNC_BROADCAST, SYNC_FILE):
             raise ValueError(f"sync_mode must be '{SYNC_BROADCAST}' or '{SYNC_FILE}'")
-        for flag_section in ("dump", "log", "metrics", "trace"):
+        for flag_section in ("dump", "metrics", "trace"):
             enabled = data[flag_section].get("enabled")
             if enabled is not None and not isinstance(enabled, bool):
                 raise ValueError(f"{flag_section}.enabled must be bool")
         dump_once = data["dump"].get("dump_once")
         if dump_once is not None and not isinstance(dump_once, bool):
             raise ValueError("dump.dump_once must be bool")
-        for level_section in ("log", "metrics", "trace"):
+        for level_section in ("ascend_log", "metrics", "trace"):
             level = data[level_section].get("level", "INFO")
             if not isinstance(level, str):
                 raise ValueError(f"{level_section}.level must be str")
