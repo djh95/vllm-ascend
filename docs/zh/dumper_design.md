@@ -79,8 +79,8 @@ start → forward → finalize → disable（需 _dump_forward_seen）
 - **不区分 req_id**；OR 的是「是否 pending」布尔。
 - **async 仅 TP0 check**：multiproc 只在 `output_rank`（last-PP TP0）调用 `get_output()`。
 - **early PP 不参与 dump OR**，但仍必须跑 `dfx.refresh_config`（world collective）。
-- **Sync** 在 check 时直接 activate；各 last-PP TP 同拍 check 后下一拍一起 dump，不做 OR。
-- `dump.enabled == false`、两 check 关或 `max_times==0` 时整条齐步路径跳过。
+- **Sync + TP>1 / async**：check 仅 TP0 → `pending_dump`；下步 `execute_model` 入口 last-PP TP `all_reduce(OR)` 后全体 activate（避免 sample 中途只开部分 TP 的 debugger 导致集体通信卡住）。
+- **Sync + TP=1**：可当场 activate。
 - pending / dump_active 期间跳过后续 anomaly check，避免重复 arm。
 
 ## 6. DP / PP / TP
@@ -93,8 +93,8 @@ start → forward → finalize → disable（需 _dump_forward_seen）
 ### 6.2 TP
 
 - 日志：`tp_rank == 0`
-- **async check**：仅 TP0；**async dump**：OR 后 last-PP 全体 TP activate
-- **sync check + dump**：各 last-PP TP 独立
+- **check（async，或 sync 且 TP>1）**：仅 TP0；**dump**：OR 后 last-PP 全体 TP activate
+- **check + dump（sync 且 TP=1）**：单卡当场 activate
 
 ### 6.3 DP
 

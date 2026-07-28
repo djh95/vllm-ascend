@@ -188,7 +188,8 @@ runner.dfx = DfxProcessor(runner)
 
 Dumper **不**调用 config reload，也 **不**写 report（report 在 processor）。
 
-门控（异常检测自动 dump）：`dump.enabled == false` 或 `max_times == 0` 或两路 detector 均关 → 关闭。  
+门控（异常检测）：`dump.enabled == false` 或两路 detector 均关 → 不跑检测。  
+门控（自动 dump）：另需 `max_times > 0` 且未超配额 / 冷却；`max_times == 0` 时仍可检测与打 short 日志，只是不 arm dump。  
 `dump_once` 由 `ManualDumpDetector` 消费；仅要求 `dump.enabled` + debugger，不受 `max_times` / cooldown 限制。  
 **前提**：`additional_config.dfx_config_reload_interval > 0`（热更为关时改 JSON 的 `dump_once` 不会生效）。
 

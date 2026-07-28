@@ -66,6 +66,10 @@ def test_dfx_processor_refresh_no_change_skips_apply():
 
     assert proc.refresh_config() is False
     proc.dumper.apply_dfx_config.assert_not_called()
+    proc.dumper._sync_dump_limits_from_config.assert_called_once()
+    proc.spec_detector.refresh_from_config.assert_called_once()
+    proc.token_logprob_detector.refresh_from_config.assert_called_once()
+    proc.manual_dump_detector.refresh_from_config.assert_called_once()
     proc.manual_dump_detector.check_all.assert_not_called()
 
 
@@ -97,8 +101,9 @@ def test_save_sample_param_skips_non_tp0():
 
 def test_ensure_logprobs_for_detection_bumps_v1_num_logprobs():
     proc = DfxProcessor.__new__(DfxProcessor)
+    proc.dfx_config = MagicMock()
+    proc.dfx_config.dump_enabled.return_value = True
     proc.dumper = MagicMock()
-    proc.dumper._anomaly_dump_feature_enabled.return_value = True
     det = MagicMock()
     det.enabled = True
     det.topk = 20
@@ -120,12 +125,13 @@ def test_ensure_logprobs_for_detection_bumps_v1_num_logprobs():
 
 def test_ensure_logprobs_noop_when_disabled():
     proc = DfxProcessor.__new__(DfxProcessor)
-    proc.dumper = MagicMock()
+    proc.dfx_config = MagicMock()
     det = MagicMock()
     det.enabled = False
     proc.token_logprob_detector = det
     proc.runner = MagicMock()
+    proc.dumper = MagicMock()
 
     proc.ensure_logprobs_for_detection()
 
-    proc.dumper._anomaly_dump_feature_enabled.assert_not_called()
+    proc.dfx_config.dump_enabled.assert_not_called()

@@ -55,10 +55,12 @@ class TokenLogprobDetector(AnomalyDetector):
         self._ill_window_hits: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         self._ill_detector: Any | None = None
         self._ill_detector_init_failed = False
-        if dynamic_dump_config is not None:
-            self._apply_values(dynamic_dump_config)
-        else:
+        # Prefer live DFX JSON (already merged at bootstrap). Legacy
+        # dynamic_dump_config is only a fallback when dfx_config is absent.
+        if dfx_config is not None:
             self.refresh_from_config()
+        elif dynamic_dump_config is not None:
+            self._apply_values(dynamic_dump_config)
 
     def _apply_values(self, src: Any) -> None:
         getter = src.get if isinstance(src, dict) else lambda k, d=None: getattr(src, k, d)
@@ -95,10 +97,16 @@ class TokenLogprobDetector(AnomalyDetector):
         req_ids: list[str] | None = None,
     ) -> list[AnomalyAlert]:
         """Batch entry: return alerts for the model runner to hand to Dumper."""
-        if not self._precheck():
-            return []
         runner = self._runner
         log_leader = int(getattr(runner, "tp_rank", 0) if runner is not None else 0) == 0
+        if not self._precheck():
+            if log_leader:
+                logger.info_once(
+                    "[Anomaly token_logprob short] skip: enable_token_logprob_check=false "
+                    "in live DFX config (edit JSON + dfx_config_reload_interval>0, or set "
+                    "true before start; look for '[DFX runtime_config] updated')"
+                )
+            return []
         if sampled_token_ids is None:
             if log_leader:
                 logger.info("[Anomaly token_logprob short] skip: sampled_token_ids is None")
@@ -183,7 +191,8 @@ class TokenLogprobDetector(AnomalyDetector):
 
         if not due:
             if log_leader:
-                logger.info(
+                # Filling/stride progress every step stalls TP0 → peer hang.
+                logger.debug(
                     "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=%d stride=%d new=%d alert=False reason=%s",
                     req_id,
                     buf_len,
@@ -218,7 +227,7 @@ class TokenLogprobDetector(AnomalyDetector):
         )
         if alert is None:
             if log_leader:
-                logger.info(
+                logger.debug(
                     "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=0 stride=%d "
                     "new=%d alert=False reason=not_ill",
                     req_id,
@@ -242,7 +251,8 @@ class TokenLogprobDetector(AnomalyDetector):
         hit_count = hits[alert.ill_type]
         should_alert = hit_count >= thresh
         if log_leader:
-            logger.info(
+            log_fn = logger.info if should_alert else logger.debug
+            log_fn(
                 "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=0 stride=%d "
                 "new=%d ill_type=%d hits=%d/%d alert=%s",
                 req_id,

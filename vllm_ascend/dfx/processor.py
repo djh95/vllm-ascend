@@ -21,6 +21,7 @@ model runners only hang a ``DfxProcessor`` and call thin step hooks.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from vllm.distributed.parallel_state import get_pp_group
@@ -79,20 +80,31 @@ class DfxProcessor:
 
     def refresh_config(self) -> bool:
         """All-rank DFX config sync. Must not be skipped on early PP."""
+        logger.info("[DFX sync] enter stage=refresh_config")
         changed = self.dfx_config.sync_dfx_config()
         if changed:
             self.dumper.apply_dfx_config()
-            self.spec_detector.refresh_from_config()
-            self.token_logprob_detector.refresh_from_config()
-            self.manual_dump_detector.refresh_from_config()
             # dump.dump_once → alert → dump (no quota).
             for alert in self.manual_dump_detector.check_all():
                 self._handle_alert(alert, detector=self.manual_dump_detector, write_report=False)
+        else:
+            # Keep dump limits aligned with live ``dfx_config`` even when this
+            # step had no file mtime change (e.g. broadcast payload already applied).
+            self.dumper._sync_dump_limits_from_config()
+        # Always pull detector flags from live config. Init may have applied
+        # ``dynamic_dump_config`` only; JSON hot-reload updates ``dfx_config``.
+        self.spec_detector.refresh_from_config()
+        self.token_logprob_detector.refresh_from_config()
+        self.manual_dump_detector.refresh_from_config()
+        logger.info("[DFX sync] leave stage=refresh_config changed=%s", changed)
         return changed
 
     def sync_dump_pending_or(self, *, allow_arm: bool = True) -> bool:
         """Last-PP TP dump OR only (see ``Dumper.sync_dump_pending_or``)."""
-        return self.dumper.sync_dump_pending_or(allow_arm=allow_arm)
+        logger.info("[DFX sync] enter stage=sync_dump_pending_or allow_arm=%s", allow_arm)
+        ok = self.dumper.sync_dump_pending_or(allow_arm=allow_arm)
+        logger.info("[DFX sync] leave stage=sync_dump_pending_or ok=%s", ok)
+        return ok
 
     # ---- sample / get_output hooks ----------------------------------------
 
@@ -109,6 +121,19 @@ class DfxProcessor:
         accepted_token_nums: Any,
     ) -> None:
         if not self.dumper.can_run_anomaly_detection():
+            reason = self.dumper.anomaly_check_skip_reason()
+            # Only TP0, throttled: non-TP0 always skips under pending-OR and would flood.
+            if reason and int(getattr(self.runner, "tp_rank", 0)) == 0:
+                now = time.time()
+                last = getattr(self, "_spec_skip_log_ts", 0.0)
+                if now - last >= 2.0:
+                    self._spec_skip_log_ts = now
+                    logger.info(
+                        "[Anomaly spec short] skip gate: %s (enable_spec_acceptance_check=%s dump.max_times=%s)",
+                        reason,
+                        self.dfx_config.detector_get("enable_spec_acceptance_check", False),
+                        self.dfx_config.dump_max_times(),
+                    )
             return
         for alert in self.spec_detector.check_all(sampled_tokens, accepted_token_nums):
             self._handle_alert(alert, detector=self.spec_detector)
@@ -120,6 +145,16 @@ class DfxProcessor:
         req_ids: list[str] | None = None,
     ) -> None:
         if not self.dumper.can_run_anomaly_detection():
+            # Spec short logs can still print while token check is gated off
+            # (pending/active dump, non-output rank under async, etc.).
+            reason = self.dumper.anomaly_check_skip_reason()
+            if reason:
+                logger.info_once(
+                    "[Anomaly token_logprob short] skip gate: %s (enable_token_logprob_check=%s dump.max_times=%s)",
+                    reason,
+                    self.dfx_config.detector_get("enable_token_logprob_check", False),
+                    self.dfx_config.dump_max_times(),
+                )
             return
         for alert in self.token_logprob_detector.check_all(
             sampled_token_ids=sampled_token_ids,
@@ -139,8 +174,8 @@ class DfxProcessor:
         det.refresh_from_config()
         if not det.enabled:
             return
-        # Same gate as detectors: avoid paying top-k cost when dump/check is off.
-        if not self.dumper._anomaly_dump_feature_enabled():
+        # Force top-k whenever the detector is on; dump quota is separate.
+        if not self.dfx_config.dump_enabled():
             return
         topk = det.topk
         if topk <= 0:

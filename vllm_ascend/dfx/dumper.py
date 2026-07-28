@@ -146,7 +146,8 @@ class Dumper:
         self._sync_dump_limits_from_config()
         self._apply_observability_switches()
         logger.info(
-            "[DFX dumper] config applied dump.max_times=%d→%d cooldown=%d→%d %s",
+            "[DFX dumper] config applied dump.max_times=%d→%d cooldown=%d→%d %s "
+            "(short/detect follows detector.*; max_times only gates dump arming)",
             prev_max,
             self._dynamic_dump_max_times,
             prev_cd,
@@ -185,13 +186,34 @@ class Dumper:
         self._debug_log_full_carry.clear()
         return out
 
+    def anomaly_check_skip_reason(self) -> str | None:
+        """None if detectors may run; otherwise a short skip reason for logs.
+
+        Detection / short logs are **not** gated on ``dump.max_times``.
+        Quota only blocks arming dump in ``enable_msprobe_dump_if_needed``.
+        """
+        if not self.dfx_config.dump_enabled():
+            return "dump.enabled=false"
+        if not (
+            self.dfx_config.detector_get("enable_spec_acceptance_check", False)
+            or self.dfx_config.detector_get("enable_token_logprob_check", False)
+        ):
+            return "no detector enabled in live DFX config"
+        if not self._should_run_anomaly_check():
+            if not get_pp_group().is_last_rank:
+                return "not last PP rank"
+            if self._use_pending_dump_sync() and int(getattr(self.runner, "tp_rank", 0)) != 0:
+                return "async: only output_rank TP0 runs anomaly check"
+            return "rank not selected for anomaly check"
+        if self._pending_dump:
+            return "pending_dump already armed"
+        if self._msprobe_dump_active:
+            return "msprobe dump already active"
+        return None
+
     def can_run_anomaly_detection(self) -> bool:
         """Whether this rank should invoke detectors this step."""
-        if not self._anomaly_dump_feature_enabled():
-            return False
-        if not self._should_run_anomaly_check():
-            return False
-        return not (self._pending_dump or self._msprobe_dump_active)
+        return self.anomaly_check_skip_reason() is None
 
     def _init_debugger(self, cudagraph_mode: CUDAGraphMode):
         dump_cfg = self.runner.ascend_config.dump_config_path
@@ -447,27 +469,44 @@ class Dumper:
         return True
 
     def _anomaly_dump_feature_enabled(self) -> bool:
+        """Whether auto dump arming / OR-sync is allowed (needs quota)."""
         if not self.dfx_config.dump_enabled():
             return False
-        if self._dynamic_dump_max_times == 0:
+        max_times = self.dfx_config.dump_max_times()
+        if max_times <= 0 and self._dynamic_dump_max_times <= 0:
             return False
         return bool(
             self.dfx_config.detector_get("enable_spec_acceptance_check", False)
             or self.dfx_config.detector_get("enable_token_logprob_check", False)
         )
 
+    def _dump_max_times_live(self) -> int:
+        """Prefer live JSON ``dump.max_times``; fall back to last applied cache."""
+        live = self.dfx_config.dump_max_times()
+        if live > 0:
+            return live
+        return int(self._dynamic_dump_max_times)
+
     def _use_pending_dump_sync(self) -> bool:
-        """Async scheduling defers dump_enable until cross-rank OR at execute."""
-        return bool(getattr(self.runner, "use_async_scheduling", False))
+        """Defer dump_enable until last-PP TP OR at execute_model entry.
+
+        Required for async (only TP0 checks). Also used whenever TP>1 so sync
+        path never activates debugger mid-sample on a subset of ranks (that
+        desyncs the next forward collective and hangs).
+        """
+        if bool(getattr(self.runner, "use_async_scheduling", False)):
+            return True
+        try:
+            return get_tp_group().world_size > 1
+        except Exception:
+            return False
 
     def _should_run_anomaly_check(self) -> bool:
         """Whether this rank should evaluate anomaly detectors.
 
-        Last PP only. Under async, multiproc only materializes ``get_output()``
-        on output_rank (TP0 of last PP), so token_logprob already runs there
-        alone; keep spec-acceptance on the same rank so ``pending_dump`` is
-        armed once and OR-synced at ``sync_dump_pending_or``. Sync: every last-PP TP
-        checks and activates independently (no collective).
+        Last PP only. When pending-OR is used (async, or sync with TP>1), only
+        TP0 checks and arms ``pending_dump``; peers join OR at execute entry.
+        Sync TP=1: the single rank checks and may activate immediately.
         """
         if not get_pp_group().is_last_rank:
             return False
@@ -533,14 +572,13 @@ class Dumper:
         Only **last PP** dumps (precision compare usually needs the final stage).
         Early PP skip entirely — no PP / world collective here.
 
-        Async path on last PP: OR ``pending_dump`` across TP (CPU collective);
-        if any rank armed (typically TP0 after check), all last-PP TPs activate
-        ``dump_enable`` together for this forward. Sync path skips the collective
-        and just reports whether dump is already active.
+        When pending-OR is enabled (async, or sync with TP>1): OR ``pending_dump``
+        across TP; if any rank armed, all last-PP TPs activate together.
 
         ``allow_arm``: False on dummy/capture — last-PP TPs still join the
         all_reduce (avoid deadlock) but do not activate or clear pending.
         """
+        tag = self._dump_rank_tag()
         if not self._use_pending_dump_sync():
             if not self._anomaly_dump_feature_enabled() and not self._pending_dump:
                 return False
@@ -551,16 +589,29 @@ class Dumper:
             return False
 
         tp_group = get_tp_group()
-        # Always join OR on last-PP async (even if local pending is false /
+        # Always join OR on last-PP (even if local pending is false /
         # anomaly detectors are off). A peer with dump_once pending must not
         # hang alone in all_reduce.
         local = 1 if self._pending_dump else 0
+        logger.info(
+            "[DFX sync] enter stage=dump_pending_or local=%d allow_arm=%s tp_world=%s %s",
+            local,
+            allow_arm,
+            tp_group.world_size,
+            tag,
+        )
         # CPU int32 SUM: OR = sum > 0. tp_group.world_size is TP size only
         # (e.g. DP2/PP2/TP2 → 2, not 8).
         pending_t = torch.tensor([local], dtype=torch.int32)
         if tp_group.world_size > 1:
             torch.distributed.all_reduce(pending_t, group=tp_group.cpu_group)
-        if int(pending_t.item()) <= 0:
+        pending_sum = int(pending_t.item())
+        logger.info(
+            "[DFX sync] leave stage=dump_pending_or sum=%d %s",
+            pending_sum,
+            tag,
+        )
+        if pending_sum <= 0:
             return False
 
         if not allow_arm:
@@ -568,11 +619,19 @@ class Dumper:
 
         req_id = self._pending_dump_req_id
         consume_quota = not self._pending_dump_skip_quota
+        logger.info(
+            "[DFX sync] enter stage=dump_activate req_id=%s consume_quota=%s %s",
+            req_id,
+            consume_quota,
+            tag,
+        )
         if not self._activate_msprobe_dump(req_id, consume_quota=consume_quota):
             if self._pending_dump:
                 logger.error("[Anomaly msprobe] dump activate failed after OR; keep pending")
+            logger.info("[DFX sync] leave stage=dump_activate ok=False %s", tag)
             return False
         self._clear_pending_dump()
+        logger.info("[DFX sync] leave stage=dump_activate ok=True %s", tag)
         return True
 
     def enable_msprobe_dump_if_needed(
@@ -605,7 +664,15 @@ class Dumper:
         if consume_quota:
             if req_id in self._msprobe_dumped_req_ids:
                 return False
-            if self._msprobe_dump_total_count >= self._dynamic_dump_max_times:
+            max_times = self._dump_max_times_live()
+            if max_times <= 0 or self._msprobe_dump_total_count >= max_times:
+                logger.info_once(
+                    "[Anomaly msprobe] skip dump req_id=%s: dump.max_times=%d count=%d "
+                    "(detectors still run; only dump is quota-gated)",
+                    req_id,
+                    max_times,
+                    self._msprobe_dump_total_count,
+                )
                 return False
             now_ts = time.time()
             elapsed = None if self._msprobe_last_dump_ts is None else now_ts - self._msprobe_last_dump_ts
@@ -624,7 +691,7 @@ class Dumper:
                 "next_activation_count=%d/%d consume_quota=%s",
                 req_id,
                 self._msprobe_dump_total_count + (1 if consume_quota else 0),
-                self._dynamic_dump_max_times,
+                self._dump_max_times_live(),
                 consume_quota,
             )
             return True

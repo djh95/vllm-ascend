@@ -28,7 +28,7 @@
 | `detector.ill_rare_window_thresh` | `1` | 生僻字 |
 | `detector.ill_garbled_window_thresh` | `1` | 乱码 |
 | `detector.ill_repet_window_thresh` | `2` | 重复（半重叠两窗确认） |
-| `dump.max_times` | `0` | `0` 时不触发 dump（检测也会直接 return） |
+| `dump.max_times` | `0` | `0` 时不触发 **dump**；检测 / short 日志仍可运行 |
 | `dump.enabled` | `true` | 总开关 |
 
 示例（rank0 可热改，`sync_mode=broadcast` 时会广播到各 rank）：
@@ -50,7 +50,7 @@
 
 **兼容**：仍可通过 `additional_config.dynamic_dump_config` 启动 overlay（扁平字段，如 `dynamic_dump_max_times`），见 [dfx_design.md](./dfx_design.md) §2.4。
 
-请求侧**不必**再手动设 `logprobs`：检测开启且 `dump.max_times > 0` 时，采样前 `DfxProcessor.ensure_logprobs_for_detection()` 会把 batch 内请求的 top-k 至少抬到 `token_logprob_topk`（默认 20）。若客户端已设更大的 `logprobs`，则保留更大值。
+请求侧**不必**再手动设 `logprobs`：检测开启时，采样前 `DfxProcessor.ensure_logprobs_for_detection()` 会把 batch 内请求的 top-k 至少抬到 `token_logprob_topk`（默认 20）。若客户端已设更大的 `logprobs`，则保留更大值。`dump.max_times` 只限制 dump 次数，不挡住检测。
 
 `--async-scheduling`：token/logprob 在采样返回时尚在 device 上，检测改在 async `get_output()`（D2H 完成并 parse 之后）执行（v1：`AscendAsyncGPUModelRunnerOutput`；v2：`AscendAsyncOutput`）。multiproc 仅 `output_rank`（last-PP TP0）会 `get_output()`，故 **async 仅 TP0 check**；命中后只置 `pending_dump`，下一拍 `execute_model` 入口 last-PP TP `all_reduce(OR)` 后再全体写 `dump_enable`（详见 [dumper_design.md](./dumper_design.md) §5）。
 
@@ -122,7 +122,7 @@ MTP / 投机：一步多个 accepted token → 多行 logprobs，按序 append�
 
 ## 7. 限制与后续
 
-1. 未开检测或 `dump.max_times=0` 时不做 token_logprob 检测；开启后会自动强制 top-k logprobs。
+1. `dump.max_times=0` 时不做 msprobe dump，但 detector 开启时仍会跑检测 / short 日志；开启 token 检测后会自动强制 top-k logprobs。
 2. 中途无 eos → tk2cat 可能不可用。
 3. v1 / v2 均已接入：`check_token_logprobs` + async `get_output` 延迟检测；采样前 `ensure_logprobs_for_detection`。
 4. 若需更激进：减小 `window`/`stride`，或将 `ill_repet_window_thresh` 设为 `1`。

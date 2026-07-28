@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import defaultdict, deque
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -58,10 +59,14 @@ class SpecAcceptanceDetector(AnomalyDetector):
         self._len_low_threshold = 1.4
         self._high_threshold = 0.96
         self._len_high_threshold = 2.8
-        if dynamic_dump_config is not None:
-            self._apply_values(dynamic_dump_config)
-        else:
+        # Throttle INFO short logs (per req) so TP0 is not flooded.
+        self._short_log_ts: dict[str, float] = {}
+        self._short_log_interval_s = 2.0
+        # Prefer live DFX JSON; legacy dynamic_dump_config is fallback only.
+        if dfx_config is not None:
             self.refresh_from_config()
+        elif dynamic_dump_config is not None:
+            self._apply_values(dynamic_dump_config)
 
     def _apply_values(self, src: Any) -> None:
         getter = src.get if isinstance(src, dict) else lambda k, d=None: getattr(src, k, d)
@@ -79,6 +84,7 @@ class SpecAcceptanceDetector(AnomalyDetector):
 
     def clear_finished(self, req_id: str) -> None:
         self._history.pop(req_id, None)
+        self._short_log_ts.pop(req_id, None)
 
     def check_all(
         self,
@@ -87,6 +93,9 @@ class SpecAcceptanceDetector(AnomalyDetector):
     ) -> list[AnomalyAlert]:
         """Batch entry: return alerts for the model runner to hand to Dumper."""
         if not self._precheck():
+            runner = self._runner
+            if int(getattr(runner, "tp_rank", 0) if runner is not None else 0) == 0:
+                logger.info_once("[Anomaly spec short] skip: enable_spec_acceptance_check=false in live DFX config")
             return []
         runner = self._runner
         if runner is None:
@@ -94,6 +103,8 @@ class SpecAcceptanceDetector(AnomalyDetector):
         # Spec check needs speculative decoding, not only MambaSpec
         # (``need_accepted_tokens``). Plain MTP / Eagle also produce accept stats.
         if getattr(runner, "speculative_config", None) is None:
+            if int(getattr(runner, "tp_rank", 0)) == 0:
+                logger.info_once("[Anomaly spec short] skip: speculative_config is None")
             return []
         input_batch = getattr(runner, "input_batch", None)
         if input_batch is None or not getattr(input_batch, "req_ids", None):
@@ -147,8 +158,6 @@ class SpecAcceptanceDetector(AnomalyDetector):
             return None
         if not get_pp_group().is_last_rank:
             return None
-        if self._is_related_request is not None and not self._is_related_request(req_id, req_idx):
-            return None
         runner = self._runner
         log_leader = int(getattr(runner, "tp_rank", 0) if runner is not None else 0) == 0
         draft_len = getattr(req_state, "prev_num_draft_len", 0) or 0
@@ -158,10 +167,22 @@ class SpecAcceptanceDetector(AnomalyDetector):
             # non-hybrid MTP): treat last dim of sampled row as draft+bonus.
             draft_len = max(0, len(sampled_norm) - 1)
         if draft_len <= 0:
+            if log_leader:
+                logger.info_once(
+                    "[Anomaly spec short] req_id=%s skip: draft_len=0 sampled_len=%d",
+                    req_id,
+                    len(sampled_norm),
+                )
             return None
+        # Related-request filter is for dump arming only; always emit short logs
+        # for local batch rows so incorrect filters are visible.
+        related_ok = True
+        if self._is_related_request is not None and not self._is_related_request(req_id, req_idx):
+            related_ok = False
         accepted_draft_tokens = max(0, accepted_token_num - 1)
         accepted_norm = sampled_norm[:accepted_token_num] if accepted_token_num > 0 else []
         history = self._history[req_id]
+        prev_hist_len = len(history)
         history.append((accepted_draft_tokens, draft_len, sampled_norm, accepted_norm))
         while len(history) > self._window:
             history.popleft()
@@ -181,6 +202,7 @@ class SpecAcceptanceDetector(AnomalyDetector):
         acceptance_len = accepted_sum / len(history) if history else 0.0
 
         window_ready = len(history) >= self._window
+        just_filled = prev_hist_len < self._window <= len(history)
         should_alert = False
         if window_ready:
             should_alert = bool(
@@ -188,33 +210,50 @@ class SpecAcceptanceDetector(AnomalyDetector):
                 or (acceptance_rate > self._high_threshold and acceptance_len > self._len_high_threshold)
             )
 
+        # INFO on alert / related miss / window just filled, else throttled INFO
+        # so hot-reload / mid-request enable is visible without per-step flood.
         if log_leader:
-            logger.info(
-                "[Anomaly spec short] req_id=%s draft_len=%d "
-                "accepted_count=%d accepted_draft_count=%d "
-                "accept_rate=%.4f accept_len=%.4f window=%d/%d accepted=%d drafted=%d "
-                "prompt_tokens=%d output_tokens=%d "
-                "low=(%.2f,%.2f) high=(%.2f,%.2f) alert=%s",
-                req_id,
-                draft_len,
-                accepted_token_num,
-                accepted_draft_tokens,
-                acceptance_rate,
-                acceptance_len,
-                len(history),
-                self._window,
-                accepted_sum,
-                draft_sum,
-                prompt_token_count,
-                output_token_count,
-                self._low_threshold,
-                self._len_low_threshold,
-                self._high_threshold,
-                self._len_high_threshold,
-                should_alert,
-            )
+            now = time.time()
+            last = self._short_log_ts.get(req_id, 0.0)
+            interesting = bool(should_alert and related_ok) or (not related_ok) or just_filled
+            due_info = interesting or (now - last >= self._short_log_interval_s)
+            if due_info:
+                self._short_log_ts[req_id] = now
+                logger.info(
+                    "[Anomaly spec short] req_id=%s draft_len=%d "
+                    "accepted_count=%d accepted_draft_count=%d "
+                    "accept_rate=%.4f accept_len=%.4f window=%d/%d accepted=%d drafted=%d "
+                    "prompt_tokens=%d output_tokens=%d "
+                    "low=(%.2f,%.2f) high=(%.2f,%.2f) related=%s alert=%s",
+                    req_id,
+                    draft_len,
+                    accepted_token_num,
+                    accepted_draft_tokens,
+                    acceptance_rate,
+                    acceptance_len,
+                    len(history),
+                    self._window,
+                    accepted_sum,
+                    draft_sum,
+                    prompt_token_count,
+                    output_token_count,
+                    self._low_threshold,
+                    self._len_low_threshold,
+                    self._high_threshold,
+                    self._len_high_threshold,
+                    related_ok,
+                    should_alert and related_ok,
+                )
+            else:
+                logger.debug(
+                    "[Anomaly spec short] req_id=%s window=%d/%d alert=%s",
+                    req_id,
+                    len(history),
+                    self._window,
+                    should_alert and related_ok,
+                )
 
-        if not window_ready or not should_alert:
+        if not related_ok or not window_ready or not should_alert:
             return None
 
         window_sampled_token_ids = [step_sampled for _, _, step_sampled, _ in history]

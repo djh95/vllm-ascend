@@ -209,6 +209,17 @@ def _world_group_or_none():
         return None
 
 
+def _process_role_tag() -> str:
+    """Identify which process applied config (worker broadcast vs API file-poll)."""
+    world = _world_group_or_none()
+    if world is not None:
+        return f"role=worker world_rank={world.rank}/{world.world_size}"
+    rank_env = os.environ.get("RANK")
+    if rank_env is not None:
+        return f"role=worker RANK={rank_env} (world not ready)"
+    return "role=non-worker"
+
+
 def _is_json_writer() -> bool:
     """True if this process may write the DFX JSON (leader or single process).
 
@@ -667,7 +678,17 @@ class DfxRuntimeConfig:
         world = _world_group_or_none()
         if self.sync_mode == SYNC_BROADCAST and world is not None and world.world_size > 1:
             return self._maybe_reload_broadcast(world)
-        return self._maybe_reload_local()
+        logger.info(
+            "[DFX sync] enter stage=config_local_reload %s",
+            _process_role_tag(),
+        )
+        changed = self._maybe_reload_local()
+        logger.info(
+            "[DFX sync] leave stage=config_local_reload changed=%s %s",
+            changed,
+            _process_role_tag(),
+        )
+        return changed
 
     def _maybe_reload_local(self) -> bool:
         now = time.time()
@@ -682,26 +703,44 @@ class DfxRuntimeConfig:
         now = time.time()
         interval = self.reload_interval_seconds
         due_local = 1.0 if ((not self._initial_broadcast_done) or (now - self._last_reload_ts >= interval)) else 0.0
+        role = _process_role_tag()
+        logger.info(
+            "[DFX sync] enter stage=config_all_reduce due_local=%.0f initial_done=%s %s",
+            due_local,
+            self._initial_broadcast_done,
+            role,
+        )
         due_t = torch.tensor([due_local], dtype=torch.float32)
         torch.distributed.all_reduce(
             due_t,
             op=torch.distributed.ReduceOp.MAX,
             group=world.cpu_group,
         )
-        if float(due_t.item()) < 0.5:
+        due = float(due_t.item())
+        logger.info("[DFX sync] leave stage=config_all_reduce due=%.0f %s", due, role)
+        if due < 0.5:
             return False
 
         self._last_reload_ts = now
         changed = False
         payload: dict[str, Any] | None = None
         if world.is_first_rank:
+            logger.info("[DFX sync] enter stage=config_reload_file %s", role)
             # Always re-stat; reload() no-ops when mtime unchanged.
             changed = self.reload(force=False)
+            logger.info(
+                "[DFX sync] leave stage=config_reload_file changed=%s version=%.6f %s",
+                changed,
+                float(self._version),
+                role,
+            )
             payload = {
                 "version": float(self._version),
                 "data": deepcopy(self._data),
             }
+        logger.info("[DFX sync] enter stage=config_broadcast %s", role)
         payload = world.broadcast_object(payload, src=0)
+        logger.info("[DFX sync] leave stage=config_broadcast %s", role)
         first_sync = not self._initial_broadcast_done
         self._initial_broadcast_done = True
         if payload is None or not isinstance(payload, dict):
@@ -766,16 +805,18 @@ class DfxRuntimeConfig:
         if announce and changes:
             # Only print fields that actually changed (e.g. dump.max_times).
             logger.info(
-                "[DFX runtime_config] updated path=%s version=%.6f changes=[%s]",
+                "[DFX runtime_config] updated path=%s version=%.6f %s changes=[%s]",
                 str(self.config_path),
                 self._version,
+                _process_role_tag(),
                 "; ".join(changes),
             )
         elif announce:
             logger.debug(
-                "[DFX runtime_config] apply no content change path=%s version=%.6f",
+                "[DFX runtime_config] apply no content change path=%s version=%.6f %s",
                 str(self.config_path),
                 self._version,
+                _process_role_tag(),
             )
         return True
 
