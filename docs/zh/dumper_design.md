@@ -39,23 +39,22 @@
 Runner 侧：
 
 - `self.dfx = DfxProcessor(self)`；`self.dumper = self.dfx.dumper`
-- `refresh_dfx_config()` → `dfx.refresh_config()`
-- `_dfx_check_*` / `_dfx_clear_*` → processor 对应方法
+- 直接调用 `dfx.refresh_config()` / `dfx.clear_finished()` / `dfx.check_*`
 
 ## 4. 调用链（v1 / v2）
 
 ### 4.1 v1
 
 1. 初始化：`Dumper(..., dfx_config=ascend_config.dfx_config)`
-2. `execute_model()` 入口：`refresh_dfx_config()` → `sync_dump_pending_or()` → `start_dump_data` → forward →（非 last PP 早 `finalize`；last PP 在 `sample_tokens` 末 `finalize`）
-3. 采样后：`_dfx_clear_finished_requests` → `_dfx_check_spec_acceptance`；sync 当场 `_dfx_check_token_logprobs`，async 在 `AscendAsyncGPUModelRunnerOutput.get_output()` 中检测
+2. `execute_model()` 入口：`dfx.refresh_config()` → `sync_dump_pending_or()` → `start_dump_data` → forward →（非 last PP 早 `finalize`；last PP 在 `sample_tokens` 末 `finalize`）
+3. 采样后：`dfx.clear_finished` → `dfx.check_spec_acceptance`；sync 当场 `dfx.check_token_logprobs`，async 在 `AscendAsyncGPUModelRunnerOutput.get_output()` 中检测
 
 ### 4.2 v2
 
 1. 初始化：同上；`load_model` 在图模式下可提前 `start_dump_data`（构图用）
-2. `execute_model()`：`refresh_dfx_config()` → `sync_dump_pending_or(..., allow_arm=not dummy_run)` → `start` → `super().execute_model` → `finalize(dump=not dummy_run)`
-3. `postprocess_sampled()`：`_dfx_check_spec_acceptance`
-4. `sample_tokens()`：sync 当场 `_dfx_check_token_logprobs`；async 包装为 `AscendAsyncOutput`，在 `get_output()` 后检测
+2. `execute_model()`：`dfx.refresh_config()` → `sync_dump_pending_or(..., allow_arm=not dummy_run)` → `start` → `super().execute_model` → `finalize(dump=not dummy_run)`
+3. `postprocess_sampled()`：`dfx.check_spec_acceptance`
+4. `sample_tokens()`：sync 当场 `dfx.check_token_logprobs`；async 包装为 `AscendAsyncOutput`，在 `get_output()` 后检测
 
 ## 5. Async 跨 TP dump 齐步（last PP）
 
@@ -64,7 +63,7 @@ check 命中（async 仅 last-PP TP0）:
   pending_dump = True          # 不写 dump_enable
 
 execute_model 入口:
-  refresh_dfx_config()         # 全 rank：rank0 JSON → world broadcast（默认）
+  dfx.refresh_config()         # 全 rank：rank0 JSON → world broadcast（默认）
   sync_dump_pending_or():      # 仅 last PP
     all_reduce(SUM, pending) on tp_group.cpu_group
     any_pending = (sum > 0)
@@ -79,7 +78,7 @@ start → forward → finalize → disable（需 _dump_forward_seen）
 
 - **不区分 req_id**；OR 的是「是否 pending」布尔。
 - **async 仅 TP0 check**：multiproc 只在 `output_rank`（last-PP TP0）调用 `get_output()`。
-- **early PP 不参与 dump OR**，但仍必须跑 `refresh_dfx_config`（world collective）。
+- **early PP 不参与 dump OR**，但仍必须跑 `dfx.refresh_config`（world collective）。
 - **Sync** 在 check 时直接 activate；各 last-PP TP 同拍 check 后下一拍一起 dump，不做 OR。
 - `dump.enabled == false`、两 check 关或 `max_times==0` 时整条齐步路径跳过。
 - pending / dump_active 期间跳过后续 anomaly check，避免重复 arm。

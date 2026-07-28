@@ -489,7 +489,7 @@ class Dumper:
     def sync_dump_pending_or(self, *, allow_arm: bool = True) -> bool:
         """Align dump among last-PP TP ranks (dump OR only; no config sync).
 
-        Call **after** runner :meth:`refresh_dfx_config` / ``sync_dfx_config``.
+        Call **after** runner ``dfx.refresh_config()`` / ``sync_dfx_config``.
         Config sync is a world collective and must run on every rank; this
         method is last-PP TP only — do not fold config reload into it.
 

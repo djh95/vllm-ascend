@@ -61,7 +61,7 @@ Worker: runner.dfx = DfxProcessor(runner)
 
 广播注意：
 
-- 必须在**所有 rank 同一拍**调用 `sync_dfx_config()` / `refresh_dfx_config()`（已挂在 runner `execute_model` 入口，与 dump OR 分开）。
+- 必须在**所有 rank 同一拍**调用 `dfx.refresh_config()` / `sync_dfx_config()`（已挂在 runner `execute_model` 入口，与 dump OR 分开）。
 - **禁止**把 config sync 折叠进「仅 last-PP」的 dump 路径。
 - 范围是**单个 engine 的 `get_world_group()`**。
 - `save()` 在 broadcast 模式下非 leader 会忽略。

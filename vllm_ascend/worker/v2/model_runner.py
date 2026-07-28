@@ -76,7 +76,7 @@ class AscendAsyncOutput(AsyncModelRunnerOutput):
 
     def get_output(self) -> ModelRunnerOutput:
         output = self._inner.get_output()
-        self._runner._dfx_check_token_logprobs(
+        self._runner.dfx.check_token_logprobs(
             sampled_token_ids=output.sampled_token_ids,
             logprobs_lists=output.logprobs,
             req_ids=output.req_ids,
@@ -183,28 +183,6 @@ class NPUModelRunner(GPUModelRunner):
         # Dump lifecycle call sites keep using ``self.dumper``.
         self.dumper = self.dfx.dumper
 
-    def refresh_dfx_config(self) -> bool:
-        """All-rank DFX config sync. Must not be skipped on early PP."""
-        return self.dfx.refresh_config()
-
-    def _dfx_clear_finished_requests(self, finished_req_ids: Any) -> None:
-        self.dfx.clear_finished(finished_req_ids)
-
-    def _dfx_check_spec_acceptance(self, sampled_tokens: Any, accepted_token_nums: Any) -> None:
-        self.dfx.check_spec_acceptance(sampled_tokens, accepted_token_nums)
-
-    def _dfx_check_token_logprobs(
-        self,
-        sampled_token_ids: Any,
-        logprobs_lists: Any,
-        req_ids: list[str] | None = None,
-    ) -> None:
-        self.dfx.check_token_logprobs(
-            sampled_token_ids=sampled_token_ids,
-            logprobs_lists=logprobs_lists,
-            req_ids=req_ids,
-        )
-
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         with graph_manager_wrapper(self):
             super().initialize_kv_cache(kv_cache_config)
@@ -245,7 +223,7 @@ class NPUModelRunner(GPUModelRunner):
             get_tp_group().rank_in_group,
             get_pp_group().is_last_rank,
         )
-        self.refresh_dfx_config()
+        self.dfx.refresh_config()
         self.dfx.sync_dump_pending_or(allow_arm=not dummy_run)
         # start/finalize wrap the forward path; sample_tokens runs afterwards.
         self.dumper.start_dump_data()
@@ -267,7 +245,7 @@ class NPUModelRunner(GPUModelRunner):
             finished_req_ids = self.execute_model_state.finished_req_ids
 
         output = super().sample_tokens(grammar_output)
-        self._dfx_clear_finished_requests(finished_req_ids)
+        self.dfx.clear_finished(finished_req_ids)
 
         if isinstance(output, AsyncOutput):
             # Async: defer token/logprob check until D2H in get_output().
@@ -277,7 +255,7 @@ class NPUModelRunner(GPUModelRunner):
 
         if isinstance(output, ModelRunnerOutput):
             # Sync: super() already called get_output(); check immediately.
-            self._dfx_check_token_logprobs(
+            self.dfx.check_token_logprobs(
                 sampled_token_ids=output.sampled_token_ids,
                 logprobs_lists=output.logprobs,
                 req_ids=output.req_ids,
@@ -567,7 +545,7 @@ class NPUModelRunner(GPUModelRunner):
             num_rejected,
             query_start_loc,
         )
-        self._dfx_check_spec_acceptance(
+        self.dfx.check_spec_acceptance(
             sampled_tokens=sampled_tokens,
             accepted_token_nums=num_sampled,
         )

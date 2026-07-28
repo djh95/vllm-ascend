@@ -283,7 +283,7 @@ class AscendAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
         output = super().get_output()
         if self._runner is None:
             return output
-        self._runner._dfx_check_token_logprobs(
+        self._runner.dfx.check_token_logprobs(
             sampled_token_ids=output.sampled_token_ids,
             logprobs_lists=output.logprobs,
             req_ids=output.req_ids,
@@ -727,28 +727,6 @@ class NPUModelRunner(GPUModelRunner):
             num_tokens_after_padding = num_tokens_across_dp.cpu()
 
         return max_tokens_across_dp, num_tokens_after_padding, synced_cudagraph_mode
-
-    def refresh_dfx_config(self) -> bool:
-        """All-rank DFX config sync. Must not be skipped on early PP."""
-        return self.dfx.refresh_config()
-
-    def _dfx_clear_finished_requests(self, finished_req_ids: Any) -> None:
-        self.dfx.clear_finished(finished_req_ids)
-
-    def _dfx_check_spec_acceptance(self, sampled_tokens: Any, accepted_token_nums: Any) -> None:
-        self.dfx.check_spec_acceptance(sampled_tokens, accepted_token_nums)
-
-    def _dfx_check_token_logprobs(
-        self,
-        sampled_token_ids: Any,
-        logprobs_lists: Any,
-        req_ids: list[str] | None = None,
-    ) -> None:
-        self.dfx.check_token_logprobs(
-            sampled_token_ids=sampled_token_ids,
-            logprobs_lists=logprobs_lists,
-            req_ids=req_ids,
-        )
 
     def get_model(self) -> nn.Module:
         # get raw model out of the aclgraph wrapper.
@@ -2058,7 +2036,7 @@ class NPUModelRunner(GPUModelRunner):
             get_tp_group().rank_in_group,
             get_pp_group().is_last_rank,
         )
-        self.refresh_dfx_config()
+        self.dfx.refresh_config()
         self.dfx.sync_dump_pending_or()
 
         # If ngram_gpu is used, we need to copy the scheduler_output to avoid
@@ -2669,7 +2647,7 @@ class NPUModelRunner(GPUModelRunner):
         self.dumper.finalize_dump_data()
 
         finished_req_ids = getattr(scheduler_output, "finished_req_ids", None)
-        self._dfx_clear_finished_requests(finished_req_ids)
+        self.dfx.clear_finished(finished_req_ids)
 
         if self.need_accepted_tokens:
             assert self.sampling_done_event is not None
@@ -2682,13 +2660,13 @@ class NPUModelRunner(GPUModelRunner):
             # Wait for D2H of num_accepted_tokens_cpu before spec acceptance anomaly checks.
             if self.num_accepted_tokens_event is not None:
                 self.num_accepted_tokens_event.synchronize()
-            self._dfx_check_spec_acceptance(
+            self.dfx.check_spec_acceptance(
                 sampled_tokens=sampler_output.sampled_token_ids,
                 accepted_token_nums=self.input_batch.num_accepted_tokens_cpu,
             )
 
         if not self.use_async_scheduling:
-            self._dfx_check_token_logprobs(
+            self.dfx.check_token_logprobs(
                 sampled_token_ids=valid_sampled_token_ids,
                 logprobs_lists=logprobs_lists,
                 req_ids=req_ids_output_copy,

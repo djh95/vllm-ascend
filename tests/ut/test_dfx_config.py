@@ -5,7 +5,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from vllm_ascend.dfx.report import DfxReportWriter
-from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig
+from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig, _leaf_changes
+
+
+def test_leaf_changes_reports_only_diffs():
+    old = {"dump": {"max_times": 0, "enabled": True}, "log": {"level": "INFO"}}
+    new = {"dump": {"max_times": 3, "enabled": True}, "log": {"level": "INFO"}}
+    assert _leaf_changes(old, new) == ["dump.max_times: 0 -> 3"]
 
 
 def test_dfx_config_hot_reload_and_defaults(tmp_path: Path):
@@ -293,6 +299,53 @@ def test_ensure_persisted_deferred_to_worker_leader(tmp_path: Path, monkeypatch)
     mtime = cfg_path.stat().st_mtime
     assert cfg.ensure_persisted() is True
     assert cfg_path.stat().st_mtime == mtime
+
+
+def test_ensure_persisted_skips_rewrite_when_file_exists(tmp_path: Path, monkeypatch):
+    """Existing JSON must not be rewritten on restart (mtime churn / clobber)."""
+    monkeypatch.setenv("RANK", "0")
+    cfg_path = tmp_path / "dfx_config.json"
+    cfg_path.write_text(
+        json.dumps({"dump": {"max_times": 7}, "log": {"level": "WARNING"}}),
+        encoding="utf-8",
+    )
+    mtime_before = cfg_path.stat().st_mtime
+    cfg = DfxRuntimeConfig(
+        cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=False,
+        sync_mode="file",
+        reload_interval_seconds=0,
+    )
+    assert cfg.dump_max_times() == 7
+    assert cfg.ensure_persisted() is True
+    assert cfg_path.stat().st_mtime == mtime_before
+    assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["max_times"] == 7
+
+
+def test_save_prefers_disk_over_stale_memory(tmp_path: Path, monkeypatch):
+    """save() must not wipe hand-edits that landed on disk after bootstrap."""
+    monkeypatch.setenv("RANK", "0")
+    cfg_path = tmp_path / "dfx_config.json"
+    cfg_path.write_text(json.dumps({"dump": {"max_times": 0, "dump_once": True}}), encoding="utf-8")
+    cfg = DfxRuntimeConfig(
+        cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=False,
+        sync_mode="file",
+        reload_interval_seconds=0,
+    )
+    assert cfg.dump_max_times() == 0
+    # Concurrent hand-edit on disk (stale memory still has max_times=0).
+    cfg_path.write_text(
+        json.dumps({"dump": {"max_times": 5, "dump_once": True}}),
+        encoding="utf-8",
+    )
+    assert cfg.save({"dump": {"dump_once": False}}) is True
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert saved["dump"]["max_times"] == 5
+    assert saved["dump"]["dump_once"] is False
+    assert cfg.dump_max_times() == 5
 
 
 def test_overwrite_deferred_removes_stale_default_json(tmp_path: Path, monkeypatch):

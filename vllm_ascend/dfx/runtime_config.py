@@ -154,6 +154,30 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
+def _leaf_changes(old: Any, new: Any, prefix: str = "") -> list[str]:
+    """Return ``path: old -> new`` strings for leaf values that differ."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        keys = set(old) | set(new)
+        out: list[str] = []
+        for key in sorted(keys):
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if key not in old:
+                out.append(f"{path}: <missing> -> {new[key]!r}")
+            elif key not in new:
+                out.append(f"{path}: {old[key]!r} -> <missing>")
+            else:
+                out.extend(_leaf_changes(old[key], new[key], path))
+        return out
+    if old != new:
+        path = prefix or "<root>"
+        return [f"{path}: {old!r} -> {new!r}"]
+    return []
+
+
+# Paths that already have a non-worker background reloader in this process.
+_bg_reload_paths: set[str] = set()
+
+
 def _legacy_dynamic_dump_to_sections(legacy: dict[str, Any] | None) -> dict[str, Any]:
     """Map old ``dynamic_dump_config`` flat keys into dump/detector sections."""
     if not legacy:
@@ -355,7 +379,7 @@ class DfxRuntimeConfig:
                 with self._lock_config():
                     self._write_data_unlocked(merged)
                     mtime = self.config_path.stat().st_mtime
-                self._apply_loaded(merged, version=mtime)
+                self._apply_loaded(merged, version=mtime, announce=False)
                 self._bootstrap_persisted = True
                 logger.info(
                     "[DFX runtime_config] bootstrap saved path=%s explicit_path=%s "
@@ -410,10 +434,15 @@ class DfxRuntimeConfig:
         self._last_reload_ts = time.time()
 
     def ensure_persisted(self) -> bool:
-        """Write bootstrap merge to disk once (worker leader / single-process only).
+        """Materialize bootstrap merge to disk once (worker leader / single-process).
 
-        Safe to call from every worker: non-leaders no-op; leaders write at most once
+        Safe to call from every worker: non-leaders no-op; leaders act at most once
         per process. Call from ``DfxProcessor`` so API/EngineCore never persist.
+
+        If the JSON already exists and this is **not** overwrite mode
+        (``dfx_config_path`` unset + startup ``dynamic_dump_config``), skip rewrite:
+        disk is already the source of truth. Blind rewrite only changes mtime/ctime
+        and can clobber concurrent hand-edits with a stale in-memory snapshot.
         """
         if self._bootstrap_persisted:
             return True
@@ -423,18 +452,31 @@ class DfxRuntimeConfig:
                 self.config_path,
             )
             return False
+        overwrite_default = bool(not self._explicit_config_path and self._startup_overlay)
         try:
             with self._lock_config():
+                if self.config_path.exists() and not overwrite_default:
+                    mtime = self.config_path.stat().st_mtime
+                    self._mtime = mtime
+                    self._version = float(mtime)
+                    self._bootstrap_persisted = True
+                    logger.info(
+                        "[DFX runtime_config] ensure_persisted skip rewrite (file exists, not overwrite) path=%s",
+                        self.config_path,
+                    )
+                    return True
                 self._write_data_unlocked(self._data)
                 mtime = self.config_path.stat().st_mtime
             self._mtime = mtime
             self._version = float(mtime)
             self._bootstrap_persisted = True
             logger.info(
-                "[DFX runtime_config] worker leader persisted path=%s explicit_path=%s startup_overlay=%s",
+                "[DFX runtime_config] worker leader persisted path=%s explicit_path=%s "
+                "startup_overlay=%s overwrite_default=%s",
                 self.config_path,
                 self._explicit_config_path,
                 bool(self._startup_overlay),
+                overwrite_default,
             )
             return True
         except Exception as exc:
@@ -574,7 +616,16 @@ class DfxRuntimeConfig:
             return False
         if self._bg_reloader_started:
             return False
+        path_key = str(self.config_path.resolve()) if self.config_path.exists() else str(self.config_path)
+        if path_key in _bg_reload_paths:
+            self._bg_reloader_started = True
+            logger.info(
+                "[DFX runtime_config] non-worker reloader already running for path=%s",
+                self.config_path,
+            )
+            return False
         self._bg_reloader_started = True
+        _bg_reload_paths.add(path_key)
         interval = self.reload_interval_seconds
 
         def _loop() -> None:
@@ -587,14 +638,9 @@ class DfxRuntimeConfig:
                         continue
                     # Force file poll path even if JSON says broadcast — this
                     # process is outside the worker world group.
+                    # Content diffs are logged inside ``_apply_loaded``.
                     if self._maybe_reload_local():
                         self.apply_log_switches()
-                        logger.info(
-                            "[DFX runtime_config] non-worker reload applied path=%s log.level=%s version=%.6f",
-                            self.config_path,
-                            self.log_level(),
-                            self._version,
-                        )
                 except Exception as exc:
                     logger.warning(
                         "[DFX runtime_config] non-worker reload error path=%s error=%s",
@@ -718,30 +764,41 @@ class DfxRuntimeConfig:
             logger.error("[DFX runtime_config] reload failed path=%s error=%s", self.config_path, exc)
             return False
 
-    def _apply_loaded(self, merged: dict[str, Any], *, version: float) -> bool:
+    def _apply_loaded(
+        self,
+        merged: dict[str, Any],
+        *,
+        version: float,
+        announce: bool = True,
+    ) -> bool:
         self._validate(merged)
+        changes = _leaf_changes(self._data, merged)
         self._data = merged
         self._mtime = version
         self._version = version
-        # Log every apply so hot-reload / broadcast updates are visible (not info_once).
-        logger.info(
-            "[DFX runtime_config] applied path=%s sync_mode=%s version=%.6f "
-            "dump.enabled=%s dump.max_times=%s dump.cooldown=%s log.level=%s "
-            "spec_check=%s token_logprob_check=%s",
-            str(self.config_path),
-            self.sync_mode,
-            self._version,
-            self.dump_enabled(),
-            self.dump_max_times(),
-            self.dump_cooldown_seconds(),
-            self.log_level(),
-            self.detector_get("enable_spec_acceptance_check"),
-            self.detector_get("enable_token_logprob_check"),
-        )
+        if announce and changes:
+            # Only print fields that actually changed (e.g. dump.max_times).
+            logger.info(
+                "[DFX runtime_config] updated path=%s version=%.6f changes=[%s]",
+                str(self.config_path),
+                self._version,
+                "; ".join(changes),
+            )
+        elif announce:
+            logger.debug(
+                "[DFX runtime_config] apply no content change path=%s version=%.6f",
+                str(self.config_path),
+                self._version,
+            )
         return True
 
     def save(self, updates: dict[str, Any] | None = None) -> bool:
-        """Merge ``updates`` and write JSON. Leader (or single-process) only."""
+        """Merge ``updates`` and write JSON. Leader (or single-process) only.
+
+        Under the config lock, re-read disk first so a stale in-memory snapshot
+        cannot wipe concurrent hand-edits (e.g. ``dump.max_times``) when only
+        flushing ``dump_once``.
+        """
         if not _is_json_writer():
             logger.debug(
                 "[DFX runtime_config] save ignored on non-leader path=%s",
@@ -750,7 +807,9 @@ class DfxRuntimeConfig:
             return False
         try:
             with self._lock_config():
-                data = deepcopy(self._data)
+                on_disk = self._read_json_object()
+                # Disk wins over stale memory; then apply intentional updates.
+                data = _deep_merge(deepcopy(self._data), on_disk) if on_disk else deepcopy(self._data)
                 if updates:
                     data = _deep_merge(data, updates)
                 self._validate(data)
