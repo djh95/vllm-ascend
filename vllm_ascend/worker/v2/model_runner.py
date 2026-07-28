@@ -51,7 +51,7 @@ from vllm_ascend.ascend_forward_context import (
     set_mc2_mask,
     set_mc2_tokens_capacity,
 )
-from vllm_ascend.dumper import Dumper
+from vllm_ascend.dfx.processor import DfxProcessor
 from vllm_ascend.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
 from vllm_ascend.worker.v2.aclgraph_utils import ModelAclGraphManager
 from vllm_ascend.worker.v2.attn_utils import build_attn_state
@@ -70,20 +70,20 @@ class AscendAsyncOutput(AsyncModelRunnerOutput):
     detection must wait until ``get_output()``.
     """
 
-    def __init__(self, inner: AsyncOutput, dumper: Dumper):
+    def __init__(self, inner: AsyncOutput, runner: "NPUModelRunner"):
         self._inner = inner
-        self._dumper = dumper
+        self._runner = runner
 
     def get_output(self) -> ModelRunnerOutput:
         output = self._inner.get_output()
-        self._dumper.check_all_token_logprobs(
+        self._runner._dfx_check_token_logprobs(
             sampled_token_ids=output.sampled_token_ids,
             logprobs_lists=output.logprobs,
             req_ids=output.req_ids,
         )
         # Snapshot after check; a later start_dump_data() may clear the dict
         # under async overlap with the next step.
-        output.debug_log_full = dict(self._dumper.full_log_requests_this_step)
+        output.debug_log_full = dict(self._runner.dumper.full_log_requests_this_step)
         return output
 
 
@@ -179,8 +179,31 @@ class NPUModelRunner(GPUModelRunner):
         # Finalized in initialize_kv_cache (same stage as v1).
         self.need_accepted_tokens = False
 
-        dynamic_dump_config = self.ascend_config.dynamic_dump_config
-        self.dumper = Dumper(self, dynamic_dump_config)
+        self.dfx = DfxProcessor(self)
+        # Dump lifecycle call sites keep using ``self.dumper``.
+        self.dumper = self.dfx.dumper
+
+    def refresh_dfx_config(self) -> bool:
+        """All-rank DFX config sync. Must not be skipped on early PP."""
+        return self.dfx.refresh_config()
+
+    def _dfx_clear_finished_requests(self, finished_req_ids: Any) -> None:
+        self.dfx.clear_finished(finished_req_ids)
+
+    def _dfx_check_spec_acceptance(self, sampled_tokens: Any, accepted_token_nums: Any) -> None:
+        self.dfx.check_spec_acceptance(sampled_tokens, accepted_token_nums)
+
+    def _dfx_check_token_logprobs(
+        self,
+        sampled_token_ids: Any,
+        logprobs_lists: Any,
+        req_ids: list[str] | None = None,
+    ) -> None:
+        self.dfx.check_token_logprobs(
+            sampled_token_ids=sampled_token_ids,
+            logprobs_lists=logprobs_lists,
+            req_ids=req_ids,
+        )
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         with graph_manager_wrapper(self):
@@ -214,15 +237,16 @@ class NPUModelRunner(GPUModelRunner):
                 torch.npu.synchronize()
                 self._execution_start_time = time.perf_counter()
 
-        # Last-PP TP OR pending_dump before start; early PP no-op.
-        # Dummy still joins last-PP all_reduce but must not arm dump_enable.
+        # Split intentionally: sync_dfx_config on ALL ranks (broadcast-safe);
+        # sync_dump_pending_or only on last-PP TP. Do not fold them together.
         logger.info_once(
             "Dumper sync: tp_group.world_size=%s tp_rank=%s pp_last=%s",
             get_tp_group().world_size,
             get_tp_group().rank_in_group,
             get_pp_group().is_last_rank,
         )
-        self.dumper.begin_step_dump_decision(allow_arm=not dummy_run)
+        self.refresh_dfx_config()
+        self.dfx.sync_dump_pending_or(allow_arm=not dummy_run)
         # start/finalize wrap the forward path; sample_tokens runs afterwards.
         self.dumper.start_dump_data()
         try:
@@ -243,17 +267,17 @@ class NPUModelRunner(GPUModelRunner):
             finished_req_ids = self.execute_model_state.finished_req_ids
 
         output = super().sample_tokens(grammar_output)
-        self.dumper.clear_finished_requests(finished_req_ids)
+        self._dfx_clear_finished_requests(finished_req_ids)
 
         if isinstance(output, AsyncOutput):
             # Async: defer token/logprob check until D2H in get_output().
-            wrapped = AscendAsyncOutput(output, self.dumper)
+            wrapped = AscendAsyncOutput(output, self)
             self._attach_observability_fields(wrapped)
             return wrapped
 
         if isinstance(output, ModelRunnerOutput):
             # Sync: super() already called get_output(); check immediately.
-            self.dumper.check_all_token_logprobs(
+            self._dfx_check_token_logprobs(
                 sampled_token_ids=output.sampled_token_ids,
                 logprobs_lists=output.logprobs,
                 req_ids=output.req_ids,
@@ -543,7 +567,7 @@ class NPUModelRunner(GPUModelRunner):
             num_rejected,
             query_start_loc,
         )
-        self.dumper.check_all_spec_acceptance(
+        self._dfx_check_spec_acceptance(
             sampled_tokens=sampled_tokens,
             accepted_token_nums=num_sampled,
         )

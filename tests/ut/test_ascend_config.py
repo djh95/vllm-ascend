@@ -492,6 +492,7 @@ class TestShortRequestFirstConfig(TestBase):
 class TestDynamicDumpConfig(TestBase):
     def test_defaults(self):
         cfg = DynamicDumpConfig()
+        self.assertEqual(cfg.user_overrides, {})
         self.assertTrue(cfg.enable_spec_acceptance_check)
         self.assertFalse(cfg.enable_token_logprob_check)
         self.assertEqual(cfg.spec_acceptance_window, 10)
@@ -507,6 +508,16 @@ class TestDynamicDumpConfig(TestBase):
         self.assertEqual(cfg.ill_garbled_window_thresh, 1)
         self.assertEqual(cfg.ill_repet_window_thresh, 2)
         self.assertEqual(cfg.dynamic_dump_cooldown_seconds, 300)
+        self.assertEqual(cfg.dynamic_dump_max_times, 0)
+
+    def test_user_overrides_only_explicit_keys(self):
+        cfg = DynamicDumpConfig({"spec_acceptance_window": 20, "enable_token_logprob_check": True})
+        self.assertEqual(
+            cfg.user_overrides,
+            {"spec_acceptance_window": 20, "enable_token_logprob_check": True},
+        )
+        self.assertEqual(cfg.spec_acceptance_window, 20)
+        # Full config still has defaults for unset keys.
         self.assertEqual(cfg.dynamic_dump_max_times, 0)
 
     def test_unknown_key_rejected(self):

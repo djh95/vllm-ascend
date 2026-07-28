@@ -1,0 +1,51 @@
+#
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""DFX (design for eXcellence) observability.
+
+Four flows + runner orchestration:
+1. Runtime config — shared JSON + world broadcast (``DfxRuntimeConfig``)
+2. Detector — anomaly checks returning ``AnomalyAlert``
+3. Dump / observability — msprobe dump + log/metrics/trace switches (``Dumper``)
+4. Report — short anomaly records under ``dfx/report`` (``DfxReportWriter``)
+5. Processor — runner hooks wiring the above (``DfxProcessor``)
+
+Call chain: model runner → ``DfxProcessor`` → detector → ``AnomalyAlert`` →
+``Dumper.handle_anomaly_alert`` (+ report).
+"""
+
+from vllm_ascend.dfx.detector import (
+    AnomalyAlert,
+    AnomalyDetector,
+    ManualDumpDetector,
+    SpecAcceptanceDetector,
+    TokenLogprobDetector,
+)
+from vllm_ascend.dfx.dumper import Dumper
+from vllm_ascend.dfx.processor import DfxProcessor
+from vllm_ascend.dfx.report import DfxReportWriter
+from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig
+
+__all__ = [
+    "AnomalyAlert",
+    "AnomalyDetector",
+    "DfxProcessor",
+    "DfxRuntimeConfig",
+    "DfxReportWriter",
+    "Dumper",
+    "ManualDumpDetector",
+    "SpecAcceptanceDetector",
+    "TokenLogprobDetector",
+]

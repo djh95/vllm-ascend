@@ -1,0 +1,257 @@
+# DFX 方案说明（vllm-ascend）
+
+> 设计 for eXcellence：运行时维测控制面。  
+> 代码根目录：`vllm_ascend/dfx/`
+
+## 1. 四条流程
+
+| 流程 | 模块 | 职责 |
+|------|------|------|
+| 1. Runtime Config | `runtime_config.py`（`DfxRuntimeConfig`） | 一份 JSON；可选热更新（启动项控制周期） |
+| 2. Detector | `detector/` | 异常检测，只产出 `AnomalyAlert` |
+| 3. Dump / 观测开关 | `dumper.py`（`Dumper`） | msprobe dump 生命周期；log / metrics / trace 开关 |
+| 4. Report | `report.py`（`DfxReportWriter`） | 异常短日志落盘到 `dfx/report/` |
+
+兼容入口：`from vllm_ascend.dfx import Dumper`；旧路径 `vllm_ascend/dumper.py` 仅为 re-export。
+
+```text
+additional_config
+  ├─ dfx_config_path / dfx_config_reload_interval
+  └─ AscendConfig.dfx_config (DfxRuntimeConfig)
+         │
+Worker: runner.dfx = DfxProcessor(runner)
+  execute_model 入口（拆两段，勿合并）
+  ├─ dfx.refresh_config()          # 全 rank；热更关则立刻 return
+  └─ dfx.sync_dump_pending_or()    # 仅 last-PP TP
+         │
+采样 / get_output
+  dfx.clear_finished / check_spec / check_token_logprobs
+    → detector.check_all → AnomalyAlert
+    → dumper.handle_anomaly_alert  # 只管 dump
+    → report_writer.write          # Report
+```
+
+> 注意：检测由 **processor 调 detector**，再用 alert 调 dumper；detector **不**直接 `enable_dump`。  
+> Config / Report 也不应塞进 dumper 的 dump OR 路径，否则有人「优化跳过 early PP 的 maybe_reload」会让 world broadcast 卡死。
+
+## 2. Runtime Config
+
+### 2.1 路径
+
+| 优先级 | 来源 | 路径 |
+|--------|------|------|
+| 1 | `additional_config.dfx_config_path` 或 `dfx-config` | 显式路径 |
+| 2 | 默认 | `<cwd>/dfx/config/dfx_config.json` |
+
+启动热更新开关（权威，JSON 不能重新打开）：
+
+| 参数 | 默认 | 含义 |
+|------|------|------|
+| `dfx_config_reload_interval` | `0` | `0`=关闭周期刷新（仅启动加载一次）；`>0`=每隔 N 秒 `maybe_reload` |
+
+报告目录默认：与 config 同级的 `dfx/report/`（可用 `dfx_report_dir` 覆盖）。  
+模板：`vllm_ascend/dfx/templates/dfx_config.json`。首次启动若文件不存在会按默认内容创建。
+
+### 2.2 同步模式 `sync_mode`
+
+| 值 | 行为 | 适用 |
+|----|------|------|
+| `broadcast`（**默认**） | 仅 **world global rank0** 读/写 JSON；各 rank 集体 `all_reduce(due)` + `broadcast_object` | 多机无共享盘：改 rank0 上那一份即可 |
+| `file` | 每进程按启动参数间隔轮询本地/共享路径 mtime | 共享文件系统 |
+
+广播注意：
+
+- 必须在**所有 rank 同一拍**调用 `sync_dfx_config()` / `refresh_dfx_config()`（已挂在 runner `execute_model` 入口，与 dump OR 分开）。
+- **禁止**把 config sync 折叠进「仅 last-PP」的 dump 路径。
+- 范围是**单个 engine 的 `get_world_group()`**。
+- `save()` 在 broadcast 模式下非 leader 会忽略。
+
+### 2.2.1 非 worker（API / EngineCore）
+
+Detector / dump / report **只跑在 worker**。
+
+`log` 开关：当 `dfx_config_reload_interval > 0` 且进程 **未**设置 `RANK` 时，`AscendConfig` 会启动守护线程 `dfx-non-worker-reload`，按间隔 **本地 file 轮询** JSON 并 `apply_log_switches`（**不**进 worker world broadcast，**不**落盘）。
+
+Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在 worker 上再起并行热更线程。
+
+### 2.2.2 外部多 engine DP
+
+产品约定二选一（写清即可，勿混用）：
+
+1. **每套 engine 的 rank0 一份 JSON**（`broadcast`）：各引擎互不影响，运维改各自 rank0 路径上的文件；
+2. **`file` + 共享盘**：所有引擎进程轮询同一共享路径。
+
+### 2.3 JSON 结构
+
+```json
+{
+  "sync_mode": "broadcast",
+  "dump": {
+    "enabled": true,
+    "max_times": 0,
+    "cooldown_seconds": 300,
+    "dump_once": false
+  },
+  "log": { "enabled": true, "level": "INFO" },
+  "metrics": { "enabled": true, "level": "INFO" },
+  "trace": { "enabled": false, "level": "INFO", "otlp_endpoint": null },
+  "detector": {
+    "enable_spec_acceptance_check": true,
+    "enable_token_logprob_check": false,
+    "spec_acceptance_window": 10,
+    "spec_acceptance_low_threshold": 0.3,
+    "spec_acceptance_len_low_threshold": 1.4,
+    "spec_acceptance_high_threshold": 0.96,
+    "spec_acceptance_len_high_threshold": 2.8,
+    "token_logprob_window": 64,
+    "token_logprob_stride": 32,
+    "token_logprob_topk": 20,
+    "ill_nan_window_thresh": 1,
+    "ill_rare_window_thresh": 1,
+    "ill_garbled_window_thresh": 1,
+    "ill_repet_window_thresh": 2
+  }
+}
+```
+
+| 段 | 含义 |
+|----|------|
+| `dump` | `enabled` / `max_times` / `cooldown_seconds`；`dump_once`：手动改 JSON 为 `true` 后下一次热更触发一次 dump（不计次数、忽略冷却，触发后自动写回 `false`）。**必须** `dfx_config_reload_interval > 0`，否则改 JSON 不会被读到 |
+| `log` / `metrics` / `trace` | 观测开关与级别（log level 会落到 DFX 相关 logger） |
+| `detector` | 各检测器开关与阈值 |
+
+### 2.4 与 `dynamic_dump_config` 的关系
+
+- **推荐**：改 DFX JSON（或 rank0 JSON + broadcast）。
+- **兼容**：`additional_config.dynamic_dump_config` 仍可用；仅**显式**启动键参与合并（`user_overrides`）。
+- **启动引导**（**仅 worker leader 落盘一次**；API/EngineCore/`init_ascend_config` 只做内存合并）：
+  - **未**配 `dfx_config_path` 且有启动项 → 忽略旧默认路径文件内容，用 `defaults ← startup`（日志：`overwrite default json`）；若本进程暂不落盘，**先删除**磁盘上旧的默认 JSON，避免 API 热更线程在 worker 落盘前又读回旧文件；worker leader `ensure_persisted` 再写出新文件；
+  - **已**配路径 → 先读该 JSON，再 `defaults ← JSON ← startup`，缺省补默认；leader 写回该路径；
+  - 无启动项 → `defaults ← JSON`（或仅 defaults），同样补全后由 leader 写回。
+  - 启动日志打印最终 `path=`（AscendConfig + worker Processor）。
+- 旧字段映射：`dynamic_dump_max_times` → `dump.max_times`，`dynamic_dump_cooldown_seconds` → `dump.cooldown_seconds`，其余检测字段 → `detector.*`。
+- **热更合并**：仅 `defaults ← JSON`（启动 overlay 只在 bootstrap 用一次并写回文件；之后以 JSON 为准）。
+- **`dump_once`**：依赖热更；`dfx_config_reload_interval` 必须 `> 0`。
+
+### 2.5 命名
+
+| 推荐 | 说明 |
+|------|------|
+| `DfxRuntimeConfig` / `runtime_config.py` | 运行时热更新控制面 |
+| `DfxProcessor` / `processor.py` | runner 侧编排（构造 dumper/detectors、check/clear/report） |
+
+## 3. Detector
+
+| 类 | 文件 | `anomaly_type` |
+|----|------|----------------|
+| `AnomalyDetector`（基类） | `detector/base.py` | — |
+| `SpecAcceptanceDetector` | `detector/spec_acceptance.py` | `spec_acceptance` |
+| `TokenLogprobDetector` | `detector/token_logprob.py` | `token_logprob` |
+| `ManualDumpDetector` | `detector/manual_dump.py` | `manual_dump_once` |
+
+基类约定：
+
+- `refresh_from_config()`：从 live `DfxRuntimeConfig.detector` 拉开关/阈值
+- `check_all` / `check_one`：返回 `list[AnomalyAlert]` / `AnomalyAlert | None`（**不**调用 Dumper）
+- `on_alert_armed(alert)`：dump 成功后的可选日志钩子
+
+调用链（``DfxProcessor`` 编排，runner 只挂接）：
+
+```text
+runner.dfx = DfxProcessor(runner)
+  ├─ refresh_config() / sync_dump_pending_or()
+  ├─ clear_finished / check_spec_acceptance / check_token_logprobs
+  └─ _handle_alert → dumper.handle_anomaly_alert + save_sample_param + report_writer.write
+```
+
+> 注意：检测由 **processor 调 detector**，再用 alert 调 dumper；detector **不**直接 `enable_dump`。  
+> `save_sample_param` 在 ``DfxProcessor``（alert 后的 log sink，不属于 dump 生命周期）。
+
+`AnomalyAlert`（`detector/alert.py`）对齐 msprobe `ILLDetector.detector(...)` 的 `is_ill` / `ill_type`，并带上 dump/report 元数据。
+
+细节：
+
+- 投机接受率：[dumper_design.md](./dumper_design.md)
+- Token/logprob：[token_logprob_anomaly_design.md](./token_logprob_anomaly_design.md)
+- Async 时序：[async_issues_analysis.md](./async_issues_analysis.md)
+
+## 4. Dump（Dumper）
+
+职责：debugger 生命周期、pending OR 齐步、start/finalize 配对、接 `AnomalyAlert`。  
+实现位置：`vllm_ascend/dfx/dumper.py`。
+
+每步入口（runner → ``DfxProcessor``）：
+
+1. `dfx.refresh_config()` → `sync_dfx_config()`（仅当 `dfx_config_reload_interval > 0`；**全 rank**）
+2. 若 config 变更：`dumper.apply_dfx_config()` + detector refresh；`ManualDumpDetector` → alert（`consume_quota=False`）
+3. `dfx.sync_dump_pending_or()`（仅 last-PP TP；**不含** config / report）
+
+Dumper **不**调用 config reload，也 **不**写 report（report 在 processor）。
+
+门控（异常检测自动 dump）：`dump.enabled == false` 或 `max_times == 0` 或两路 detector 均关 → 关闭。  
+`dump_once` 由 `ManualDumpDetector` 消费；仅要求 `dump.enabled` + debugger，不受 `max_times` / cooldown 限制。  
+**前提**：`additional_config.dfx_config_reload_interval > 0`（热更为关时改 JSON 的 `dump_once` 不会生效）。
+
+## 5. Report
+
+- 类：`DfxReportWriter`
+- 目录：默认 `<dfx_root>/report/`
+- 文件：`anomaly_YYYYMMDD.log`（每日一份，JSON Lines）
+
+示例行：
+
+```json
+{
+  "ts": "2026-07-28T11:00:00",
+  "unix_ts": 1753666800.0,
+  "anomaly_type": "spec_acceptance",
+  "req_id": "req-1",
+  "rank": "tp0-pp1",
+  "detail": { "acceptance_rate": 0.1 }
+}
+```
+
+检测触发 dump 成功时由 **DfxProcessor** 追加一行（`report_writer`）。
+
+## 6. 非 worker 与多 engine
+
+### 6.1 非 worker（API / EngineCore）
+
+Detector / dump / report **只跑在 worker**。  
+`log` 级别：热更开启且无 `RANK` 时由后台 file 轮询线程跟随 JSON（见 §2.2.1）。`metrics` / `trace` 仍待接线。
+
+### 6.2 外部多 engine DP
+
+产品约定二选一：
+
+1. **每套 engine 的 rank0 一份 JSON**（`broadcast`）；
+2. **`file` + 共享盘**。
+
+## 7. 启动示例
+
+```bash
+# 多机：JSON 放在 global rank0 可读路径；开启 5s 热更新
+vllm serve <model> --additional-config '{
+  "dfx_config_path": "/data/dfx/config/dfx_config.json",
+  "dfx_config_reload_interval": 5,
+  "dump_config_path": "/data/msprobe_dump.json"
+}'
+```
+
+或默认路径（进程 cwd 下自动创建；默认不热更新）：
+
+```text
+./dfx/config/dfx_config.json
+./dfx/report/anomaly_YYYYMMDD.log
+```
+
+开启 `dfx_config_reload_interval` 后，在线改 `dump.max_times` / detector 阈值约 N 秒内各 worker 生效（broadcast）。
+
+## 8. 相关文档
+
+| 文档 | 内容 |
+|------|------|
+| [dumper_design.md](./dumper_design.md) | Dump 生命周期、PP/TP 齐步、调用链 |
+| [token_logprob_anomaly_design.md](./token_logprob_anomaly_design.md) | ILLDetector 窗口与配置 |
+| [async_issues_analysis.md](./async_issues_analysis.md) | 异步调度下的时序与 OR |
+| 用户配置 | `docs/source/user_guide/configuration/additional_config.md` |

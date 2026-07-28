@@ -73,7 +73,10 @@ The following table lists additional configuration options available in vLLM Asc
 | `refresh`                           | bool | `false` | Whether to refresh global Ascend configuration content. This is usually used by rlhf or ut/e2e test case. |
 | `dump_config`                       | dict | `None`  | Inline msprobe dump configuration. vLLM-Ascend will materialize it to a temporary JSON file and pass that file to the debugger. |
 | `dump_config_path`                  | str  | `None`  | Configuration file path for msprobe dump (compatible legacy option).                                      |
-| `dynamic_dump_config`               | dict | `{}`    | Configuration options for anomaly-triggered dynamic msprobe dump thresholds and rate limits. |
+| `dfx_config_path` / `dfx-config`    | str  | `None`  | Path to DFX runtime JSON (dump/log/metrics/trace/detector). Default: `<cwd>/dfx/config/dfx_config.json`. Prefer this over `dynamic_dump_config` for multi-node hot reload (rank0 read + world broadcast). |
+| `dfx_config_reload_interval`        | float| `0`     | DFX JSON hot-reload period in seconds. `0` (default) disables periodic refresh (config loaded once at startup). Set e.g. `5` to re-read / broadcast every 5s. **Required `> 0` for `dump.dump_once`.** |
+| `dfx_report_dir`                    | str  | `None`  | Directory for short anomaly reports. Default: sibling `dfx/report` next to the config dir. |
+| `dynamic_dump_config`               | dict | `{}`    | **Legacy** flat options for anomaly-triggered dump. Only **explicit** keys overlay DFX JSON (explicit > JSON > defaults); empty `{}` does not clobber JSON. Prefer `dfx_config_path`. |
 | `enable_async_exponential`          | bool | `False` | Whether to enable asynchronous exponential overlap. To enable asynchronous exponential, set this config to True.        |
 | `enable_shared_expert_dp`           | bool | `False` | When the expert is shared in DP, it delivers better performance but consumes more memory. Currently only DeepSeek series models are supported. |
 | `multistream_overlap_shared_expert` | bool | `False` | Whether to enable multi-stream shared expert. This option only takes effect on MoE models with shared experts. |
@@ -167,7 +170,51 @@ The details of each configuration option are as follows:
 | `posterior_threshold`   | float | `0.95`  | Upper bound for the entropy-adjusted acceptance threshold. Must be in (0, 1]. The effective threshold is `min(exp(-entropy * posterior_alpha), posterior_threshold)`. |
 | `posterior_alpha`       | float | `0.4`   | Scaling factor for entropy in the threshold computation. Must be >= 0. Higher values make the threshold more sensitive to entropy — high-entropy tokens become much easier to accept, improving performance but reducing precision. |
 
+**dfx_config_path / dfx-config**
+
+Path to the DFX runtime JSON controlling dump, log/metrics/trace switches, and anomaly detectors.
+If omitted, vLLM-Ascend uses `<cwd>/dfx/config/dfx_config.json` (created with defaults on first start).
+
+**dfx_config_reload_interval**
+
+Hot-reload period in seconds for the DFX JSON. Default `0` means **off** (load once at startup only).
+Set a positive value (e.g. `5`) to refresh on workers every N seconds (`broadcast` or `file` sync).
+This startup setting is authoritative; it is not turned back on by fields inside the JSON.
+
+On **API / EngineCore** (processes without `RANK`), the same interval also starts a daemon
+thread that file-polls the JSON and applies DFX `log` level only — it does **not** join the
+worker world broadcast and does not write the file. Workers keep step-driven sync only.
+
+Inside the DFX JSON, `dump.dump_once: true` is consumed by `ManualDumpDetector` on the next
+successful hot-reload (then persisted back to `false`). The alert arms one msprobe dump without
+consuming `max_times` or cooldown; it still requires `dump.enabled` and an initialized debugger.
+**Requires `dfx_config_reload_interval > 0`** — with interval `0`, editing `dump_once` in the
+JSON has no effect.
+
+Default `sync_mode` is `broadcast`: only global rank0 reads the file and world-broadcasts to other ranks
+(no shared filesystem required within one engine). Set `"sync_mode": "file"` for per-process mtime polling
+on a shared path. See `docs/zh/dfx_design.md` for the full schema and multi-engine DP notes.
+
+Example:
+
+```json
+{
+  "dfx_config_path": "/data/dfx/config/dfx_config.json",
+  "dfx_config_reload_interval": 5
+}
+```
+
 **dynamic_dump_config**
+
+> **Legacy.** Prefer `dfx_config_path`. Only keys you set in the startup dict overlay the DFX
+> runtime JSON (`dynamic_dump_max_times` → `dump.max_times`, detector fields → `detector.*`).
+> Merge at startup (in-memory on every process): **no** `dfx_config_path` + startup keys →
+> overwrite basis with `defaults ← startup` (log: `overwrite default json`); **with** path →
+> `defaults ← JSON ← startup`. **Disk persist is deferred**: only the worker JSON writer
+> (world first rank / `RANK==0` / single-process) calls `ensure_persisted()` once from
+> `DfxProcessor`. API/EngineCore `init_ascend_config` does not write the file. Hot-reload
+> uses `defaults ← JSON` only. An empty `{}` does not apply defaults as overrides onto
+> existing JSON keys.
 
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |

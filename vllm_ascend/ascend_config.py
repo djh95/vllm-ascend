@@ -90,9 +90,49 @@ class AscendConfig:
                 "cannot be enabled at the same time. Please disable one of them."
             )
 
-        # Dump / PrecisionDebugger configuration
+        # Dump / PrecisionDebugger / DFX configuration
         self.dump_config_path = self._resolve_dump_config_path(additional_config)
         self.dynamic_dump_config = DynamicDumpConfig(additional_config.get("dynamic_dump_config"))
+        self.dfx_config_path = additional_config.get("dfx_config_path") or additional_config.get("dfx-config")
+        if self.dfx_config_path is not None and not isinstance(self.dfx_config_path, str):
+            raise ValueError(
+                f"additional_config.dfx_config_path must be a string, got {type(self.dfx_config_path).__name__}."
+            )
+        raw_reload = additional_config.get("dfx_config_reload_interval", 0)
+        if raw_reload is None:
+            raw_reload = 0
+        try:
+            self.dfx_config_reload_interval = float(raw_reload)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "additional_config.dfx_config_reload_interval must be a number of seconds "
+                f"(0 disables hot-reload), got {raw_reload!r}."
+            ) from exc
+        if self.dfx_config_reload_interval < 0:
+            raise ValueError(
+                f"additional_config.dfx_config_reload_interval must be >= 0, got {self.dfx_config_reload_interval}."
+            )
+        from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig
+
+        # Do not persist here: API / EngineCore / every worker would race the same
+        # JSON. Worker ``DfxProcessor`` calls ``ensure_persisted()`` on the leader.
+        self.dfx_config = DfxRuntimeConfig(
+            self.dfx_config_path,
+            # Explicit startup keys only. Bootstrap (in-memory):
+            # - no dfx_config_path + startup → overwrite basis defaults←startup
+            # - dfx_config_path set → defaults←JSON←startup
+            legacy_dynamic_dump=self.dynamic_dump_config.user_overrides,
+            report_dir=additional_config.get("dfx_report_dir"),
+            reload_interval_seconds=self.dfx_config_reload_interval,
+            ensure_file=False,
+        )
+        logger.info(
+            "[DFX] config path=%s (persist deferred to worker leader)",
+            self.dfx_config.config_path,
+        )
+        # API / EngineCore: file-poll log switches. Workers (RANK set) no-op here
+        # and keep execute_model → refresh_config → world broadcast.
+        self.dfx_config.start_non_worker_background_reload()
 
         # Log configuration
         self.ascend_log_path = additional_config.get(
@@ -755,7 +795,17 @@ class RejectionSamplerConfig:
 
 
 class DynamicDumpConfig:
-    """Configuration for anomaly-triggered msprobe dump behavior.
+    """Legacy flat config for anomaly-triggered msprobe dump.
+
+    Prefer the shared DFX JSON via ``additional_config``::
+
+        {"dfx_config_path": "/path/on/rank0/dfx_config.json"}
+        # or alias: {"dfx-config": "/path/on/rank0/dfx_config.json"}
+
+    Default path when omitted: ``<cwd>/dfx/config/dfx_config.json``.
+    Default ``sync_mode`` is ``broadcast``: only global rank0 reads the file and
+    world-broadcasts to other ranks/machines (no shared FS required).
+    ``dynamic_dump_config`` is still accepted and overlaid at startup.
 
     Usage (online)::
 
@@ -803,11 +853,15 @@ class DynamicDumpConfig:
         if not isinstance(config, dict):
             raise ValueError(f"dynamic_dump_config must be a dict, got {type(config).__name__}.")
 
+        # Only keys present in the startup dict are treated as explicit overrides.
+        # Full ``config`` still fills defaults for attribute access / detectors.
+        self.user_overrides: dict[str, Any] = {}
         self.config = self._defaults.copy()
         for key, value in config.items():
-            if key not in self.config:
+            if key not in self._defaults:
                 raise ValueError(f"dynamic_dump_config has no attribute '{key}'")
             self.config[key] = value
+            self.user_overrides[key] = value
 
         self._validate()
 

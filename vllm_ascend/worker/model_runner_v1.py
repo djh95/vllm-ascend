@@ -121,7 +121,7 @@ from vllm_ascend.compilation.acl_graph import (
     set_graph_params,
     update_full_graph_params,
 )
-from vllm_ascend.dumper import Dumper
+from vllm_ascend.dfx.processor import DfxProcessor
 from vllm_ascend.eplb.adaptor.vllm_adaptor import VllmEplbAdaptor
 from vllm_ascend.eplb.core.eplb_device_transfer_loader import D2DExpertWeightLoader
 from vllm_ascend.eplb.core.eplb_worker import EplbProcess
@@ -271,22 +271,26 @@ class AscendAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
     them on CPU (same place RejectionSampler.parse_output runs).
     """
 
-    def __init__(self, *args: Any, dumper: Any | None = None, **kwargs: Any):
+    def __init__(self, *args: Any, runner: Any | None = None, **kwargs: Any):
+        # Backward-compat: older call sites passed dumper=
+        dumper = kwargs.pop("dumper", None)
         super().__init__(*args, **kwargs)
-        self._dumper = dumper
+        self._runner = runner
+        if self._runner is None and dumper is not None:
+            self._runner = getattr(dumper, "runner", None)
 
     def get_output(self) -> ModelRunnerOutput:
         output = super().get_output()
-        if self._dumper is None:
+        if self._runner is None:
             return output
-        self._dumper.check_all_token_logprobs(
+        self._runner._dfx_check_token_logprobs(
             sampled_token_ids=output.sampled_token_ids,
             logprobs_lists=output.logprobs,
             req_ids=output.req_ids,
         )
         # Attach after check; start_dump_data() on a later step may have cleared
         # the dumper's per-step dict already under async overlap.
-        output.debug_log_full = dict(self._dumper.full_log_requests_this_step)
+        output.debug_log_full = dict(self._runner.dumper.full_log_requests_this_step)
         return output
 
 
@@ -371,8 +375,9 @@ class NPUModelRunner(GPUModelRunner):
         # use_hybrid_blocks: if hybrid blocks is used.
         self.use_hybrid_blocks: bool = False
         self.need_accepted_tokens: bool = False
-        dynamic_dump_config = self.ascend_config.dynamic_dump_config
-        self.dumper = Dumper(self, dynamic_dump_config)
+        self.dfx = DfxProcessor(self)
+        # Dump lifecycle call sites keep using ``self.dumper``.
+        self.dumper = self.dfx.dumper
 
         self.is_multimodal_model = self.model_config.is_multimodal_model
         self.block_size = vllm_config.cache_config.block_size
@@ -722,6 +727,28 @@ class NPUModelRunner(GPUModelRunner):
             num_tokens_after_padding = num_tokens_across_dp.cpu()
 
         return max_tokens_across_dp, num_tokens_after_padding, synced_cudagraph_mode
+
+    def refresh_dfx_config(self) -> bool:
+        """All-rank DFX config sync. Must not be skipped on early PP."""
+        return self.dfx.refresh_config()
+
+    def _dfx_clear_finished_requests(self, finished_req_ids: Any) -> None:
+        self.dfx.clear_finished(finished_req_ids)
+
+    def _dfx_check_spec_acceptance(self, sampled_tokens: Any, accepted_token_nums: Any) -> None:
+        self.dfx.check_spec_acceptance(sampled_tokens, accepted_token_nums)
+
+    def _dfx_check_token_logprobs(
+        self,
+        sampled_token_ids: Any,
+        logprobs_lists: Any,
+        req_ids: list[str] | None = None,
+    ) -> None:
+        self.dfx.check_token_logprobs(
+            sampled_token_ids=sampled_token_ids,
+            logprobs_lists=logprobs_lists,
+            req_ids=req_ids,
+        )
 
     def get_model(self) -> nn.Module:
         # get raw model out of the aclgraph wrapper.
@@ -2023,14 +2050,16 @@ class NPUModelRunner(GPUModelRunner):
         if self.execute_model_state is not None:
             raise RuntimeError("State error: sample_tokens() must be called after execute_model() returns None.")
 
-        # Last-PP TP ranks OR pending_dump here (no PP broadcast; early PP skip).
+        # Split intentionally: sync_dfx_config on ALL ranks (broadcast-safe);
+        # sync_dump_pending_or only on last-PP TP. Do not fold them together.
         logger.info_once(
             "Dumper sync: tp_group.world_size=%s tp_rank=%s pp_last=%s",
             get_tp_group().world_size,
             get_tp_group().rank_in_group,
             get_pp_group().is_last_rank,
         )
-        self.dumper.begin_step_dump_decision()
+        self.refresh_dfx_config()
+        self.dfx.sync_dump_pending_or()
 
         # If ngram_gpu is used, we need to copy the scheduler_output to avoid
         # the modification has influence on the scheduler_output in engine core process.
@@ -2640,7 +2669,7 @@ class NPUModelRunner(GPUModelRunner):
         self.dumper.finalize_dump_data()
 
         finished_req_ids = getattr(scheduler_output, "finished_req_ids", None)
-        self.dumper.clear_finished_requests(finished_req_ids)
+        self._dfx_clear_finished_requests(finished_req_ids)
 
         if self.need_accepted_tokens:
             assert self.sampling_done_event is not None
@@ -2653,13 +2682,13 @@ class NPUModelRunner(GPUModelRunner):
             # Wait for D2H of num_accepted_tokens_cpu before spec acceptance anomaly checks.
             if self.num_accepted_tokens_event is not None:
                 self.num_accepted_tokens_event.synchronize()
-            self.dumper.check_all_spec_acceptance(
+            self._dfx_check_spec_acceptance(
                 sampled_tokens=sampler_output.sampled_token_ids,
                 accepted_token_nums=self.input_batch.num_accepted_tokens_cpu,
             )
 
         if not self.use_async_scheduling:
-            self.dumper.check_all_token_logprobs(
+            self._dfx_check_token_logprobs(
                 sampled_token_ids=valid_sampled_token_ids,
                 logprobs_lists=logprobs_lists,
                 req_ids=req_ids_output_copy,
@@ -2710,7 +2739,7 @@ class NPUModelRunner(GPUModelRunner):
             async_output_copy_stream=self.async_output_copy_stream,
             vocab_size=self.input_batch.vocab_size,
             routed_experts=routed_experts_snapshot,
-            dumper=self.dumper,
+            runner=self,
         )
         self.input_batch.set_async_sampled_token_ids(
             async_output.sampled_token_ids_cpu,

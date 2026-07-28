@@ -172,8 +172,16 @@ def _setup_file_logging(log_dir: str | None = None) -> None:
     _file_handler = file_handler
     _file_logging_configured = True
 
-    dumper_logger = logging.getLogger("vllm.vllm_ascend.dumper")
-    dumper_logger.setLevel(logging.DEBUG)
+    for name in (
+        "vllm.vllm_ascend.dfx.dumper",
+        "vllm.vllm_ascend.dfx.detector.spec_acceptance",
+        "vllm.vllm_ascend.dfx.detector.token_logprob",
+        "vllm.vllm_ascend.dfx.detector.manual_dump",
+        "vllm.vllm_ascend.dfx.runtime_config",
+        "vllm.vllm_ascend.dfx.report",
+        "vllm.vllm_ascend.dfx.processor",
+    ):
+        logging.getLogger(name).setLevel(logging.DEBUG)
 
 
 def configure_ascend_file_logging() -> None:
@@ -229,5 +237,13 @@ def configure_ascend_logging() -> None:
     ascend_logger.setLevel(envs.VLLM_LOGGING_LEVEL)
     ascend_logger.propagate = False
 
-    dumper_logger = logging.getLogger("vllm.vllm_ascend.dumper")
-    dumper_logger.setLevel(logging.DEBUG)
+    for name in (
+        "vllm.vllm_ascend.dfx.dumper",
+        "vllm.vllm_ascend.dfx.detector.spec_acceptance",
+        "vllm.vllm_ascend.dfx.detector.token_logprob",
+        "vllm.vllm_ascend.dfx.detector.manual_dump",
+        "vllm.vllm_ascend.dfx.runtime_config",
+        "vllm.vllm_ascend.dfx.report",
+        "vllm.vllm_ascend.dfx.processor",
+    ):
+        logging.getLogger(name).setLevel(logging.DEBUG)

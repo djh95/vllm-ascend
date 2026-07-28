@@ -1,0 +1,306 @@
+#
+# Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from collections import defaultdict, deque
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from vllm_ascend.dfx.detector.alert import AnomalyAlert
+from vllm_ascend.dfx.detector.base import AnomalyDetector
+from vllm_ascend.logger import init_logger_ascend
+
+if TYPE_CHECKING:
+    from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig
+
+logger = init_logger_ascend(__name__)
+
+
+class TokenLogprobDetector(AnomalyDetector):
+    """Detect ill-formed token/logprob windows via msprobe ILLDetector."""
+
+    anomaly_type = "token_logprob"
+
+    def __init__(
+        self,
+        *,
+        dfx_config: DfxRuntimeConfig | None = None,
+        runner: Any | None = None,
+        dynamic_dump_config: Any | None = None,
+    ) -> None:
+        enabled = False
+        if dynamic_dump_config is not None:
+            enabled = bool(getattr(dynamic_dump_config, "enable_token_logprob_check", False))
+        super().__init__(dfx_config=dfx_config, runner=runner, enabled=enabled)
+        self._window = 64
+        self._stride = 32
+        self._topk = 20
+        self._ill_window_thresh = {1: 1, 2: 1, 3: 2, 4: 1}
+        self._buf: dict[str, deque[tuple[int, dict[int, float]]]] = {}
+        self._since_check: dict[str, int] = defaultdict(int)
+        self._checked: set[str] = set()
+        self._ill_window_hits: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+        self._ill_detector: Any | None = None
+        self._ill_detector_init_failed = False
+        if dynamic_dump_config is not None:
+            self._apply_values(dynamic_dump_config)
+        else:
+            self.refresh_from_config()
+
+    def _apply_values(self, src: Any) -> None:
+        getter = src.get if isinstance(src, dict) else lambda k, d=None: getattr(src, k, d)
+        self._enabled = bool(getter("enable_token_logprob_check", self._enabled))
+        self._window = int(getter("token_logprob_window", self._window))
+        self._stride = int(getter("token_logprob_stride", self._stride))
+        self._topk = int(getter("token_logprob_topk", self._topk))
+        self._ill_window_thresh = {
+            1: int(getter("ill_rare_window_thresh", self._ill_window_thresh[1])),
+            2: int(getter("ill_garbled_window_thresh", self._ill_window_thresh[2])),
+            3: int(getter("ill_repet_window_thresh", self._ill_window_thresh[3])),
+            4: int(getter("ill_nan_window_thresh", self._ill_window_thresh[4])),
+        }
+
+    def refresh_from_config(self) -> None:
+        if self._dfx_config is None:
+            return
+        self._apply_values(self._dfx_config.detector)
+
+    def clear_finished(self, req_id: str) -> None:
+        self._buf.pop(req_id, None)
+        self._since_check.pop(req_id, None)
+        self._checked.discard(req_id)
+        self._ill_window_hits.pop(req_id, None)
+
+    def check_all(
+        self,
+        sampled_token_ids: list[list[int]] | None,
+        logprobs_lists: Any | None,
+        req_ids: list[str] | None = None,
+    ) -> list[AnomalyAlert]:
+        """Batch entry: return alerts for the model runner to hand to Dumper."""
+        if not self._precheck():
+            return []
+        if sampled_token_ids is None or logprobs_lists is None:
+            return []
+
+        if req_ids is None:
+            input_batch = getattr(self._runner, "input_batch", None) if self._runner is not None else None
+            req_ids = getattr(input_batch, "req_ids", None) if input_batch is not None else None
+        if not req_ids:
+            return []
+
+        detector = self._get_ill_detector()
+        if detector is None:
+            return []
+
+        model_config = self._model_config_for_detector()
+        alerts: list[AnomalyAlert] = []
+        for batch_idx, req_id in enumerate(req_ids):
+            if batch_idx >= len(sampled_token_ids):
+                break
+            token_ids = sampled_token_ids[batch_idx]
+            if not token_ids:
+                continue
+            topk_rows = self._extract_req_topk_logprobs(logprobs_lists, batch_idx, len(token_ids))
+            if topk_rows is None:
+                continue
+            alert = self.check_one(
+                req_idx=batch_idx,
+                req_id=req_id,
+                token_ids=token_ids,
+                topk_logprobs=topk_rows,
+                model_config=model_config,
+                detector=detector,
+            )
+            if alert is not None:
+                alerts.append(alert)
+        return alerts
+
+    def check_one(
+        self,
+        req_idx: int,
+        req_id: str,
+        token_ids: list[int],
+        topk_logprobs: list[dict[int, float]],
+        model_config: Any,
+        detector: Any,
+    ) -> AnomalyAlert | None:
+        if not token_ids or not topk_logprobs:
+            return None
+        n = min(len(token_ids), len(topk_logprobs))
+        buf = self._buf.get(req_id)
+        if buf is None:
+            buf = deque(maxlen=self._window)
+            self._buf[req_id] = buf
+
+        for i in range(n):
+            buf.append((int(token_ids[i]), topk_logprobs[i]))
+        self._since_check[req_id] += n
+
+        if len(buf) < self._window:
+            return None
+        already_checked = req_id in self._checked
+        if already_checked and self._since_check[req_id] < self._stride:
+            return None
+
+        self._since_check[req_id] = 0
+        self._checked.add(req_id)
+        tokens = [tid for tid, _ in buf]
+        topk_dicts = [lp for _, lp in buf]
+
+        try:
+            result = detector.detector(topk_dicts, tokens, model_config)
+        except Exception as e:
+            logger.error(
+                "[Anomaly token_logprob] detector failed req_id=%s error=%s",
+                req_id,
+                e,
+            )
+            return None
+
+        alert = AnomalyAlert.from_ill_result(
+            req_id=req_id,
+            result=result,
+            req_idx=req_idx,
+            skip_related_check=True,
+        )
+        if alert is None:
+            return None
+
+        thresh = self._ill_window_thresh.get(alert.ill_type)
+        if thresh is None:
+            logger.warning(
+                "[Anomaly token_logprob] unknown ill_type=%d req_id=%s",
+                alert.ill_type,
+                req_id,
+            )
+            return None
+        hits = self._ill_window_hits[req_id]
+        hits[alert.ill_type] += 1
+        hit_count = hits[alert.ill_type]
+        if hit_count < thresh:
+            return None
+        logger.info(
+            "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d",
+            req_id,
+            alert.ill_type,
+            hit_count,
+            thresh,
+        )
+        alert.detail = {"ill_type": alert.ill_type, "hits": hit_count, "thresh": thresh}
+        alert.mark_full_log = int(getattr(self._runner, "tp_rank", 0) if self._runner else 0) == 0
+        return alert
+
+    def _get_ill_detector(self) -> Any | None:
+        if self._ill_detector is not None:
+            return self._ill_detector
+        if self._ill_detector_init_failed:
+            return None
+        try:
+            import msprobe.response_anomaly as response_anomaly
+            from msprobe.response_anomaly.detector import ILLDetector
+
+            base = Path(response_anomaly.__file__).resolve().parent
+            detector = ILLDetector(
+                str(base / "configs" / "config.yaml"),
+                str(base / "configs" / "mtype_config.json"),
+                str(base / "token2category"),
+            )
+            detector.window_size = self._window
+            detector.stride = self._window
+            detector.garbled_window_thresh = 0
+            detector.single_window_thresh = 0
+            detector.multi_window_thresh = 0
+            self._ill_detector = detector
+            logger.info_once(
+                "[Anomaly token_logprob] ILLDetector ready window=%d stride=%d topk=%d",
+                self._window,
+                self._stride,
+                self._topk,
+            )
+            return self._ill_detector
+        except Exception as e:
+            self._ill_detector_init_failed = True
+            logger.error("[Anomaly token_logprob] failed to init ILLDetector: %s", e)
+            return None
+
+    def _model_config_for_detector(self) -> dict[str, str]:
+        runner = self._runner
+        model_config = None
+        if runner is not None:
+            vllm_config = getattr(runner, "vllm_config", None)
+            model_config = getattr(vllm_config, "model_config", None)
+        raw_name = ""
+        if model_config is not None:
+            raw_name = str(getattr(model_config, "model", None) or getattr(model_config, "model_id", "") or "")
+        return {"model_name": Path(raw_name).name if raw_name else ""}
+
+    def _extract_req_topk_logprobs(
+        self,
+        logprobs_lists: Any,
+        req_idx: int,
+        num_tokens: int,
+    ) -> list[dict[int, float]] | None:
+        try:
+            token_ids_arr = logprobs_lists.logprob_token_ids
+            logprobs_arr = logprobs_lists.logprobs
+            cu = getattr(logprobs_lists, "cu_num_generated_tokens", None)
+            if cu is not None:
+                start = cu[req_idx]
+                end = cu[req_idx + 1] if req_idx + 1 < len(cu) else start + num_tokens
+            else:
+                if num_tokens == 1:
+                    start = req_idx
+                    end = req_idx + 1
+                else:
+                    start = req_idx * num_tokens
+                    end = start + num_tokens
+            end = min(end, start + num_tokens, len(token_ids_arr))
+            if end <= start:
+                return None
+            rows: list[dict[int, float]] = []
+            for row_i in range(start, end):
+                rows.append(
+                    self._row_to_topk_dict(
+                        token_ids_arr[row_i],
+                        logprobs_arr[row_i],
+                        self._topk,
+                    )
+                )
+            return rows
+        except Exception as e:
+            logger.error(
+                "[Anomaly token_logprob] extract logprobs failed req_idx=%d error=%s",
+                req_idx,
+                e,
+            )
+            return None
+
+    @staticmethod
+    def _row_to_topk_dict(token_ids_row: Any, logprobs_row: Any, topk: int) -> dict[int, float]:
+        tids = token_ids_row.tolist() if hasattr(token_ids_row, "tolist") else list(token_ids_row)
+        lps = logprobs_row.tolist() if hasattr(logprobs_row, "tolist") else list(logprobs_row)
+        pairs = []
+        for tid, lp in zip(tids, lps):
+            tid_i = int(tid)
+            if tid_i < 0:
+                continue
+            pairs.append((tid_i, float(lp)))
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        out: dict[int, float] = {}
+        for tid, lp in pairs[:topk]:
+            out[tid] = lp
+        return out
