@@ -27,6 +27,7 @@ import torch
 from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 
+from vllm_ascend.dfx.detector.manual_dump import MANUAL_DUMP_REQ_ID
 from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig
 from vllm_ascend.logger import init_logger_ascend
 
@@ -53,7 +54,12 @@ class Dumper:
         dfx_config: DfxRuntimeConfig | None = None,
     ):
         self.runner = runner
+        # Per-step flags for ModelRunnerOutput.debug_log_full (engine prints
+        # input/output token ids). Cleared at each start_dump_data.
         self.full_log_requests_this_step: dict[str, bool] = {}
+        # Survives the next start_dump_data clear until snapshotted once — needed
+        # when async get_output overlaps the following execute_model.
+        self._debug_log_full_carry: dict[str, bool] = {}
         self._debugger: Any | None = None
 
         if dfx_config is not None:
@@ -92,6 +98,9 @@ class Dumper:
         self._pending_dump_req_id: str | None = None
         # Manual dump_once: activate without consuming max_times / cooldown.
         self._pending_dump_skip_quota = False
+        # Real req_id to flag ``debug_log_full`` on the dump-forward step.
+        # Engine output_processor prints input/output token ids from that flag.
+        self._dump_full_log_req_id: str | None = None
 
         self._apply_observability_switches()
 
@@ -164,9 +173,17 @@ class Dumper:
             return False
         if alert.mark_full_log:
             self.full_log_requests_this_step[alert.req_id] = True
+            self._debug_log_full_carry[alert.req_id] = True
         if detector is not None:
             detector.on_alert_armed(alert)
         return True
+
+    def take_debug_log_full(self) -> dict[str, bool]:
+        """Snapshot ``debug_log_full`` for ``ModelRunnerOutput`` (consume carry)."""
+        out = dict(self.full_log_requests_this_step)
+        out.update(self._debug_log_full_carry)
+        self._debug_log_full_carry.clear()
+        return out
 
     def can_run_anomaly_detection(self) -> bool:
         """Whether this rank should invoke detectors this step."""
@@ -230,11 +247,25 @@ class Dumper:
             self._debugger_started = True
         if will_mark_forward_seen:
             self._dump_forward_seen = True
+            # Lightweight only: re-arm debug_log_full after clear so this step's
+            # ModelRunnerOutput carries the flag. Engine prints token ids later.
+            # Never log full token lists here — that stalls TP0 before forward
+            # collectives and hangs the request.
+            self._arm_debug_log_full_for_dump_step()
             logger.info(
-                "[Anomaly msprobe] start dump-forward %s %s",
+                "[Anomaly msprobe] start dump-forward %s %s debug_log_full=%s",
                 self._dump_rank_tag(),
                 self._dump_state_tag(),
+                sorted(self.full_log_requests_this_step),
             )
+
+    def _arm_debug_log_full_for_dump_step(self) -> None:
+        """Flag dump target req for engine-side input/output token id logging."""
+        req_id = self._dump_full_log_req_id
+        if not req_id:
+            return
+        self.full_log_requests_this_step[req_id] = True
+        self._debug_log_full_carry[req_id] = True
 
     def finalize_dump_data(self, *, dump: bool = True) -> None:
         if self._debugger is None or not self._debugger_started:
@@ -291,6 +322,7 @@ class Dumper:
         self._msprobe_dump_active = False
         self._dump_needs_forward = False
         self._dump_forward_seen = False
+        self._dump_full_log_req_id = None
         logger.info(
             "[Anomaly msprobe] disable succeeded %s",
             self._dump_rank_tag(),
@@ -470,6 +502,11 @@ class Dumper:
         self._msprobe_dump_active = True
         self._dump_needs_forward = True
         self._dump_forward_seen = False
+        if req_id and req_id != MANUAL_DUMP_REQ_ID:
+            self._dump_full_log_req_id = req_id
+        else:
+            # dump_once / unknown: no engine debug_log_full target.
+            self._dump_full_log_req_id = None
         if consume_quota:
             if req_id is not None:
                 self._msprobe_dumped_req_ids.add(req_id)
@@ -504,10 +541,9 @@ class Dumper:
         ``allow_arm``: False on dummy/capture — last-PP TPs still join the
         all_reduce (avoid deadlock) but do not activate or clear pending.
         """
-        # Allow pending from dump_once even when anomaly quota/detectors are off.
-        if not self._anomaly_dump_feature_enabled() and not self._pending_dump:
-            return False
         if not self._use_pending_dump_sync():
+            if not self._anomaly_dump_feature_enabled() and not self._pending_dump:
+                return False
             return self._msprobe_dump_active
 
         pp_group = get_pp_group()
@@ -515,6 +551,9 @@ class Dumper:
             return False
 
         tp_group = get_tp_group()
+        # Always join OR on last-PP async (even if local pending is false /
+        # anomaly detectors are off). A peer with dump_once pending must not
+        # hang alone in all_reduce.
         local = 1 if self._pending_dump else 0
         # CPU int32 SUM: OR = sum > 0. tp_group.world_size is TP size only
         # (e.g. DP2/PP2/TP2 → 2, not 8).

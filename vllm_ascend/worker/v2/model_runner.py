@@ -81,9 +81,8 @@ class AscendAsyncOutput(AsyncModelRunnerOutput):
             logprobs_lists=output.logprobs,
             req_ids=output.req_ids,
         )
-        # Snapshot after check; a later start_dump_data() may clear the dict
-        # under async overlap with the next step.
-        output.debug_log_full = dict(self._runner.dumper.full_log_requests_this_step)
+        # Snapshot after check; carry survives next start_dump_data clear.
+        output.debug_log_full = dict(self._runner.dumper.take_debug_log_full())
         return output
 
 
@@ -281,7 +280,7 @@ class NPUModelRunner(GPUModelRunner):
         if isinstance(output, ModelRunnerOutput):
             model_runner_output_fields = getattr(ModelRunnerOutput, "__dataclass_fields__", {})
             if "debug_log_full" in model_runner_output_fields:
-                model_runner_output.debug_log_full = dict(self.dumper.full_log_requests_this_step)
+                model_runner_output.debug_log_full = dict(self.dumper.take_debug_log_full())
 
         if self.ascend_config.profiling_chunk_config.need_timing and hasattr(self, "_execution_start_time"):
             torch.npu.synchronize()

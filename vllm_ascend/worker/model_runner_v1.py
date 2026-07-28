@@ -290,7 +290,7 @@ class AscendAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
         )
         # Attach after check; start_dump_data() on a later step may have cleared
         # the dumper's per-step dict already under async overlap.
-        output.debug_log_full = dict(self._runner.dumper.full_log_requests_this_step)
+        output.debug_log_full = dict(self._runner.dumper.take_debug_log_full())
         return output
 
 
@@ -2673,7 +2673,7 @@ class NPUModelRunner(GPUModelRunner):
             )
             # Snapshot after check so later start_dump_data().clear() cannot wipe
             # this step's flags. Async: deferred to AscendAsyncGPUModelRunnerOutput.
-            model_runner_output.debug_log_full = dict(self.dumper.full_log_requests_this_step)
+            model_runner_output.debug_log_full = dict(self.dumper.take_debug_log_full())
 
         if not self.use_async_scheduling:
             if self.routed_experts_initialized:

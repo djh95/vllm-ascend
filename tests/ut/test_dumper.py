@@ -94,6 +94,7 @@ def test_handle_anomaly_alert_marks_full_log():
 
     dumper = _make_dumper()
     dumper.full_log_requests_this_step = {}
+    dumper._debug_log_full_carry = {}
     dumper.enable_msprobe_dump_if_needed = MagicMock(return_value=True)
     alert = AnomalyAlert(
         anomaly_type="token_logprob",
@@ -108,6 +109,34 @@ def test_handle_anomaly_alert_marks_full_log():
     assert dumper.handle_anomaly_alert(alert) is True
     dumper.enable_msprobe_dump_if_needed.assert_called_once()
     assert dumper.full_log_requests_this_step["req-1"] is True
+    assert dumper.take_debug_log_full() == {"req-1": True}
+    assert dumper._debug_log_full_carry == {}
+
+
+def test_dump_forward_arms_debug_log_full_survives_next_start_clear():
+    dumper = _make_dumper()
+    dumper._debugger = MagicMock()
+    dumper._debugger_started = False
+    dumper._msprobe_dump_active = True
+    dumper._dump_needs_forward = True
+    dumper._dump_forward_seen = False
+    dumper._dump_full_log_req_id = "req-dump"
+    dumper.full_log_requests_this_step = {}
+    dumper._debug_log_full_carry = {}
+    dumper.runner = SimpleNamespace(model=MagicMock())
+    dumper._dump_rank_tag = MagicMock(return_value="tp0")
+    dumper._dump_state_tag = MagicMock(return_value="active")
+
+    dumper.start_dump_data()
+    assert dumper.full_log_requests_this_step == {"req-dump": True}
+    assert dumper._debug_log_full_carry == {"req-dump": True}
+
+    # Next step's start clears per-step map; carry must remain until take().
+    dumper._msprobe_dump_active = False
+    dumper._dump_needs_forward = False
+    dumper.start_dump_data()
+    assert dumper.full_log_requests_this_step == {}
+    assert dumper.take_debug_log_full() == {"req-dump": True}
 
 
 def test_sync_dump_pending_or_does_not_touch_config():
@@ -115,6 +144,7 @@ def test_sync_dump_pending_or_does_not_touch_config():
     dumper.dfx_config = MagicMock()
     dumper._pending_dump = False
     dumper._anomaly_dump_feature_enabled = MagicMock(return_value=False)
+    dumper._use_pending_dump_sync = MagicMock(return_value=False)
     dumper.apply_dfx_config = MagicMock()
 
     assert dumper.sync_dump_pending_or() is False
