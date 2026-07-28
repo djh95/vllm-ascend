@@ -51,7 +51,8 @@ class SpecAcceptanceDetector(AnomalyDetector):
             enabled = bool(getattr(dynamic_dump_config, "enable_spec_acceptance_check", True))
         super().__init__(dfx_config=dfx_config, runner=runner, enabled=enabled)
         self._is_related_request = is_related_request
-        self._history: dict[str, deque[tuple[int, int]]] = defaultdict(deque)
+        # Per-req sliding window: (accepted_draft, draft_len, sampled_ids, accepted_ids)
+        self._history: dict[str, deque[tuple[int, int, list[int], list[int]]]] = defaultdict(deque)
         self._window = 10
         self._low_threshold = 0.3
         self._len_low_threshold = 1.4
@@ -150,8 +151,10 @@ class SpecAcceptanceDetector(AnomalyDetector):
         if draft_len <= 0:
             return None
         accepted_draft_tokens = max(0, accepted_token_num - 1)
+        sampled_norm = self._normalize_token_ids(sampled_ids)
+        accepted_norm = sampled_norm[:accepted_token_num] if accepted_token_num > 0 else []
         history = self._history[req_id]
-        history.append((accepted_draft_tokens, draft_len))
+        history.append((accepted_draft_tokens, draft_len, sampled_norm, accepted_norm))
         while len(history) > self._window:
             history.popleft()
 
@@ -164,8 +167,8 @@ class SpecAcceptanceDetector(AnomalyDetector):
             output_token_ids_raw = getattr(req_state, "output_token_ids", None)
         prompt_token_count = len(prompt_token_ids_raw) if prompt_token_ids_raw is not None else 0
         output_token_count = len(output_token_ids_raw) if output_token_ids_raw is not None else 0
-        accepted_sum = sum(accepted for accepted, _ in history)
-        draft_sum = sum(draft for _, draft in history)
+        accepted_sum = sum(accepted for accepted, _, _, _ in history)
+        draft_sum = sum(draft for _, draft, _, _ in history)
         acceptance_rate = accepted_sum / draft_sum if draft_sum > 0 else 0.0
         acceptance_len = accepted_sum / len(history) if history else 0.0
 
@@ -198,6 +201,8 @@ class SpecAcceptanceDetector(AnomalyDetector):
         if not should_alert:
             return None
 
+        window_sampled_token_ids = [step_sampled for _, _, step_sampled, _ in history]
+        window_accepted_token_ids = [step_accepted for _, _, _, step_accepted in history]
         return AnomalyAlert(
             anomaly_type=self.anomaly_type,
             req_id=req_id,
@@ -210,14 +215,18 @@ class SpecAcceptanceDetector(AnomalyDetector):
                 "accepted_sum": accepted_sum,
                 "draft_sum": draft_sum,
                 "window": len(history),
+                "window_sampled_token_ids": window_sampled_token_ids,
+                "window_accepted_token_ids": window_accepted_token_ids,
             },
             skip_related_check=False,
             mark_full_log=log_leader,
             log_context={
-                "sampled_ids": self._normalize_token_ids(sampled_ids),
+                "sampled_ids": sampled_norm,
                 "accepted_token_num": accepted_token_num,
                 "prompt_token_ids_raw": prompt_token_ids_raw,
                 "output_token_ids_raw": output_token_ids_raw,
+                "window_sampled_token_ids": window_sampled_token_ids,
+                "window_accepted_token_ids": window_accepted_token_ids,
             },
         )
 
@@ -231,6 +240,8 @@ class SpecAcceptanceDetector(AnomalyDetector):
             accepted_token_num=int(ctx.get("accepted_token_num") or 0),
             prompt_token_ids_raw=ctx.get("prompt_token_ids_raw"),
             output_token_ids_raw=ctx.get("output_token_ids_raw"),
+            window_sampled_token_ids=ctx.get("window_sampled_token_ids") or [],
+            window_accepted_token_ids=ctx.get("window_accepted_token_ids") or [],
         )
 
     def _log_token_details(
@@ -240,6 +251,8 @@ class SpecAcceptanceDetector(AnomalyDetector):
         accepted_token_num: int,
         prompt_token_ids_raw: Any,
         output_token_ids_raw: Any,
+        window_sampled_token_ids: list[list[int]] | None = None,
+        window_accepted_token_ids: list[list[int]] | None = None,
     ) -> None:
         accepted_token_ids = sampled_ids[:accepted_token_num] if accepted_token_num > 0 else []
         prompt_token_ids = list(prompt_token_ids_raw) if prompt_token_ids_raw is not None else []
@@ -251,6 +264,16 @@ class SpecAcceptanceDetector(AnomalyDetector):
 
         logger.info("[Anomaly spec] req_id=%s sampled_token_ids=%s", req_id, sampled_ids)
         logger.info("[Anomaly spec] req_id=%s accepted_token_ids=%s", req_id, accepted_token_ids)
+        logger.info(
+            "[Anomaly spec] req_id=%s window_sampled_token_ids=%s",
+            req_id,
+            window_sampled_token_ids or [],
+        )
+        logger.info(
+            "[Anomaly spec] req_id=%s window_accepted_token_ids=%s",
+            req_id,
+            window_accepted_token_ids or [],
+        )
         logger.info(
             "[Anomaly spec] req_id=%s prompt_token_count=%d prompt_token_ids=%s",
             req_id,

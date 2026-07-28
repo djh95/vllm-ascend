@@ -194,15 +194,41 @@ class TokenLogprobDetector(AnomalyDetector):
         if hit_count < thresh:
             return None
         logger.info(
-            "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d",
+            "[Anomaly token_logprob] hit req_id=%s ill_type=%d hits=%d/%d window_token_ids=%s",
             req_id,
             alert.ill_type,
             hit_count,
             thresh,
+            tokens,
         )
-        alert.detail = {"ill_type": alert.ill_type, "hits": hit_count, "thresh": thresh}
+        alert.detail = {
+            "ill_type": alert.ill_type,
+            "hits": hit_count,
+            "thresh": thresh,
+            "window": len(tokens),
+            "window_token_ids": list(tokens),
+        }
+        alert.log_context = {
+            "window_token_ids": list(tokens),
+            "ill_type": alert.ill_type,
+            "hits": hit_count,
+            "thresh": thresh,
+        }
         alert.mark_full_log = int(getattr(self._runner, "tp_rank", 0) if self._runner else 0) == 0
         return alert
+
+    def on_alert_armed(self, alert: AnomalyAlert) -> None:
+        ctx = alert.log_context
+        if not ctx:
+            return
+        logger.info(
+            "[Anomaly token_logprob] req_id=%s ill_type=%s hits=%s/%s window_token_ids=%s",
+            alert.req_id,
+            ctx.get("ill_type"),
+            ctx.get("hits"),
+            ctx.get("thresh"),
+            ctx.get("window_token_ids") or [],
+        )
 
     def _get_ill_detector(self) -> Any | None:
         if self._ill_detector is not None:

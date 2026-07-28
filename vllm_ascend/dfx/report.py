@@ -29,7 +29,7 @@ logger = init_logger_ascend(__name__)
 
 
 class DfxReportWriter:
-    """Append short anomaly records to a daily report file."""
+    """Write short anomaly records under ``dfx/report`` (one file per second)."""
 
     def __init__(self, report_dir: str | Path) -> None:
         self.report_dir = Path(report_dir)
@@ -46,8 +46,10 @@ class DfxReportWriter:
         """Write one anomaly line. Returns report file path or None on failure."""
         try:
             self.report_dir.mkdir(parents=True, exist_ok=True)
-            day = datetime.now().strftime("%Y%m%d")
-            report_path = self.report_dir / f"anomaly_{day}.log"
+            # Second-level name so successive dumps do not share one daily file
+            # that is easy to overwrite / confuse when collecting artifacts.
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_path = self.report_dir / f"anomaly_{stamp}.log"
             record = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
                 "unix_ts": round(time.time(), 3),

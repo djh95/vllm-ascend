@@ -74,6 +74,9 @@ def test_dfx_report_writer_appends_anomaly_line(tmp_path: Path):
     )
     assert path is not None
     assert path.exists()
+    assert path.name.startswith("anomaly_")
+    # anomaly_YYYYMMDD_HHMMSS.log
+    assert len(path.stem) == len("anomaly_20260101_120000")
     lines = path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     record = json.loads(lines[0])
