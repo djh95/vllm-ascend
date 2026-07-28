@@ -125,9 +125,8 @@ Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在
 - **推荐**：改 DFX JSON（或 rank0 JSON + broadcast）。
 - **兼容**：`additional_config.dynamic_dump_config` 仍可用；仅**显式**启动键参与合并（`user_overrides`）。
 - **启动引导**（**仅 worker leader 落盘一次**；API/EngineCore/`init_ascend_config` 只做内存合并）：
-  - **未**配 `dfx_config_path` 且有启动项 → 忽略旧默认路径文件内容，用 `defaults ← startup`（日志：`overwrite default json`）；若本进程暂不落盘，**先删除**磁盘上旧的默认 JSON，避免 API 热更线程在 worker 落盘前又读回旧文件；worker leader `ensure_persisted` 再写出新文件；
-  - **已**配路径 → 先读该 JSON，再 `defaults ← JSON ← startup`，缺省补默认；leader 写回该路径；
-  - 无启动项 → `defaults ← JSON`（或仅 defaults），同样补全后由 leader 写回。
+  - **未**配 `dfx_config_path` → 忽略旧默认路径文件，用 `defaults ← startup`（无启动项则纯 defaults；日志：`overwrite default json`）；若本进程暂不落盘，**先删除**磁盘上旧的默认 JSON，避免 API 热更线程在 worker 落盘前又读回旧文件；worker leader `ensure_persisted` 再写出新文件；
+  - **已**配路径 → 先读该 JSON，再 `defaults ← JSON ← startup`，缺省补默认；leader 若文件已存在则不盲目重写（以磁盘为准），文件缺失时写出；
   - 启动日志打印最终 `path=`（AscendConfig + worker Processor）。
 - 旧字段映射：`dynamic_dump_max_times` → `dump.max_times`，`dynamic_dump_cooldown_seconds` → `dump.cooldown_seconds`，其余检测字段 → `detector.*`。
 - **热更合并**：仅 `defaults ← JSON`（启动 overlay 只在 bootstrap 用一次并写回文件；之后以 JSON 为准）。

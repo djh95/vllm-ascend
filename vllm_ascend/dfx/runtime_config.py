@@ -321,13 +321,14 @@ class DfxRuntimeConfig:
     def _merge_bootstrap(self, loaded: dict[str, Any]) -> dict[str, Any]:
         """Build effective config for process start.
 
-        - No explicit ``dfx_config_path`` + startup overlay: **overwrite** JSON
-          basis (defaults ← startup only; ignore prior file content).
-        - Explicit path (or no startup overlay): defaults ← JSON ← startup.
+        - No explicit ``dfx_config_path``: **overwrite** default-path JSON
+          (``defaults ← startup`` only; ignore prior file on that path).
+        - Explicit path: ``defaults ← JSON ← startup`` (user-owned file).
         Missing keys always come from ``_DEFAULTS``.
         """
-        if not self._explicit_config_path and self._startup_overlay:
-            # No path configured: startup dynamic_dump_config covers the JSON.
+        if not self._explicit_config_path:
+            # Default path is runtime-owned: restart without dfx_config_path
+            # must not keep hand-edited leftovers from a previous run.
             merged = _deep_merge(_DEFAULTS, self._startup_overlay)
         else:
             merged = _deep_merge(_DEFAULTS, loaded)
@@ -355,10 +356,9 @@ class DfxRuntimeConfig:
         Disk write is leader-only (or single-process); other ranks keep in-memory merge.
         """
         self.report_dir.mkdir(parents=True, exist_ok=True)
-        overwrite_default = bool(not self._explicit_config_path and self._startup_overlay)
-        # Explicit path (or no startup overlay): read JSON first.
-        # No path + startup overlay: ignore prior file ("覆盖").
-        if self._explicit_config_path or not self._startup_overlay:
+        overwrite_default = not self._explicit_config_path
+        # Explicit path: read user JSON. Default path: ignore prior file.
+        if self._explicit_config_path:
             loaded = self._read_json_object()
         else:
             loaded = {}
@@ -369,9 +369,10 @@ class DfxRuntimeConfig:
         if overwrite_default:
             logger.info(
                 "[DFX runtime_config] overwrite default json path=%s "
-                "reason=no_dfx_config_path+startup_overlay will_persist=%s",
+                "reason=no_dfx_config_path will_persist=%s startup_overlay=%s",
                 self.config_path,
                 can_write,
+                bool(self._startup_overlay),
             )
 
         if can_write:
@@ -439,10 +440,10 @@ class DfxRuntimeConfig:
         Safe to call from every worker: non-leaders no-op; leaders act at most once
         per process. Call from ``DfxProcessor`` so API/EngineCore never persist.
 
-        If the JSON already exists and this is **not** overwrite mode
-        (``dfx_config_path`` unset + startup ``dynamic_dump_config``), skip rewrite:
-        disk is already the source of truth. Blind rewrite only changes mtime/ctime
-        and can clobber concurrent hand-edits with a stale in-memory snapshot.
+        If the JSON already exists and this is an **explicit** ``dfx_config_path``,
+        skip rewrite: disk is the source of truth. Default path (no explicit
+        path) always materializes ``defaults←startup`` so a restart does not
+        keep leftover fields from a previous run.
         """
         if self._bootstrap_persisted:
             return True
@@ -452,7 +453,7 @@ class DfxRuntimeConfig:
                 self.config_path,
             )
             return False
-        overwrite_default = bool(not self._explicit_config_path and self._startup_overlay)
+        overwrite_default = not self._explicit_config_path
         try:
             with self._lock_config():
                 if self.config_path.exists() and not overwrite_default:
@@ -461,7 +462,7 @@ class DfxRuntimeConfig:
                     self._version = float(mtime)
                     self._bootstrap_persisted = True
                     logger.info(
-                        "[DFX runtime_config] ensure_persisted skip rewrite (file exists, not overwrite) path=%s",
+                        "[DFX runtime_config] ensure_persisted skip rewrite (explicit path, file exists) path=%s",
                         self.config_path,
                     )
                     return True

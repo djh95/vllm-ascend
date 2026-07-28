@@ -230,6 +230,31 @@ def test_no_explicit_path_startup_overwrites_default_json(tmp_path: Path, monkey
     assert saved["detector"]["spec_acceptance_window"] == 20
 
 
+def test_no_explicit_path_without_overlay_resets_to_defaults(tmp_path: Path, monkeypatch):
+    """Default path + no startup overlay must not keep previous JSON fields."""
+    root = tmp_path / "cwd"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    cfg_path = root / "dfx" / "config" / "dfx_config.json"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
+        json.dumps({"dump": {"max_times": 9}, "log": {"level": "DEBUG"}}),
+        encoding="utf-8",
+    )
+    cfg = DfxRuntimeConfig(
+        None,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        sync_mode="file",
+        reload_interval_seconds=5,
+    )
+    assert cfg.dump_max_times() == 0
+    assert cfg.log_level() == "INFO"
+    saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert saved["dump"]["max_times"] == 0
+    assert saved["log"]["level"] == "INFO"
+
+
 def test_bootstrap_and_save_skip_persist_on_non_leader(tmp_path: Path, monkeypatch):
     """Non-leader ranks keep in-memory merge but must not write JSON."""
     monkeypatch.setenv("RANK", "1")

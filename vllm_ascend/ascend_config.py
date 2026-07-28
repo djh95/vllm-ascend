@@ -119,7 +119,7 @@ class AscendConfig:
         self.dfx_config = DfxRuntimeConfig(
             self.dfx_config_path,
             # Explicit startup keys only. Bootstrap (in-memory):
-            # - no dfx_config_path + startup → overwrite basis defaults←startup
+            # - no dfx_config_path → overwrite default path with defaults←startup
             # - dfx_config_path set → defaults←JSON←startup
             legacy_dynamic_dump=self.dynamic_dump_config.user_overrides,
             report_dir=additional_config.get("dfx_report_dir"),
