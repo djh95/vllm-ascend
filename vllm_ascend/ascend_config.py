@@ -89,8 +89,52 @@ class AscendConfig:
                 "cannot be enabled at the same time. Please disable one of them."
             )
 
-        # Dump / PrecisionDebugger configuration
+        # Dump / PrecisionDebugger / DFX configuration
         self.dump_config_path = self._resolve_dump_config_path(additional_config)
+        self.dynamic_dump_config = DynamicDumpConfig(additional_config.get("dynamic_dump_config"))
+        self.dfx_config_path = additional_config.get("dfx_config_path") or additional_config.get("dfx-config")
+        if self.dfx_config_path is not None and not isinstance(self.dfx_config_path, str):
+            raise ValueError(
+                f"additional_config.dfx_config_path must be a string, got {type(self.dfx_config_path).__name__}."
+            )
+        raw_reload = additional_config.get("dfx_config_reload_interval", 5)
+        if raw_reload is None:
+            raw_reload = 5
+        try:
+            self.dfx_config_reload_interval = float(raw_reload)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "additional_config.dfx_config_reload_interval must be a number of seconds "
+                f"(0 disables hot-reload; default 5), got {raw_reload!r}."
+            ) from exc
+        if self.dfx_config_reload_interval < 0:
+            raise ValueError(
+                f"additional_config.dfx_config_reload_interval must be >= 0, got {self.dfx_config_reload_interval}."
+            )
+        from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig
+
+        # Do not persist here: API / EngineCore / every worker would race the same
+        # JSON. Worker ``DfxProcessor`` calls ``ensure_persisted()`` on the leader.
+        self.dfx_config = DfxRuntimeConfig(
+            self.dfx_config_path,
+            # Explicit startup keys only. Bootstrap (in-memory):
+            # - no dfx_config_path → overwrite default path with defaults←startup
+            # - dfx_config_path set → defaults←JSON←startup
+            legacy_dynamic_dump=self.dynamic_dump_config.user_overrides,
+            report_dir=additional_config.get("dfx_report_dir"),
+            reload_interval_seconds=self.dfx_config_reload_interval,
+            ensure_file=False,
+        )
+        logger.info(
+            "[DFX] config path=%s (persist deferred to worker leader)",
+            self.dfx_config.config_path,
+        )
+        # Apply ascend_log immediately (API/EngineCore and workers). Workers also
+        # re-apply from Dumper / refresh_config after sync.
+        self.dfx_config.apply_ascend_log_level()
+        # API / EngineCore: file-poll ascend_log. Workers (RANK set) no-op here
+        # and keep execute_model → refresh_config → world broadcast.
+        self.dfx_config.start_non_worker_background_reload()
 
         # Log configuration
         self.ascend_log_path = additional_config.get(
@@ -770,6 +814,164 @@ class RejectionSamplerConfig:
             )
         if self.posterior_alpha < 0:
             raise ValueError(f"rejection_sampler_config.posterior_alpha must be >= 0, got {self.posterior_alpha}")
+
+
+class DynamicDumpConfig:
+    """Legacy flat config for anomaly-triggered msprobe dump.
+
+    Prefer the shared DFX JSON via ``additional_config``::
+
+        {"dfx_config_path": "/path/on/rank0/dfx_config.json"}
+        # or alias: {"dfx-config": "/path/on/rank0/dfx_config.json"}
+
+    Default path when omitted: ``<cwd>/dfx/config/dfx_config.json``.
+    Default ``sync_mode`` is ``broadcast``: only global rank0 reads the file and
+    world-broadcasts to other ranks/machines (no shared FS required).
+    ``dynamic_dump_config`` is still accepted and overlaid at startup.
+
+    Usage (online)::
+
+        vllm serve <model> --additional-config \
+            '{"dynamic_dump_config": {"spec_acceptance_window": 20}}'
+
+    Usage (offline)::
+
+        llm = LLM(
+            model,
+            additional_config={
+                "dynamic_dump_config": {
+                    "spec_acceptance_window": 20,
+                }
+            },
+        )
+    """
+
+    _defaults = {
+        # Feature switches (spec acceptance on by default for backward compatibility).
+        "enable_spec_acceptance_check": True,
+        "enable_token_logprob_check": False,
+        # Spec acceptance-rate thresholds.
+        "spec_acceptance_window": 10,
+        "spec_acceptance_low_threshold": 0.3,
+        "spec_acceptance_len_low_threshold": 1.4,
+        "spec_acceptance_high_threshold": 0.96,
+        "spec_acceptance_len_high_threshold": 2.8,
+        # Token/logprob anomaly (ILLDetector) online defaults: fast detection.
+        "token_logprob_window": 64,
+        "token_logprob_stride": 32,
+        "token_logprob_topk": 20,
+        "ill_nan_window_thresh": 1,
+        "ill_rare_window_thresh": 1,
+        "ill_garbled_window_thresh": 1,
+        "ill_repet_window_thresh": 2,
+        # Dump rate limits.
+        "dynamic_dump_cooldown_seconds": 5 * 60,
+        "dynamic_dump_max_times": 0,
+    }
+
+    def __init__(self, config: dict | None = None):
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            raise ValueError(f"dynamic_dump_config must be a dict, got {type(config).__name__}.")
+
+        # Only keys present in the startup dict are treated as explicit overrides.
+        # Full ``config`` still fills defaults for attribute access / detectors.
+        self.user_overrides: dict[str, Any] = {}
+        self.config = self._defaults.copy()
+        for key, value in config.items():
+            if key not in self._defaults:
+                raise ValueError(f"dynamic_dump_config has no attribute '{key}'")
+            self.config[key] = value
+            self.user_overrides[key] = value
+
+        self._validate()
+
+    def __getattr__(self, key: str) -> Any:
+        if key in self.config:
+            return self.config[key]
+        raise AttributeError(f"dynamic_dump_config has no attribute '{key}'")
+
+    def _validate(self) -> None:
+        bool_fields = (
+            "enable_spec_acceptance_check",
+            "enable_token_logprob_check",
+        )
+        int_fields = (
+            "spec_acceptance_window",
+            "token_logprob_window",
+            "token_logprob_stride",
+            "token_logprob_topk",
+            "ill_nan_window_thresh",
+            "ill_rare_window_thresh",
+            "ill_garbled_window_thresh",
+            "ill_repet_window_thresh",
+            "dynamic_dump_cooldown_seconds",
+            "dynamic_dump_max_times",
+        )
+        positive_int_fields = (
+            "spec_acceptance_window",
+            "token_logprob_window",
+            "token_logprob_stride",
+            "token_logprob_topk",
+            "ill_nan_window_thresh",
+            "ill_rare_window_thresh",
+            "ill_garbled_window_thresh",
+            "ill_repet_window_thresh",
+            "dynamic_dump_cooldown_seconds",
+        )
+        float_fields = (
+            "spec_acceptance_low_threshold",
+            "spec_acceptance_len_low_threshold",
+            "spec_acceptance_high_threshold",
+            "spec_acceptance_len_high_threshold",
+        )
+
+        for field in bool_fields:
+            value = self.config[field]
+            if not isinstance(value, bool):
+                raise ValueError(f"dynamic_dump_config.{field} must be a bool, got {type(value).__name__}")
+
+        for field in int_fields:
+            value = self.config[field]
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"dynamic_dump_config.{field} must be an int, got {type(value).__name__}")
+            if field in positive_int_fields and value <= 0:
+                raise ValueError(f"dynamic_dump_config.{field} must be positive, got {value}")
+            elif value < 0:
+                raise ValueError(f"dynamic_dump_config.{field} must be non-negative, got {value}")
+
+        for field in float_fields:
+            value = self.config[field]
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"dynamic_dump_config.{field} must be a float, got {type(value).__name__}")
+            self.config[field] = float(value)
+
+        low_rate = self.config["spec_acceptance_low_threshold"]
+        high_rate = self.config["spec_acceptance_high_threshold"]
+        low_len = self.config["spec_acceptance_len_low_threshold"]
+        high_len = self.config["spec_acceptance_len_high_threshold"]
+        window = self.config["token_logprob_window"]
+        stride = self.config["token_logprob_stride"]
+
+        if not 0 <= low_rate <= 1:
+            raise ValueError(f"dynamic_dump_config.spec_acceptance_low_threshold must be in [0, 1], got {low_rate}")
+        if not 0 <= high_rate <= 1:
+            raise ValueError(f"dynamic_dump_config.spec_acceptance_high_threshold must be in [0, 1], got {high_rate}")
+        if low_rate > high_rate:
+            raise ValueError(
+                "dynamic_dump_config.spec_acceptance_low_threshold must be <= "
+                "dynamic_dump_config.spec_acceptance_high_threshold"
+            )
+        if low_len > high_len:
+            raise ValueError(
+                "dynamic_dump_config.spec_acceptance_len_low_threshold must be <= "
+                "dynamic_dump_config.spec_acceptance_len_high_threshold"
+            )
+        if window < stride:
+            raise ValueError(
+                f"dynamic_dump_config.token_logprob_window ({window}) must be >= token_logprob_stride ({stride})"
+            )
 
 
 class EplbConfig:

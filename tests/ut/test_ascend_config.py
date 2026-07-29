@@ -23,6 +23,7 @@ from vllm.config import KVTransferConfig, VllmConfig
 from tests.ut.base import TestBase
 from vllm_ascend.ascend_config import (
     AscendConfig,
+    DynamicDumpConfig,
     SchedulerConfig,
     ShortRequestFirstConfig,
     clear_ascend_config,
@@ -462,6 +463,32 @@ class TestAscendConfig(TestBase):
 
     @_clean_up_ascend_config
     @patch("vllm_ascend.platform.NPUPlatform.check_and_update_config")
+    def test_init_ascend_config_with_dynamic_dump_config(self, mock_fix_incompatible_config):
+        test_vllm_config = VllmConfig()
+        test_vllm_config.additional_config = {
+            "dynamic_dump_config": {
+                "spec_acceptance_window": 20,
+                "spec_acceptance_low_threshold": 0.2,
+                "spec_acceptance_len_low_threshold": 1.2,
+                "spec_acceptance_high_threshold": 0.98,
+                "spec_acceptance_len_high_threshold": 3.5,
+                "dynamic_dump_cooldown_seconds": 120,
+                "dynamic_dump_max_times": 3,
+            }
+        }
+
+        ascend_config = init_ascend_config(test_vllm_config)
+
+        self.assertEqual(ascend_config.dynamic_dump_config.spec_acceptance_window, 20)
+        self.assertEqual(ascend_config.dynamic_dump_config.spec_acceptance_low_threshold, 0.2)
+        self.assertEqual(ascend_config.dynamic_dump_config.spec_acceptance_len_low_threshold, 1.2)
+        self.assertEqual(ascend_config.dynamic_dump_config.spec_acceptance_high_threshold, 0.98)
+        self.assertEqual(ascend_config.dynamic_dump_config.spec_acceptance_len_high_threshold, 3.5)
+        self.assertEqual(ascend_config.dynamic_dump_config.dynamic_dump_cooldown_seconds, 120)
+        self.assertEqual(ascend_config.dynamic_dump_config.dynamic_dump_max_times, 3)
+
+    @_clean_up_ascend_config
+    @patch("vllm_ascend.platform.NPUPlatform.check_and_update_config")
     def test_init_ascend_config_recreates_for_new_vllm_config(self, mock_fix_incompatible_config):
         first_vllm_config = VllmConfig()
         first_vllm_config.additional_config = {
@@ -612,3 +639,53 @@ class TestSchedulerConfig(TestBase):
 
         self.assertTrue(config.enable_balance_scheduling)
         mock_info_once.assert_called_once()
+
+
+class TestDynamicDumpConfig(TestBase):
+    def test_defaults(self):
+        cfg = DynamicDumpConfig()
+        self.assertEqual(cfg.user_overrides, {})
+        self.assertTrue(cfg.enable_spec_acceptance_check)
+        self.assertFalse(cfg.enable_token_logprob_check)
+        self.assertEqual(cfg.spec_acceptance_window, 10)
+        self.assertEqual(cfg.spec_acceptance_low_threshold, 0.3)
+        self.assertEqual(cfg.spec_acceptance_len_low_threshold, 1.4)
+        self.assertEqual(cfg.spec_acceptance_high_threshold, 0.96)
+        self.assertEqual(cfg.spec_acceptance_len_high_threshold, 2.8)
+        self.assertEqual(cfg.token_logprob_window, 64)
+        self.assertEqual(cfg.token_logprob_stride, 32)
+        self.assertEqual(cfg.token_logprob_topk, 20)
+        self.assertEqual(cfg.ill_nan_window_thresh, 1)
+        self.assertEqual(cfg.ill_rare_window_thresh, 1)
+        self.assertEqual(cfg.ill_garbled_window_thresh, 1)
+        self.assertEqual(cfg.ill_repet_window_thresh, 2)
+        self.assertEqual(cfg.dynamic_dump_cooldown_seconds, 300)
+        self.assertEqual(cfg.dynamic_dump_max_times, 0)
+
+    def test_user_overrides_only_explicit_keys(self):
+        cfg = DynamicDumpConfig({"spec_acceptance_window": 20, "enable_token_logprob_check": True})
+        self.assertEqual(
+            cfg.user_overrides,
+            {"spec_acceptance_window": 20, "enable_token_logprob_check": True},
+        )
+        self.assertEqual(cfg.spec_acceptance_window, 20)
+        # Full config still has defaults for unset keys.
+        self.assertEqual(cfg.dynamic_dump_max_times, 0)
+
+    def test_unknown_key_rejected(self):
+        with self.assertRaises(ValueError):
+            DynamicDumpConfig({"foo": 1})
+
+    def test_validation_rejects_invalid_values(self):
+        with self.assertRaises(ValueError):
+            DynamicDumpConfig({"spec_acceptance_window": 0})
+        with self.assertRaises(ValueError):
+            DynamicDumpConfig({"spec_acceptance_low_threshold": 1.1})
+        with self.assertRaises(ValueError):
+            DynamicDumpConfig({"spec_acceptance_low_threshold": 0.9, "spec_acceptance_high_threshold": 0.8})
+        with self.assertRaises(ValueError):
+            DynamicDumpConfig({"spec_acceptance_len_low_threshold": 3.0, "spec_acceptance_len_high_threshold": 2.0})
+        with self.assertRaises(ValueError):
+            DynamicDumpConfig({"token_logprob_window": 16, "token_logprob_stride": 32})
+        with self.assertRaises(ValueError):
+            DynamicDumpConfig({"enable_token_logprob_check": 1})

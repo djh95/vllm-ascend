@@ -73,6 +73,12 @@ The following table lists additional configuration options available in vLLM Asc
 | `dump_config`                       | dict | `None`  | Inline msprobe dump configuration. vLLM-Ascend will materialize it to a temporary JSON file and pass that file to the debugger. |
 | `dump_config_path`                  | str  | `None`  | Configuration file path for msprobe dump (compatible legacy option).                                      |
 | `enable_shared_expert_dp`           | bool | `False` | When the expert is shared in DP, it delivers better performance but consumes more memory. |
+| `dfx_config_path` / `dfx-config`    | str  | `None`  | Path to DFX runtime JSON (`dump` / `ascend_log` / `metrics` / `trace` / `detector`). Default: `<cwd>/dfx/config/dfx_config.json`. Prefer this over `dynamic_dump_config` for multi-node hot reload (rank0 read + world broadcast). |
+| `dfx_config_reload_interval`        | float| `5`     | DFX JSON hot-reload period in seconds. Default `5`. Set `0` to disable periodic refresh. Also written into JSON as `reload_interval_seconds` for visibility; the startup value remains authoritative. **Required `> 0` for `dump.dump_once`.** |
+| `dfx_report_dir`                    | str  | `None`  | Directory for short anomaly reports. Default: sibling `dfx/report` next to the config dir. |
+| `dynamic_dump_config`               | dict | `{}`    | **Legacy** flat options for anomaly-triggered dump. Only **explicit** keys overlay DFX JSON (explicit > JSON > defaults); empty `{}` does not clobber JSON. Prefer `dfx_config_path`. |
+| `enable_async_exponential`          | bool | `False` | Whether to enable asynchronous exponential overlap. To enable asynchronous exponential, set this config to True.        |
+| `enable_shared_expert_dp`           | bool | `False` | When the expert is shared in DP, it delivers better performance but consumes more memory. Currently only DeepSeek series models are supported. |
 | `multistream_overlap_shared_expert` | bool | `False` | Whether to enable multi-stream shared expert. This option only takes effect on MoE models with shared experts. |
 | `enable_cpu_binding`                | bool | `True`  | Enables Ascend-native CPU binding on ARM servers. Set to `False` to disable. See [CPU Binding](../feature_guide/cpu_binding.md). |
 | `enable_sleep_mode_extra_cleanup`   | bool | `False` | Enables extra sleep-mode cleanup for RL workloads, including HCCL process-group release and ACL graph workspace cleanup. Disabled by default because wakeup may need to restore HCCL and recapture ACL graphs. |
@@ -169,6 +175,76 @@ The legacy top-level `enable_balance_scheduling`, `recompute_scheduler_enable`, 
 | `enable_entropy_verify` | bool  | `False` | Whether to enable entropy verify mode. Entropy verify adjusts the acceptance threshold based on the entropy of the target distribution — higher entropy (uncertain) tokens get a lower threshold (easier to accept), while lower entropy (confident) tokens get a stricter threshold. |
 | `posterior_threshold`   | float | `0.95`  | Upper bound for the entropy-adjusted acceptance threshold. Must be in (0, 1]. The effective threshold is `min(exp(-entropy * posterior_alpha), posterior_threshold)`. |
 | `posterior_alpha`       | float | `0.4`   | Scaling factor for entropy in the threshold computation. Must be >= 0. Higher values make the threshold more sensitive to entropy — high-entropy tokens become much easier to accept, improving performance but reducing precision. |
+
+**dfx_config_path / dfx-config**
+
+Path to the DFX runtime JSON controlling dump, `ascend_log` / metrics / trace switches, and anomaly detectors.
+If omitted, vLLM-Ascend uses `<cwd>/dfx/config/dfx_config.json` (created with defaults on first start).
+
+**dfx_config_reload_interval**
+
+Hot-reload period in seconds for the DFX JSON. Default `5`. Set `0` to disable
+periodic refresh (config loaded once at startup only). The same value is persisted
+into the DFX JSON as `reload_interval_seconds` for visibility; changing only the
+JSON field does not override the startup setting.
+This startup setting is authoritative; it is not turned back on by fields inside the JSON
+after the process has started with `0`.
+
+On **API / EngineCore** (processes without `RANK`), the same interval also starts a daemon
+thread that file-polls the JSON and applies `ascend_log` (`level` + `debug`) via
+`apply_ascend_log_level` — it does **not** join the worker world broadcast and does not
+write the file. Initial levels are applied at AscendConfig construction; the thread
+re-applies after subsequent file changes. Workers keep step-driven sync only.
+
+Inside the DFX JSON, `dump.dump_once: true` is consumed by `ManualDumpDetector` on the next
+successful hot-reload (then persisted back to `false`). The alert arms one msprobe dump without
+consuming `max_times` or cooldown; it still requires `dump.enabled` and an initialized debugger.
+**Requires `dfx_config_reload_interval > 0`** — with interval `0`, editing `dump_once` in the
+JSON has no effect.
+
+Default `sync_mode` is `broadcast`: only global rank0 reads the file and world-broadcasts to other ranks
+(no shared filesystem required within one engine). Set `"sync_mode": "file"` for per-process mtime polling
+on a shared path. See `docs/zh/design/dfx_design.md` for the full schema and multi-engine DP notes.
+
+Example:
+
+```json
+{
+  "dfx_config_path": "/data/dfx/config/dfx_config.json",
+  "dfx_config_reload_interval": 5
+}
+```
+
+**dynamic_dump_config**
+
+> **Legacy.** Prefer `dfx_config_path`. Only keys you set in the startup dict overlay the DFX
+> runtime JSON (`dynamic_dump_max_times` → `dump.max_times`, detector fields → `detector.*`).
+> Merge at startup (in-memory on every process): **no** `dfx_config_path` + startup keys →
+> overwrite basis with `defaults ← startup` (log: `overwrite default json`); **with** path →
+> `defaults ← JSON ← startup`. **Disk persist is deferred**: only the worker JSON writer
+> (world first rank / `RANK==0` / single-process) calls `ensure_persisted()` once from
+> `DfxProcessor`. API/EngineCore `init_ascend_config` does not write the file. Hot-reload
+> uses `defaults ← JSON` only. An empty `{}` does not apply defaults as overrides onto
+> existing JSON keys.
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `enable_spec_acceptance_check` | bool | `True` | Enable speculative acceptance-rate anomaly detection. |
+| `enable_token_logprob_check` | bool | `False` | Enable token/logprob anomaly detection via msprobe `ILLDetector`. When enabled (and `dump.enabled`), the worker forces at least `token_logprob_topk` logprobs per request before sampling. `dump.max_times` only gates dump arming, not detection. |
+| `spec_acceptance_window` | int | `10` | Sliding window size used to aggregate speculative acceptance behavior. |
+| `spec_acceptance_low_threshold` | float | `0.3` | Low acceptance-rate threshold for triggering detailed anomaly logging and dump. |
+| `spec_acceptance_len_low_threshold` | float | `1.4` | Low accepted-length threshold paired with `spec_acceptance_low_threshold`. |
+| `spec_acceptance_high_threshold` | float | `0.96` | High acceptance-rate threshold for triggering detailed anomaly logging and dump. |
+| `spec_acceptance_len_high_threshold` | float | `2.8` | High accepted-length threshold paired with `spec_acceptance_high_threshold`. |
+| `token_logprob_window` | int | `64` | Per-request token/logprob buffer length (= one detector window). |
+| `token_logprob_stride` | int | `32` | Re-run detection after this many new tokens once the buffer is full. |
+| `token_logprob_topk` | int | `20` | Max top-k logprobs retained per token for detection. |
+| `ill_nan_window_thresh` | int | `1` | Dump after this many NaN/Inf window hits. |
+| `ill_rare_window_thresh` | int | `1` | Dump after this many rare-character window hits. |
+| `ill_garbled_window_thresh` | int | `1` | Dump after this many garbled window hits. |
+| `ill_repet_window_thresh` | int | `2` | Dump after this many repetition window hits. |
+| `dynamic_dump_cooldown_seconds` | int | `300` | Minimum cooldown between two auto-triggered dumps. |
+| `dynamic_dump_max_times` | int | `0` | Maximum number of auto-triggered dumps in one worker lifecycle. `0` disables dump triggers. |
 
 **scheduler_config.short_request_first_config**
 
