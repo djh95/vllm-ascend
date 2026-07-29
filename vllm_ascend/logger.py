@@ -145,6 +145,48 @@ def format_logger_chain(name: str) -> str:
     return " -> ".join(parts)
 
 
+def _qualname(obj: object) -> str:
+    mod = getattr(obj, "__module__", "?")
+    name = getattr(obj, "__qualname__", getattr(obj, "__name__", type(obj).__name__))
+    return f"{mod}.{name}"
+
+
+def _describe_io_hooks() -> list[str]:
+    """Detect stdout/stderr/logging emit patches that can rewrite lines as ``[UC]``."""
+    lines: list[str] = []
+    for label, stream, orig in (
+        ("stdout", sys.stdout, sys.__stdout__),
+        ("stderr", sys.stderr, sys.__stderr__),
+    ):
+        write = getattr(stream, "write", None)
+        orig_write = getattr(orig, "write", None) if orig is not None else None
+        same_as_orig = write is orig_write if orig_write is not None else None
+        lines.append(
+            f"[ascend_log_chain] {label}: type={type(stream).__module__}.{type(stream).__name__} "
+            f"write={_qualname(write) if write is not None else None} "
+            f"same_as_dunder={same_as_orig}"
+        )
+    # Compare live StreamHandler.emit to the stdlib unbound function.
+    std_emit = logging.StreamHandler.emit
+    lines.append(f"[ascend_log_chain] StreamHandler.emit={_qualname(std_emit)}")
+    for logger_name in ("vllm_ascend", "vllm"):
+        lg = logging.getLogger(logger_name)
+        for idx, handler in enumerate(lg.handlers):
+            emit = getattr(handler, "emit", None)
+            emit_func = getattr(emit, "__func__", emit)
+            patched = emit_func is not std_emit
+            lines.append(
+                f"[ascend_log_chain] {logger_name}.handlers[{idx}] "
+                f"type={type(handler).__name__} emit={_qualname(emit) if emit else None} "
+                f"emit_patched={patched} "
+                f"formatter={type(handler.formatter).__name__ if handler.formatter else None}"
+            )
+    lines.append(f"[ascend_log_chain] Logger.manager.class={_qualname(logging.getLoggerClass())}")
+    factory = logging.getLogRecordFactory()
+    lines.append(f"[ascend_log_chain] LogRecordFactory={_qualname(factory)}")
+    return lines
+
+
 def log_logger_chain_probe(reason: str, *, force: bool = False) -> None:
     """Once-per-reason dump of key logger chains (stderr + ascend logger).
 
@@ -166,16 +208,24 @@ def log_logger_chain_probe(reason: str, *, force: bool = False) -> None:
     )
     lines.append(f"[ascend_log_chain] uc_logger_names={uc_names or []}")
     lines.append(f"[ascend_log_chain] root_handlers={[_handler_brief(h) for h in logging.root.handlers] or []}")
+    lines.extend(_describe_io_hooks())
     for probe_name in _LOG_CHAIN_PROBE_NAMES:
         try:
             lines.append(f"[ascend_log_chain] {format_logger_chain(probe_name)}")
         except Exception as exc:  # noqa: BLE001 — diagnostics must not break serving
             lines.append(f"[ascend_log_chain] {probe_name} ERROR {type(exc).__name__}: {exc}")
 
+    # A/B markers: same process, different loggers — see which lines become [UC] downstream.
+    marker = f"ascend_log_chain_marker reason={reason} pid={os.getpid()}"
+    lines.append(f"[ascend_log_chain] emitting A/B markers: {marker}")
+
     text = "\n".join(lines)
     # stderr bypasses logging Handlers (so UC Formatter cannot rewrite this dump).
     print(text, file=sys.stderr, flush=True)
     with suppress(Exception):
+        logging.getLogger("vllm_ascend.logger").info("[A] %s via=vllm_ascend.logger", marker)
+        logging.getLogger("vllm_ascend.dfx.runtime_config").info("[B] %s via=vllm_ascend.dfx.runtime_config", marker)
+        logging.getLogger("vllm.logger").info("[C] %s via=vllm.logger", marker)
         logging.getLogger("vllm_ascend.logger").info("%s", text)
 
 
