@@ -118,7 +118,7 @@ Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在
 
 | 段 | 含义 |
 |----|------|
-| `dump` | `enabled` / `max_times` / `cooldown_seconds`；`dump_once`：手动改 JSON 为 `true` 后下一次热更触发一次 dump（不计次数、忽略冷却，触发后自动写回 `false`）。**必须** `dfx_config_reload_interval > 0`，否则改 JSON 不会被读到 |
+| `dump` | `enabled` / `max_times` / `cooldown_seconds`；`dump_once`：手动改 JSON 为 `true` 后，worker **下一次 `execute_model`（需有请求）** 热更读到后触发一次 dump（不计次数、忽略冷却），再写回 `false`。**必须** `dfx_config_reload_interval > 0`。空闲无请求时不会消费。还需要 `dump_config_path`（msprobe）且 `dump.enabled=true` |
 | `ascend_log` | `level`：`vllm_ascend` 包根 logger 级别。`debug`：模块白名单（相对路径，如 `["dfx"]` → `vllm_ascend.dfx`）强制 DEBUG。走 Ascend 专用 handler（不受 `VLLM_LOGGING_LEVEL` 的 `vllm` handler 过滤）。无 `enabled` |
 | `metrics` / `trace` | 观测开关与级别（仍待引擎接线） |
 | `detector` | 各检测器开关与阈值 |

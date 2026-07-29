@@ -84,13 +84,22 @@ class DfxProcessor:
         changed = self.dfx_config.sync_dfx_config()
         if changed:
             self.dumper.apply_dfx_config()
-            # dump.dump_once → alert → dump (no quota).
-            for alert in self.manual_dump_detector.check_all():
-                self._handle_alert(alert, detector=self.manual_dump_detector, write_report=False)
         else:
             # Keep dump limits aligned with live ``dfx_config`` even when this
             # step had no file mtime change (e.g. broadcast payload already applied).
             self.dumper._sync_dump_limits_from_config()
+        # Drain dump_once whenever it is set in live config — not only on the
+        # mtime-changed step. Otherwise a missed/racy ``changed`` leaves
+        # dump_once stuck true on disk with no dump.
+        if self.dfx_config.dump_once():
+            for alert in self.manual_dump_detector.check_all():
+                ok = self._handle_alert(alert, detector=self.manual_dump_detector, write_report=False)
+                if not ok:
+                    logger.error(
+                        "[DFX manual_dump] dump_once consumed but dump arm failed "
+                        "(check dump.enabled / dump_config_path / debugger). "
+                        "Re-set dump.dump_once=true after fixing."
+                    )
         # Always pull detector flags from live config. Init may have applied
         # ``dynamic_dump_config`` only; JSON hot-reload updates ``dfx_config``.
         self.spec_detector.refresh_from_config()

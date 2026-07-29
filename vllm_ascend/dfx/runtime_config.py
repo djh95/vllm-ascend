@@ -567,14 +567,21 @@ class DfxRuntimeConfig:
         if _is_json_writer():
             if self.save({"dump": {"dump_once": False}}):
                 logger.info(
-                    "[DFX runtime_config] dump_once consumed → false path=%s",
+                    "[DFX runtime_config] dump_once consumed → false path=%s %s",
                     self.config_path,
+                    _process_role_tag(),
                 )
             else:
                 logger.warning(
-                    "[DFX runtime_config] dump_once cleared in-memory but failed to persist path=%s",
+                    "[DFX runtime_config] dump_once cleared in-memory but failed to persist path=%s %s",
                     self.config_path,
+                    _process_role_tag(),
                 )
+        else:
+            logger.info(
+                "[DFX runtime_config] dump_once cleared in-memory (non-writer) %s",
+                _process_role_tag(),
+            )
         return True
 
     def ascend_log_level(self) -> str:
@@ -661,6 +668,13 @@ class DfxRuntimeConfig:
                     # Content diffs are logged inside ``_apply_loaded``.
                     if self._maybe_reload_local():
                         self.apply_ascend_log_level()
+                        if self.dump_once():
+                            logger.info(
+                                "[DFX runtime_config] dump_once=true seen on non-worker "
+                                "reload — dump arms only on worker execute_model "
+                                "(send a request). path=%s",
+                                self.config_path,
+                            )
                 except Exception as exc:
                     logger.warning(
                         "[DFX runtime_config] non-worker reload error path=%s error=%s",
@@ -834,6 +848,12 @@ class DfxRuntimeConfig:
                 _process_role_tag(),
                 "; ".join(changes),
             )
+            if self.dump_once():
+                logger.info(
+                    "[DFX runtime_config] dump_once=true loaded — next worker "
+                    "execute_model will consume and arm dump %s",
+                    _process_role_tag(),
+                )
         elif announce:
             logger.debug(
                 "[DFX runtime_config] apply no content change path=%s version=%.6f %s",
@@ -910,7 +930,11 @@ class DfxRuntimeConfig:
                 raise ValueError(f"{flag_section}.enabled must be bool")
         dump_once = data["dump"].get("dump_once")
         if dump_once is not None and not isinstance(dump_once, bool):
-            raise ValueError("dump.dump_once must be bool")
+            # Accept 0/1 from hand-edited JSON; reject other types.
+            if dump_once in (0, 1):
+                data["dump"]["dump_once"] = bool(dump_once)
+            else:
+                raise ValueError("dump.dump_once must be bool")
         for level_section in ("ascend_log", "metrics", "trace"):
             level = data[level_section].get("level", "INFO")
             if not isinstance(level, str):

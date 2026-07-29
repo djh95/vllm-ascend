@@ -30,6 +30,7 @@ def test_dfx_processor_refresh_runs_manual_dump_without_report_or_sample_log():
     proc.runner = MagicMock(tp_rank=0)
     proc.dfx_config = MagicMock()
     proc.dfx_config.sync_dfx_config.return_value = True
+    proc.dfx_config.dump_once.return_value = True
     proc.dumper = MagicMock()
     proc.dumper.handle_anomaly_alert.return_value = True
     proc.report_writer = MagicMock()
@@ -59,6 +60,7 @@ def test_dfx_processor_refresh_no_change_skips_apply():
     proc = DfxProcessor.__new__(DfxProcessor)
     proc.dfx_config = MagicMock()
     proc.dfx_config.sync_dfx_config.return_value = False
+    proc.dfx_config.dump_once.return_value = False
     proc.dumper = MagicMock()
     proc.spec_detector = MagicMock()
     proc.token_logprob_detector = MagicMock()
@@ -71,6 +73,31 @@ def test_dfx_processor_refresh_no_change_skips_apply():
     proc.token_logprob_detector.refresh_from_config.assert_called_once()
     proc.manual_dump_detector.refresh_from_config.assert_called_once()
     proc.manual_dump_detector.check_all.assert_not_called()
+
+
+def test_dfx_processor_refresh_drains_dump_once_even_when_unchanged():
+    proc = DfxProcessor.__new__(DfxProcessor)
+    proc.dfx_config = MagicMock()
+    proc.dfx_config.sync_dfx_config.return_value = False
+    proc.dfx_config.dump_once.return_value = True
+    proc.dumper = MagicMock()
+    proc.dumper.handle_anomaly_alert.return_value = True
+    proc.report_writer = MagicMock()
+    proc.spec_detector = MagicMock()
+    proc.token_logprob_detector = MagicMock()
+    proc.manual_dump_detector = MagicMock()
+    alert = AnomalyAlert(
+        anomaly_type="manual_dump_once",
+        req_id="__manual_dump_once__",
+        consume_quota=False,
+        mark_full_log=False,
+    )
+    proc.manual_dump_detector.check_all.return_value = [alert]
+
+    assert proc.refresh_config() is False
+    proc.dumper.apply_dfx_config.assert_not_called()
+    proc.manual_dump_detector.check_all.assert_called_once()
+    proc.dumper.handle_anomaly_alert.assert_called_once()
 
 
 def test_handle_alert_calls_save_sample_param_when_mark_full_log():
