@@ -1,0 +1,39 @@
+{
+  "sync_mode": "broadcast",
+  "reload_interval_seconds": 5,
+  "dump": {
+    "enabled": true,
+    "max_times": 0,
+    "cooldown_seconds": 300,
+    "dump_once": false
+  },
+  "ascend_log": {
+    "level": "INFO",
+    "debug": []
+  },
+  "metrics": {
+    "enabled": true,
+    "level": "INFO"
+  },
+  "trace": {
+    "enabled": false,
+    "level": "INFO",
+    "otlp_endpoint": null
+  },
+  "detector": {
+    "enable_spec_acceptance_check": true,
+    "enable_token_logprob_check": false,
+    "spec_acceptance_window": 10,
+    "spec_acceptance_low_threshold": 0.3,
+    "spec_acceptance_len_low_threshold": 1.4,
+    "spec_acceptance_high_threshold": 0.96,
+    "spec_acceptance_len_high_threshold": 2.8,
+    "token_logprob_window": 64,
+    "token_logprob_stride": 32,
+    "token_logprob_topk": 20,
+    "ill_nan_window_thresh": 1,
+    "ill_rare_window_thresh": 1,
+    "ill_garbled_window_thresh": 1,
+    "ill_repet_window_thresh": 2
+  }
+}
