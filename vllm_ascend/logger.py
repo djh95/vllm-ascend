@@ -93,6 +93,9 @@ def _set_logger_tree_level(prefix: str, level: int) -> None:
             logging.getLogger(name).setLevel(level)
 
 
+_last_applied_ascend_log: tuple[str, tuple[str, ...]] | None = None
+
+
 def apply_ascend_log_level(
     level: str = "INFO",
     debug_modules: list[str] | None = None,
@@ -106,10 +109,19 @@ def apply_ascend_log_level(
             ``vllm_ascend.<entry>``). Full ``vllm_ascend.*`` names are also
             accepted.
     """
+    global _last_applied_ascend_log
+
     configure_ascend_logging()
     root_level = _resolve_log_level(level)
+    debug_list = list(debug_modules or ())
+    level_key = str(level).upper()
+    debug_key = tuple(debug_list)
+    needs_debug = root_level <= logging.DEBUG or bool(debug_list)
+    announce = _last_applied_ascend_log != (level_key, debug_key)
+
     ascend = logging.getLogger("vllm_ascend")
     ascend.setLevel(root_level)
+    ascend.propagate = False
     # Keep handlers able to emit DEBUG; logger.level is the gate.
     for h in ascend.handlers:
         if h.level > logging.DEBUG:
@@ -119,15 +131,16 @@ def apply_ascend_log_level(
     legacy.setLevel(root_level)
     # Avoid INFO-filtered ``vllm`` StreamHandler swallowing DEBUG.
     legacy.propagate = False
-    if not legacy.handlers and ascend.handlers:
+    if ascend.handlers:
         for h in ascend.handlers:
-            legacy.addHandler(h)
+            if h not in legacy.handlers:
+                legacy.addHandler(h)
 
     # Reset known children to the root level (clears a prior debug whitelist).
     for name in _iter_ascend_logger_names():
         logging.getLogger(name).setLevel(root_level)
 
-    for entry in debug_modules or ():
+    for entry in debug_list:
         prefix = _normalize_debug_module(entry)
         if not prefix or prefix == "vllm_ascend":
             # Root already set; ignore empty / redundant root entries.
@@ -136,6 +149,48 @@ def apply_ascend_log_level(
                 legacy.setLevel(logging.DEBUG)
             continue
         _set_logger_tree_level(prefix, logging.DEBUG)
+
+    if needs_debug:
+        # Outer collectors (e.g. UC) often attach INFO-level handlers on root /
+        # ``vllm``. Lower those handlers so DEBUG records are not dropped after
+        # our loggers allow them. Logger levels elsewhere stay unchanged.
+        for h in logging.root.handlers:
+            if h.level > logging.DEBUG:
+                h.setLevel(logging.DEBUG)
+        vllm_logger = logging.getLogger("vllm")
+        for h in vllm_logger.handlers:
+            if h.level > logging.DEBUG:
+                h.setLevel(logging.DEBUG)
+        for name in list(logging.Logger.manager.loggerDict):
+            if not isinstance(name, str):
+                continue
+            # Huawei UC / slog-style module loggers seen in the wild.
+            if name.upper() == "UC" or name.endswith(".UC"):
+                lg = logging.getLogger(name)
+                if lg.level > logging.DEBUG and lg.level != logging.NOTSET:
+                    lg.setLevel(logging.DEBUG)
+                for h in lg.handlers:
+                    if h.level > logging.DEBUG:
+                        h.setLevel(logging.DEBUG)
+
+    _last_applied_ascend_log = (level_key, debug_key)
+    probe = logging.getLogger("vllm_ascend.dfx")
+    if announce:
+        # INFO so operators can confirm apply even when DEBUG is still filtered.
+        logging.getLogger("vllm_ascend.logger").info(
+            "[ascend_log] applied level=%s debug=%s root_effective=%s "
+            "dfx_effective=%s dfx_debug_enabled=%s handlers_ascend=%d handlers_root=%d",
+            level_key,
+            debug_list,
+            logging.getLevelName(ascend.getEffectiveLevel()),
+            logging.getLevelName(probe.getEffectiveLevel()),
+            probe.isEnabledFor(logging.DEBUG),
+            len(ascend.handlers),
+            len(logging.root.handlers),
+        )
+        if needs_debug and probe.isEnabledFor(logging.DEBUG):
+            # Canary: if this never appears, an outer INFO filter is still dropping DEBUG.
+            probe.debug("[ascend_log] debug canary from vllm_ascend.dfx")
 
 
 def _use_color() -> bool:
