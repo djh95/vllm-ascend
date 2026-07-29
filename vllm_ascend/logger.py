@@ -298,9 +298,11 @@ def apply_ascend_log_level(
             if not isinstance(name, str):
                 continue
             # Huawei UC / slog-style module loggers seen in the wild.
+            # Force DEBUG even when level is NOTSET (otherwise effective level
+            # stays WARNING/ERROR via root and UC DEBUG never appears).
             if name.upper() == "UC" or name.endswith(".UC"):
                 lg = logging.getLogger(name)
-                if lg.level > logging.DEBUG and lg.level != logging.NOTSET:
+                if lg.level == logging.NOTSET or lg.level > logging.DEBUG:
                     lg.setLevel(logging.DEBUG)
                 for h in lg.handlers:
                     if h.level > logging.DEBUG:
@@ -312,12 +314,14 @@ def apply_ascend_log_level(
         # INFO so operators can confirm apply even when DEBUG is still filtered.
         logging.getLogger("vllm_ascend.logger").info(
             "[ascend_log] applied level=%s debug=%s root_effective=%s "
-            "dfx_effective=%s dfx_debug_enabled=%s handlers_ascend=%d handlers_root=%d",
+            "dfx_effective=%s dfx_debug_enabled=%s uc_effective=%s "
+            "handlers_ascend=%d handlers_root=%d",
             level_key,
             debug_list,
             logging.getLevelName(ascend.getEffectiveLevel()),
             logging.getLevelName(probe.getEffectiveLevel()),
             probe.isEnabledFor(logging.DEBUG),
+            logging.getLevelName(logging.getLogger("UC").getEffectiveLevel()),
             len(ascend.handlers),
             len(logging.root.handlers),
         )
