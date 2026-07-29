@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import time
+from contextlib import suppress
 from datetime import datetime
 
 from vllm import envs
@@ -94,6 +95,88 @@ def _set_logger_tree_level(prefix: str, level: int) -> None:
 
 
 _last_applied_ascend_log: tuple[str, tuple[str, ...]] | None = None
+_log_chain_probe_done: set[str] = set()
+
+# Loggers compared when diagnosing UC vs Ascend formatting.
+_LOG_CHAIN_PROBE_NAMES: tuple[str, ...] = (
+    "vllm_ascend",
+    "vllm_ascend.logger",
+    "vllm_ascend.dfx",
+    "vllm_ascend.dfx.detector.spec_acceptance",
+    "vllm_ascend.dfx.dumper",
+    "vllm_ascend.dfx.runtime_config",
+    "vllm.logger",
+    "vllm",
+    "root",
+    "UC",
+)
+
+
+def _handler_brief(handler: logging.Handler) -> str:
+    fmt = handler.formatter
+    fmt_name = type(fmt).__name__ if fmt is not None else "None"
+    stream = getattr(handler, "stream", None)
+    stream_name = getattr(stream, "name", type(stream).__name__) if stream is not None else "-"
+    return f"{type(handler).__name__}(level={logging.getLevelName(handler.level)},fmt={fmt_name},stream={stream_name})"
+
+
+def format_logger_chain(name: str) -> str:
+    """Describe logger→parent handler chain (safe with PlaceHolder parents)."""
+    if name == "root":
+        cur: logging.Logger | logging.PlaceHolder | None = logging.root
+    else:
+        cur = logging.getLogger(name)
+    parts: list[str] = []
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if not isinstance(cur, logging.Logger):
+            parts.append(f"{getattr(cur, 'name', '?')}({type(cur).__name__})")
+            break
+        handlers = [_handler_brief(h) for h in cur.handlers]
+        parts.append(
+            f"{cur.name}[level={logging.getLevelName(cur.level)}/"
+            f"eff={logging.getLevelName(cur.getEffectiveLevel())},"
+            f"prop={cur.propagate},handlers={handlers or '[]'}]"
+        )
+        if not cur.propagate or cur is logging.root:
+            break
+        cur = cur.parent
+    return " -> ".join(parts)
+
+
+def log_logger_chain_probe(reason: str, *, force: bool = False) -> None:
+    """Once-per-reason dump of key logger chains (stderr + ascend logger).
+
+    Used to see which Handler formats DFX lines as ``[UC]`` vs ``[vllm-ascend]``.
+    Set ``VLLM_ASCEND_LOG_CHAIN_PROBE=0`` to disable.
+    """
+    if os.environ.get("VLLM_ASCEND_LOG_CHAIN_PROBE", "1").strip() in ("0", "false", "False"):
+        return
+    if not force and reason in _log_chain_probe_done:
+        return
+    _log_chain_probe_done.add(reason)
+
+    lines: list[str] = [f"[ascend_log_chain] reason={reason} pid={os.getpid()}"]
+    # Any logger whose name looks like UC / slog collector.
+    uc_names = sorted(
+        n
+        for n in list(logging.Logger.manager.loggerDict)
+        if isinstance(n, str) and (n.upper() == "UC" or "UC" in n.split(".") or n.endswith(".UC"))
+    )
+    lines.append(f"[ascend_log_chain] uc_logger_names={uc_names or []}")
+    lines.append(f"[ascend_log_chain] root_handlers={[_handler_brief(h) for h in logging.root.handlers] or []}")
+    for probe_name in _LOG_CHAIN_PROBE_NAMES:
+        try:
+            lines.append(f"[ascend_log_chain] {format_logger_chain(probe_name)}")
+        except Exception as exc:  # noqa: BLE001 — diagnostics must not break serving
+            lines.append(f"[ascend_log_chain] {probe_name} ERROR {type(exc).__name__}: {exc}")
+
+    text = "\n".join(lines)
+    # stderr bypasses logging Handlers (so UC Formatter cannot rewrite this dump).
+    print(text, file=sys.stderr, flush=True)
+    with suppress(Exception):
+        logging.getLogger("vllm_ascend.logger").info("%s", text)
 
 
 def apply_ascend_log_level(
@@ -191,6 +274,8 @@ def apply_ascend_log_level(
         if needs_debug and probe.isEnabledFor(logging.DEBUG):
             # Canary: if this never appears, an outer INFO filter is still dropping DEBUG.
             probe.debug("[ascend_log] debug canary from vllm_ascend.dfx")
+        # Compare handler chains right after Ascend configure (vs later DFX emit).
+        log_logger_chain_probe(f"apply_ascend_log level={level_key}")
 
 
 def _use_color() -> bool:

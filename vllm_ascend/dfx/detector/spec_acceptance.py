@@ -26,7 +26,7 @@ from vllm.distributed.parallel_state import get_pp_group
 
 from vllm_ascend.dfx.detector.alert import AnomalyAlert
 from vllm_ascend.dfx.detector.base import AnomalyDetector
-from vllm_ascend.logger import init_logger_ascend
+from vllm_ascend.logger import init_logger_ascend, log_logger_chain_probe
 
 if TYPE_CHECKING:
     from vllm_ascend.dfx.runtime_config import DfxRuntimeConfig
@@ -219,6 +219,8 @@ class SpecAcceptanceDetector(AnomalyDetector):
             due_info = interesting or (now - last >= self._short_log_interval_s)
             if due_info:
                 self._short_log_ts[req_id] = now
+                # Dump handler chains in this Worker right before a UC-suspect emit.
+                log_logger_chain_probe("before_spec_short_info")
                 logger.info(
                     "[Anomaly spec short] req_id=%s draft_len=%d "
                     "accepted_count=%d accepted_draft_count=%d "
