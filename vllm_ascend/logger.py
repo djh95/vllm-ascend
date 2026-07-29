@@ -37,8 +37,105 @@ _LOG_MAX_BYTES = 20 * 1024 * 1024
 
 
 def init_logger_ascend(name: str) -> logging.Logger:
-    name = f"vllm.{name}"
+    """Logger under ``vllm_ascend.*`` (Ascend handler), not ``vllm.*``.
+
+    Nesting under ``vllm.`` makes records hit the root ``vllm`` StreamHandler,
+    whose level tracks ``VLLM_LOGGING_LEVEL`` (often INFO). That filters out
+    DEBUG even when package / module logger levels are DEBUG.
+    Ascend's own handler stays at DEBUG; levels are gated by
+    :func:`apply_ascend_log_level`.
+    """
     return init_logger(name)
+
+
+def _resolve_log_level(level: str) -> int:
+    return getattr(logging, str(level).upper(), logging.INFO)
+
+
+def _normalize_debug_module(entry: str) -> str:
+    """Map config entry to a ``vllm_ascend.*`` logger name."""
+    name = str(entry).strip().strip(".")
+    if not name:
+        return ""
+    if name == "vllm_ascend" or name.startswith("vllm_ascend."):
+        return name
+    if name.startswith("vllm.vllm_ascend"):
+        # Legacy tree → primary Ascend namespace.
+        return name[len("vllm.") :] if name.startswith("vllm.") else name
+    return f"vllm_ascend.{name}"
+
+
+def _iter_ascend_logger_names() -> list[str]:
+    names: list[str] = []
+    for name in list(logging.Logger.manager.loggerDict):
+        if not isinstance(name, str):
+            continue
+        if name.startswith("vllm_ascend.") or name.startswith("vllm.vllm_ascend."):
+            names.append(name)
+    return names
+
+
+def _set_logger_tree_level(prefix: str, level: int) -> None:
+    """Set ``prefix`` and any already-created ``prefix.*`` loggers."""
+    logging.getLogger(prefix).setLevel(level)
+    legacy = f"vllm.{prefix}" if prefix.startswith("vllm_ascend") else None
+    if legacy:
+        logging.getLogger(legacy).setLevel(level)
+    dotted = prefix + "."
+    legacy_dotted = (legacy + ".") if legacy else None
+    for name in _iter_ascend_logger_names():
+        if (
+            name == prefix
+            or name.startswith(dotted)
+            or legacy
+            and (name == legacy or (legacy_dotted and name.startswith(legacy_dotted)))
+        ):
+            logging.getLogger(name).setLevel(level)
+
+
+def apply_ascend_log_level(
+    level: str = "INFO",
+    debug_modules: list[str] | None = None,
+) -> None:
+    """Apply package root level and per-module DEBUG whitelist.
+
+    Args:
+        level: Level for the ``vllm_ascend`` root logger (e.g. ``INFO``).
+        debug_modules: Relative module paths forced to DEBUG, such as
+            ``\"dfx\"`` or ``\"dfx.runtime_config\"`` (mapped to
+            ``vllm_ascend.<entry>``). Full ``vllm_ascend.*`` names are also
+            accepted.
+    """
+    configure_ascend_logging()
+    root_level = _resolve_log_level(level)
+    ascend = logging.getLogger("vllm_ascend")
+    ascend.setLevel(root_level)
+    # Keep handlers able to emit DEBUG; logger.level is the gate.
+    for h in ascend.handlers:
+        if h.level > logging.DEBUG:
+            h.setLevel(logging.DEBUG)
+
+    legacy = logging.getLogger("vllm.vllm_ascend")
+    legacy.setLevel(root_level)
+    # Avoid INFO-filtered ``vllm`` StreamHandler swallowing DEBUG.
+    legacy.propagate = False
+    if not legacy.handlers and ascend.handlers:
+        for h in ascend.handlers:
+            legacy.addHandler(h)
+
+    # Reset known children to the root level (clears a prior debug whitelist).
+    for name in _iter_ascend_logger_names():
+        logging.getLogger(name).setLevel(root_level)
+
+    for entry in debug_modules or ():
+        prefix = _normalize_debug_module(entry)
+        if not prefix or prefix == "vllm_ascend":
+            # Root already set; ignore empty / redundant root entries.
+            if prefix == "vllm_ascend":
+                ascend.setLevel(logging.DEBUG)
+                legacy.setLevel(logging.DEBUG)
+            continue
+        _set_logger_tree_level(prefix, logging.DEBUG)
 
 
 def _use_color() -> bool:
@@ -226,5 +323,5 @@ def configure_ascend_logging() -> None:
     ascend_logger.setLevel(envs.VLLM_LOGGING_LEVEL)
     ascend_logger.propagate = False
 
-    # DFX / package logger levels are owned by DFX ``ascend_log.level``
-    # (``DfxRuntimeConfig.apply_ascend_log_level``); do not force DEBUG here.
+    # Package logger levels are owned by ``apply_ascend_log_level``
+    # (driven by DFX ``ascend_log``); do not force DEBUG here.

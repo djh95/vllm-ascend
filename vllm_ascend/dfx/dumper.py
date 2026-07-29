@@ -106,13 +106,14 @@ class Dumper:
 
         logger.info_once(
             "DFX ready config=%s report_dir=%s dump.enabled=%s dump.max_times=%d "
-            "ascend_log.level=%s metrics=%s/%s trace=%s/%s "
+            "ascend_log.level=%s ascend_log.debug=%s metrics=%s/%s trace=%s/%s "
             "spec_check=%s token_logprob_check=%s",
             str(self.dfx_config.config_path),
             str(self.dfx_config.report_dir),
             self.dfx_config.dump_enabled(),
             self._dynamic_dump_max_times,
             self.dfx_config.ascend_log_level(),
+            self.dfx_config.ascend_log_debug_modules(),
             self.dfx_config.metrics_enabled(),
             self.dfx_config.metrics_level(),
             self.dfx_config.trace_enabled(),
@@ -129,13 +130,15 @@ class Dumper:
         self._dynamic_dump_max_times = self.dfx_config.dump_max_times()
 
     def _apply_observability_switches(self) -> None:
-        """Apply ascend_log level from live config (metrics/trace still wiring TBD)."""
+        """Apply ``ascend_log`` from live config.
+
+        ``metrics`` / ``trace`` accessors exist on ``DfxRuntimeConfig`` for later
+        engine wiring; dump path respects ``dump.enabled`` separately.
+        """
         self.dfx_config.apply_ascend_log_level()
-        # metrics / trace: switches are exposed for engine wiring; dump path
-        # respects dump.enabled via _anomaly_dump_feature_enabled.
 
     def apply_dfx_config(self) -> None:
-        """Pull dump limits / log levels from already-synced ``dfx_config``.
+        """Pull dump limits / ``ascend_log`` from already-synced ``dfx_config``.
 
         Runner owns :meth:`~DfxRuntimeConfig.sync_dfx_config`; call this only
         after a successful reload so Dumper never drives config I/O.

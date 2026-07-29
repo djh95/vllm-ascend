@@ -1,9 +1,13 @@
-# Dumper 代码审查：待完善清单
+# Dumper 代码审查：待完善清单（历史快照）
 
+> **已过时**：本文为 2026-07 审查快照，多项问题（如硬编码 `setLevel(DEBUG)`、旧 API 名）已在
+> `vllm_ascend/dfx/` + `ascend_log` / `apply_ascend_log_level` 落地后失效。  
+> 请以 [dfx_design.md](./dfx_design.md) / [dumper_design.md](./dumper_design.md) 与当前代码为准；
+> 下文仅作历史参考。
+>
 > 审查时间：2026-07-25；路径更新：2026-07-28  
-> 审查范围（历史）：原 `vllm_ascend/dumper.py`；现实现已迁至 `vllm_ascend/dfx/`（见 [dfx_design.md](./dfx_design.md)）。  
-> 调用点：`vllm_ascend/worker/v2/model_runner.py`、`vllm_ascend/worker/model_runner_v1.py`  
-> 下文行号与部分路径可能滞后于当前代码，以 `vllm_ascend/dfx/dumper.py` 与 detector 包为准。
+> 审查范围（历史）：原 `vllm_ascend/dumper.py`；现实现已迁至 `vllm_ascend/dfx/`。  
+> 调用点：`vllm_ascend/worker/v2/model_runner.py`、`vllm_ascend/worker/model_runner_v1.py`
 
 ---
 

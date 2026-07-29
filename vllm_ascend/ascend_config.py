@@ -130,7 +130,10 @@ class AscendConfig:
             "[DFX] config path=%s (persist deferred to worker leader)",
             self.dfx_config.config_path,
         )
-        # API / EngineCore: file-poll log switches. Workers (RANK set) no-op here
+        # Apply ascend_log immediately (API/EngineCore and workers). Workers also
+        # re-apply from Dumper / refresh_config after sync.
+        self.dfx_config.apply_ascend_log_level()
+        # API / EngineCore: file-poll ascend_log. Workers (RANK set) no-op here
         # and keep execute_model → refresh_config → world broadcast.
         self.dfx_config.start_non_worker_background_reload()
 

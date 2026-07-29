@@ -129,10 +129,10 @@ class DfxProcessor:
                 if now - last >= 2.0:
                     self._spec_skip_log_ts = now
                     logger.info(
-                        "[Anomaly spec short] skip gate: %s (enable_spec_acceptance_check=%s dump.max_times=%s)",
+                        "[Anomaly spec short] skip gate: %s (enable_spec_acceptance_check=%s dump.enabled=%s)",
                         reason,
                         self.dfx_config.detector_get("enable_spec_acceptance_check", False),
-                        self.dfx_config.dump_max_times(),
+                        self.dfx_config.dump_enabled(),
                     )
             return
         for alert in self.spec_detector.check_all(sampled_tokens, accepted_token_nums):
@@ -150,10 +150,10 @@ class DfxProcessor:
             reason = self.dumper.anomaly_check_skip_reason()
             if reason:
                 logger.info_once(
-                    "[Anomaly token_logprob short] skip gate: %s (enable_token_logprob_check=%s dump.max_times=%s)",
+                    "[Anomaly token_logprob short] skip gate: %s (enable_token_logprob_check=%s dump.enabled=%s)",
                     reason,
                     self.dfx_config.detector_get("enable_token_logprob_check", False),
-                    self.dfx_config.dump_max_times(),
+                    self.dfx_config.dump_enabled(),
                 )
             return
         for alert in self.token_logprob_detector.check_all(
@@ -167,7 +167,8 @@ class DfxProcessor:
         """Bump per-request top-k logprobs so TokenLogprobDetector can run.
 
         Clients need not set ``logprobs`` on the request when
-        ``enable_token_logprob_check`` is on (and dump quota allows detection).
+        ``enable_token_logprob_check`` is on and ``dump.enabled``.
+        ``dump.max_times`` only gates dump arming, not this force path.
         Safe no-op when the check is disabled or the batch has no sampling state.
         """
         det = self.token_logprob_detector

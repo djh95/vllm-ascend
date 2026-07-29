@@ -9,7 +9,7 @@
 
 ## 2. 代码路径
 
-- 核心实现：`vllm_ascend/dfx/dumper.py`（兼容：`vllm_ascend/dumper.py` re-export）
+- 核心实现：`vllm_ascend/dfx/dumper.py`
 - Processor（runner 编排）：`vllm_ascend/dfx/processor.py`
 - Runtime Config：`vllm_ascend/dfx/runtime_config.py`
 - Detector：`vllm_ascend/dfx/detector/`
@@ -22,7 +22,7 @@
 `Dumper` 主要包含（**不管** config reload / report；由 ``DfxProcessor`` 编排）：
 
 1. **应用已同步的 runtime config**
-   - `apply_dfx_config()`：同步 `dump.max_times` / cooldown、刷新 log level
+   - `apply_dfx_config()`：同步 `dump.max_times` / cooldown、调用 `apply_ascend_log_level`（`ascend_log.level` + `debug`）
 
 2. **debugger 生命周期**
    - `_init_debugger()`：按 `CUDAGraphMode` 选择 `PrecisionDebugger` 或 `AclGraphDumper`
@@ -105,7 +105,7 @@ start → forward → finalize → disable（需 _dump_forward_seen）
 
 1. msprobe 配置：`runner.ascend_config.dump_config_path` / `dump_config`
 2. DFX 运行时配置：`dfx_config_path`（默认 `<cwd>/dfx/config/dfx_config.json`）
-3. 异常短报告：`<dfx_root>/report/anomaly_YYYYMMDD.log`
+3. 异常短报告：`<dfx_root>/report/anomaly_YYYYMMDD_HHMMSS.log`
 4. `set_msprobe_dump_state`：msprobe JSON 旁 `.lock` 持锁写 `dump_enable`
 5. `save_sample_param`：在 ``DfxProcessor``（`mark_full_log` 的 alert；TP0 && last PP）
 

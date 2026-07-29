@@ -1,7 +1,7 @@
 # vLLM-Ascend 异步调度下的 Dumper 问题分析
 
 > 整理时间：2026-07-25；路径随 DFX 拆分更新：2026-07-28  
-> 涉及模块：`vllm_ascend/dfx/dumper.py`（兼容 `vllm_ascend/dumper.py`）、`vllm_ascend/dfx/detector/`、`vllm_ascend/worker/v2/model_runner.py`、`vllm_ascend/worker/model_runner_v1.py`  
+> 涉及模块：`vllm_ascend/dfx/dumper.py`、`vllm_ascend/dfx/detector/`、`vllm_ascend/worker/v2/model_runner.py`、`vllm_ascend/worker/model_runner_v1.py`  
 > DFX 总览：[dfx_design.md](./dfx_design.md)
 
 ---

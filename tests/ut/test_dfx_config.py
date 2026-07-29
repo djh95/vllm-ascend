@@ -45,7 +45,7 @@ def test_dfx_config_hot_reload_and_defaults(tmp_path: Path):
     assert cfg.detector_get("enable_token_logprob_check") is True
 
 
-def test_dfx_hot_reload_disabled_by_default(tmp_path: Path):
+def test_dfx_hot_reload_disabled_when_interval_zero(tmp_path: Path):
     cfg = DfxRuntimeConfig(
         tmp_path / "dfx_config.json",
         report_dir=tmp_path / "report",
@@ -486,7 +486,7 @@ def test_reload_noop_when_file_missing(tmp_path: Path):
 def test_apply_ascend_log_level_sets_vllm_ascend_loggers(tmp_path: Path):
     import logging
 
-    from vllm_ascend.dfx.runtime_config import ASCEND_DFX_LOGGER_NAMES
+    from vllm_ascend.logger import init_logger_ascend
 
     cfg = DfxRuntimeConfig(
         tmp_path / "dfx_config.json",
@@ -495,11 +495,27 @@ def test_apply_ascend_log_level_sets_vllm_ascend_loggers(tmp_path: Path):
         sync_mode="file",
         reload_interval_seconds=0,
     )
-    assert cfg.save({"ascend_log": {"level": "WARNING"}})
+    assert cfg.save({"ascend_log": {"level": "WARNING", "debug": []}})
     cfg.apply_ascend_log_level()
     assert logging.getLogger("vllm_ascend").level == logging.WARNING
-    for name in ASCEND_DFX_LOGGER_NAMES:
-        assert logging.getLogger(name).level == logging.WARNING
+
+    # Root INFO + debug whitelist: only listed modules become DEBUG.
+    other = init_logger_ascend("vllm_ascend.worker.model_runner_v1")
+    dfx_logger = init_logger_ascend("vllm_ascend.dfx.runtime_config")
+    assert cfg.save({"ascend_log": {"level": "INFO", "debug": ["dfx"]}})
+    cfg.apply_ascend_log_level()
+    assert logging.getLogger("vllm_ascend").level == logging.INFO
+    assert logging.getLogger("vllm_ascend.dfx").level == logging.DEBUG
+    assert dfx_logger.level == logging.DEBUG
+    assert dfx_logger.isEnabledFor(logging.DEBUG)
+    assert other.level == logging.INFO
+    assert not other.isEnabledFor(logging.DEBUG)
+
+    # Full-package DEBUG.
+    assert cfg.save({"ascend_log": {"level": "DEBUG", "debug": []}})
+    cfg.apply_ascend_log_level()
+    assert logging.getLogger("vllm_ascend").level == logging.DEBUG
+    assert dfx_logger.isEnabledFor(logging.DEBUG)
 
 
 def test_legacy_log_section_migrates_to_ascend_log(tmp_path: Path):
@@ -516,8 +532,67 @@ def test_legacy_log_section_migrates_to_ascend_log(tmp_path: Path):
         reload_interval_seconds=0,
     )
     assert cfg.ascend_log_level() == "DEBUG"
+    assert cfg.ascend_log_debug_modules() == []
     assert "log" not in cfg._data
     assert "enabled" not in cfg.ascend_log
+    assert "debug" in cfg.ascend_log
+
+
+def test_ascend_log_debug_string_and_enabled_stripped(tmp_path: Path):
+    cfg_path = tmp_path / "dfx_config.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "dump": {"max_times": 1},
+                "ascend_log": {"enabled": True, "level": "WARNING", "debug": "dfx"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = DfxRuntimeConfig(
+        cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=False,
+        sync_mode="file",
+        reload_interval_seconds=0,
+    )
+    assert cfg.ascend_log_level() == "WARNING"
+    assert cfg.ascend_log_debug_modules() == ["dfx"]
+    assert "enabled" not in cfg.ascend_log
+
+
+def test_ascend_log_debug_full_logger_name(tmp_path: Path):
+    import logging
+
+    from vllm_ascend.logger import init_logger_ascend
+
+    cfg = DfxRuntimeConfig(
+        tmp_path / "dfx_config.json",
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        sync_mode="file",
+        reload_interval_seconds=0,
+    )
+    child = init_logger_ascend("vllm_ascend.dfx.dumper")
+    assert cfg.save({"ascend_log": {"level": "INFO", "debug": ["vllm_ascend.dfx.dumper"]}})
+    cfg.apply_ascend_log_level()
+    assert logging.getLogger("vllm_ascend").level == logging.INFO
+    assert child.level == logging.DEBUG
+    assert child.isEnabledFor(logging.DEBUG)
+
+
+def test_ascend_log_defaults_include_empty_debug(tmp_path: Path):
+    cfg = DfxRuntimeConfig(
+        tmp_path / "dfx_config.json",
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        sync_mode="file",
+        reload_interval_seconds=0,
+    )
+    assert cfg.ascend_log_debug_modules() == []
+    saved = json.loads(cfg.config_path.read_text(encoding="utf-8"))
+    assert saved["ascend_log"]["debug"] == []
+    assert "enabled" not in saved["ascend_log"]
 
 
 def test_broadcast_sync_applies_leader_payload_to_follower(tmp_path: Path):

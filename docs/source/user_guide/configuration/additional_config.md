@@ -73,7 +73,7 @@ The following table lists additional configuration options available in vLLM Asc
 | `refresh`                           | bool | `false` | Whether to refresh global Ascend configuration content. This is usually used by rlhf or ut/e2e test case. |
 | `dump_config`                       | dict | `None`  | Inline msprobe dump configuration. vLLM-Ascend will materialize it to a temporary JSON file and pass that file to the debugger. |
 | `dump_config_path`                  | str  | `None`  | Configuration file path for msprobe dump (compatible legacy option).                                      |
-| `dfx_config_path` / `dfx-config`    | str  | `None`  | Path to DFX runtime JSON (dump/log/metrics/trace/detector). Default: `<cwd>/dfx/config/dfx_config.json`. Prefer this over `dynamic_dump_config` for multi-node hot reload (rank0 read + world broadcast). |
+| `dfx_config_path` / `dfx-config`    | str  | `None`  | Path to DFX runtime JSON (`dump` / `ascend_log` / `metrics` / `trace` / `detector`). Default: `<cwd>/dfx/config/dfx_config.json`. Prefer this over `dynamic_dump_config` for multi-node hot reload (rank0 read + world broadcast). |
 | `dfx_config_reload_interval`        | float| `5`     | DFX JSON hot-reload period in seconds. Default `5`. Set `0` to disable periodic refresh. Also written into JSON as `reload_interval_seconds` for visibility; the startup value remains authoritative. **Required `> 0` for `dump.dump_once`.** |
 | `dfx_report_dir`                    | str  | `None`  | Directory for short anomaly reports. Default: sibling `dfx/report` next to the config dir. |
 | `dynamic_dump_config`               | dict | `{}`    | **Legacy** flat options for anomaly-triggered dump. Only **explicit** keys overlay DFX JSON (explicit > JSON > defaults); empty `{}` does not clobber JSON. Prefer `dfx_config_path`. |
@@ -172,7 +172,7 @@ The details of each configuration option are as follows:
 
 **dfx_config_path / dfx-config**
 
-Path to the DFX runtime JSON controlling dump, log/metrics/trace switches, and anomaly detectors.
+Path to the DFX runtime JSON controlling dump, `ascend_log` / metrics / trace switches, and anomaly detectors.
 If omitted, vLLM-Ascend uses `<cwd>/dfx/config/dfx_config.json` (created with defaults on first start).
 
 **dfx_config_reload_interval**
@@ -185,8 +185,10 @@ This startup setting is authoritative; it is not turned back on by fields inside
 after the process has started with `0`.
 
 On **API / EngineCore** (processes without `RANK`), the same interval also starts a daemon
-thread that file-polls the JSON and applies DFX `log` level only — it does **not** join the
-worker world broadcast and does not write the file. Workers keep step-driven sync only.
+thread that file-polls the JSON and applies `ascend_log` (`level` + `debug`) via
+`apply_ascend_log_level` — it does **not** join the worker world broadcast and does not
+write the file. Initial levels are applied at AscendConfig construction; the thread
+re-applies after subsequent file changes. Workers keep step-driven sync only.
 
 Inside the DFX JSON, `dump.dump_once: true` is consumed by `ManualDumpDetector` on the next
 successful hot-reload (then persisted back to `false`). The alert arms one msprobe dump without
@@ -222,7 +224,7 @@ Example:
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `enable_spec_acceptance_check` | bool | `True` | Enable speculative acceptance-rate anomaly detection. |
-| `enable_token_logprob_check` | bool | `False` | Enable token/logprob anomaly detection via msprobe `ILLDetector`. When enabled (and dump quota allows), the worker forces at least `token_logprob_topk` logprobs per request before sampling. |
+| `enable_token_logprob_check` | bool | `False` | Enable token/logprob anomaly detection via msprobe `ILLDetector`. When enabled (and `dump.enabled`), the worker forces at least `token_logprob_topk` logprobs per request before sampling. `dump.max_times` only gates dump arming, not detection. |
 | `spec_acceptance_window` | int | `10` | Sliding window size used to aggregate speculative acceptance behavior. |
 | `spec_acceptance_low_threshold` | float | `0.3` | Low acceptance-rate threshold for triggering detailed anomaly logging and dump. |
 | `spec_acceptance_len_low_threshold` | float | `1.4` | Low accepted-length threshold paired with `spec_acceptance_low_threshold`. |

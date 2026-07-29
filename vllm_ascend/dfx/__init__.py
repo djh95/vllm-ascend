@@ -15,10 +15,11 @@
 
 """DFX (design for eXcellence) observability.
 
-Four flows + runner orchestration:
+Five components:
 1. Runtime config — shared JSON + world broadcast (``DfxRuntimeConfig``)
 2. Detector — anomaly checks returning ``AnomalyAlert``
-3. Dump / observability — msprobe dump + log/metrics/trace switches (``Dumper``)
+3. Dump / observability — msprobe dump + ``ascend_log`` / metrics / trace
+   switches (``Dumper``; metrics/trace interfaces reserved for later wiring)
 4. Report — short anomaly records under ``dfx/report`` (``DfxReportWriter``)
 5. Processor — runner hooks wiring the above (``DfxProcessor``)
 

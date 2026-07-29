@@ -3,16 +3,17 @@
 > 设计 for eXcellence：运行时维测控制面。  
 > 代码根目录：`vllm_ascend/dfx/`
 
-## 1. 四条流程
+## 1. 组件与流程
 
-| 流程 | 模块 | 职责 |
+| 组件 | 模块 | 职责 |
 |------|------|------|
 | 1. Runtime Config | `runtime_config.py`（`DfxRuntimeConfig`） | 一份 JSON；可选热更新（启动项控制周期） |
 | 2. Detector | `detector/` | 异常检测，只产出 `AnomalyAlert` |
-| 3. Dump / 观测开关 | `dumper.py`（`Dumper`） | msprobe dump 生命周期；`ascend_log` / metrics / trace 开关 |
+| 3. Dump / 观测开关 | `dumper.py`（`Dumper`） | msprobe dump 生命周期；`ascend_log` / metrics / trace 开关（metrics/trace 接口已留，接线后期） |
 | 4. Report | `report.py`（`DfxReportWriter`） | 异常短日志落盘到 `dfx/report/` |
+| 5. Processor | `processor.py`（`DfxProcessor`） | runner 侧编排（构造 / refresh / check / report） |
 
-兼容入口：`from vllm_ascend.dfx import Dumper`；旧路径 `vllm_ascend/dumper.py` 仅为 re-export。
+对外入口：`from vllm_ascend.dfx import Dumper`（以及 `DfxProcessor` / `DfxRuntimeConfig` 等）。
 
 ```text
 additional_config
@@ -70,7 +71,7 @@ Worker: runner.dfx = DfxProcessor(runner)
 
 Detector / dump / report **只跑在 worker**。
 
-`ascend_log` 级别：当 `dfx_config_reload_interval > 0` 且进程 **未**设置 `RANK` 时，`AscendConfig` 会启动守护线程 `dfx-non-worker-reload`，按间隔 **本地 file 轮询** JSON 并 `apply_ascend_log_level`（**不**进 worker world broadcast，**不**落盘）。Worker 在 `refresh_config` / `apply_dfx_config` 时同样应用。
+`ascend_log` 级别：`AscendConfig` 构造时即 `apply_ascend_log_level`（含 API/EngineCore）。当 `dfx_config_reload_interval > 0` 且进程 **未**设置 `RANK` 时，另启动守护线程 `dfx-non-worker-reload`，按间隔 **本地 file 轮询** JSON 并在变更后再次 `apply_ascend_log_level`（**不**进 worker world broadcast，**不**落盘）。Worker 在 `Dumper` 初始化 / `refresh_config` → `apply_dfx_config` 时同样应用。
 
 Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在 worker 上再起并行热更线程。
 
@@ -86,13 +87,14 @@ Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在
 ```json
 {
   "sync_mode": "broadcast",
+  "reload_interval_seconds": 5,
   "dump": {
     "enabled": true,
     "max_times": 0,
     "cooldown_seconds": 300,
     "dump_once": false
   },
-  "ascend_log": { "level": "INFO" },
+  "ascend_log": { "level": "INFO", "debug": [] },
   "metrics": { "enabled": true, "level": "INFO" },
   "trace": { "enabled": false, "level": "INFO", "otlp_endpoint": null },
   "detector": {
@@ -117,7 +119,7 @@ Worker 仍走 `execute_model` → `refresh_config` → broadcast；**不要**在
 | 段 | 含义 |
 |----|------|
 | `dump` | `enabled` / `max_times` / `cooldown_seconds`；`dump_once`：手动改 JSON 为 `true` 后下一次热更触发一次 dump（不计次数、忽略冷却，触发后自动写回 `false`）。**必须** `dfx_config_reload_interval > 0`，否则改 JSON 不会被读到 |
-| `ascend_log` | `level`：控制 `vllm_ascend`（含 `dfx/`）logger 级别；设为 `DEBUG` 可打出 dfx 下 debug 日志。无 `enabled` |
+| `ascend_log` | `level`：`vllm_ascend` 包根 logger 级别。`debug`：模块白名单（相对路径，如 `["dfx"]` → `vllm_ascend.dfx`）强制 DEBUG。走 Ascend 专用 handler（不受 `VLLM_LOGGING_LEVEL` 的 `vllm` handler 过滤）。无 `enabled` |
 | `metrics` / `trace` | 观测开关与级别（仍待引擎接线） |
 | `detector` | 各检测器开关与阈值 |
 
@@ -198,7 +200,7 @@ Dumper **不**调用 config reload，也 **不**写 report（report 在 processo
 
 - 类：`DfxReportWriter`
 - 目录：默认 `<dfx_root>/report/`
-- 文件：`anomaly_YYYYMMDD.log`（每日一份，JSON Lines）
+- 文件：`anomaly_YYYYMMDD_HHMMSS.log`（按秒一份，JSON Lines）
 
 示例行：
 
@@ -220,7 +222,7 @@ Dumper **不**调用 config reload，也 **不**写 report（report 在 processo
 ### 6.1 非 worker（API / EngineCore）
 
 Detector / dump / report **只跑在 worker**。  
-`ascend_log.level`：热更开启且无 `RANK` 时由后台 file 轮询线程跟随 JSON（见 §2.2.1）；worker 在 config sync 后 `apply_ascend_log_level`。`metrics` / `trace` 仍待接线。
+`ascend_log`（`level` + `debug`）：`AscendConfig` 启动时应用一次；热更开启且无 `RANK` 时由后台 file 轮询线程在 JSON 变更后再次应用（见 §2.2.1）；worker 在 config sync 后经 `DfxRuntimeConfig.apply_ascend_log_level` 委托 `vllm_ascend.logger.apply_ascend_log_level`。`metrics` / `trace` 配置段与访问器已预留，引擎接线后期再做。
 
 ### 6.2 外部多 engine DP
 
@@ -244,7 +246,7 @@ vllm serve <model> --additional-config '{
 
 ```text
 ./dfx/config/dfx_config.json
-./dfx/report/anomaly_YYYYMMDD.log
+./dfx/report/anomaly_YYYYMMDD_HHMMSS.log
 ```
 
 开启默认（或显式配置）`dfx_config_reload_interval` 后，在线改 `dump.max_times` / detector 阈值约 N 秒内各 worker 生效（broadcast）。

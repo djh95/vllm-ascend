@@ -53,27 +53,6 @@ DEFAULT_CONFIG_FILENAME = "dfx_config.json"
 SYNC_BROADCAST = "broadcast"
 SYNC_FILE = "file"
 
-# Logger names updated by ``apply_ascend_log_level``.
-# ``init_logger_ascend(__name__)`` uses ``vllm_ascend.*``; older lists used ``vllm.vllm_ascend.*``.
-ASCEND_DFX_LOGGER_NAMES: tuple[str, ...] = (
-    "vllm_ascend.dfx.dumper",
-    "vllm_ascend.dfx.detector.spec_acceptance",
-    "vllm_ascend.dfx.detector.token_logprob",
-    "vllm_ascend.dfx.detector.manual_dump",
-    "vllm_ascend.dfx.runtime_config",
-    "vllm_ascend.dfx.report",
-    "vllm_ascend.dfx.processor",
-    "vllm.vllm_ascend.dfx.dumper",
-    "vllm.vllm_ascend.dfx.detector.spec_acceptance",
-    "vllm.vllm_ascend.dfx.detector.token_logprob",
-    "vllm.vllm_ascend.dfx.detector.manual_dump",
-    "vllm.vllm_ascend.dfx.runtime_config",
-    "vllm.vllm_ascend.dfx.report",
-    "vllm.vllm_ascend.dfx.processor",
-)
-# Backward-compatible alias.
-DFX_LOGGER_NAMES = ASCEND_DFX_LOGGER_NAMES
-
 
 def default_dfx_root() -> Path:
     """Execution-directory DFX root: ``<cwd>/dfx``."""
@@ -105,6 +84,8 @@ _DEFAULTS: dict[str, Any] = {
     },
     "ascend_log": {
         "level": "INFO",
+        # Relative module paths under vllm_ascend forced to DEBUG, e.g. ["dfx"].
+        "debug": [],
     },
     "metrics": {
         "enabled": True,
@@ -210,7 +191,7 @@ def _legacy_dynamic_dump_to_sections(legacy: dict[str, Any] | None) -> dict[str,
 
 
 def _normalize_config_sections(data: dict[str, Any]) -> dict[str, Any]:
-    """Migrate legacy ``log`` → ``ascend_log`` (level only; drop enabled)."""
+    """Migrate legacy ``log`` → ``ascend_log``; normalize level/debug."""
     out = dict(data)
     legacy_log = out.pop("log", None)
     ascend = out.get("ascend_log")
@@ -223,6 +204,14 @@ def _normalize_config_sections(data: dict[str, Any]) -> dict[str, Any]:
     ascend.pop("enabled", None)
     if "level" not in ascend:
         ascend["level"] = "INFO"
+    debug = ascend.get("debug", [])
+    if debug is None:
+        debug = []
+    if isinstance(debug, str):
+        debug = [debug]
+    if not isinstance(debug, list):
+        raise ValueError("ascend_log.debug must be a list of module name strings")
+    ascend["debug"] = [str(item).strip() for item in debug if str(item).strip()]
     out["ascend_log"] = ascend
     return out
 
@@ -538,11 +527,6 @@ class DfxRuntimeConfig:
         return self._data["ascend_log"]
 
     @property
-    def log(self) -> dict[str, Any]:
-        """Deprecated alias for :attr:`ascend_log`."""
-        return self.ascend_log
-
-    @property
     def metrics(self) -> dict[str, Any]:
         return self._data["metrics"]
 
@@ -596,23 +580,30 @@ class DfxRuntimeConfig:
     def ascend_log_level(self) -> str:
         return str(self.ascend_log.get("level", "INFO")).upper()
 
-    def log_level(self) -> str:
-        """Deprecated alias for :meth:`ascend_log_level`."""
-        return self.ascend_log_level()
+    def ascend_log_debug_modules(self) -> list[str]:
+        raw = self.ascend_log.get("debug", [])
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
 
     def metrics_enabled(self) -> bool:
+        """Reserved metrics switch (engine wiring TBD)."""
         return bool(self.metrics.get("enabled", True))
 
     def metrics_level(self) -> str:
+        """Reserved metrics level (engine wiring TBD)."""
         return str(self.metrics.get("level", "INFO")).upper()
 
     def trace_enabled(self) -> bool:
+        """Reserved trace switch (engine wiring TBD)."""
         return bool(self.trace.get("enabled", False))
 
     def trace_level(self) -> str:
+        """Reserved trace level (engine wiring TBD)."""
         return str(self.trace.get("level", "INFO")).upper()
 
     def trace_otlp_endpoint(self) -> str | None:
+        """Reserved OTLP endpoint (engine wiring TBD)."""
         endpoint = self.trace.get("otlp_endpoint")
         return str(endpoint) if endpoint else None
 
@@ -620,34 +611,19 @@ class DfxRuntimeConfig:
         return self.detector.get(key, default)
 
     def apply_ascend_log_level(self) -> None:
-        """Apply ``ascend_log.level`` to ``vllm_ascend`` (and DFX) loggers.
+        """Apply live ``ascend_log`` to the ``vllm_ascend`` logger tree."""
+        from vllm_ascend.logger import apply_ascend_log_level as _apply
 
-        Setting ``DEBUG`` makes ``logger.debug`` under ``vllm_ascend.dfx.*`` visible.
-        """
-        import logging
-
-        level = getattr(logging, self.ascend_log_level(), logging.INFO)
-        for name in ("vllm_ascend", "vllm.vllm_ascend"):
-            logging.getLogger(name).setLevel(level)
-        for name in ASCEND_DFX_LOGGER_NAMES:
-            logging.getLogger(name).setLevel(level)
-        # Any already-created child loggers under the package.
-        for name in list(logging.Logger.manager.loggerDict):
-            if not isinstance(name, str):
-                continue
-            if name.startswith("vllm_ascend.") or name.startswith("vllm.vllm_ascend."):
-                logging.getLogger(name).setLevel(level)
-
-    def apply_log_switches(self) -> None:
-        """Deprecated alias for :meth:`apply_ascend_log_level`."""
-        self.apply_ascend_log_level()
+        _apply(self.ascend_log_level(), self.ascend_log_debug_modules())
 
     def start_non_worker_background_reload(self) -> bool:
-        """Daemon thread: file-poll JSON and apply log switches (API / EngineCore).
+        """Daemon thread: file-poll JSON and re-apply ``ascend_log`` (API / EngineCore).
 
         - No-op when hot-reload is off, or ``RANK`` is set (distributed worker).
         - Uses **local file reload only** — never joins worker world broadcast.
         - Does not persist JSON.
+        - Callers should invoke :meth:`apply_ascend_log_level` once at construction
+          for the initial level; this thread only re-applies after file changes.
         Workers keep step-driven :meth:`sync_dfx_config` and must not call this.
         """
         if not self.hot_reload_enabled:
@@ -939,6 +915,16 @@ class DfxRuntimeConfig:
             level = data[level_section].get("level", "INFO")
             if not isinstance(level, str):
                 raise ValueError(f"{level_section}.level must be str")
+        debug = data["ascend_log"].get("debug", [])
+        if debug is None:
+            debug = []
+        if isinstance(debug, str):
+            debug = [debug]
+        if not isinstance(debug, list):
+            raise ValueError("ascend_log.debug must be a list of module name strings")
+        for item in debug:
+            if not isinstance(item, (str, int, float)):
+                raise ValueError("ascend_log.debug entries must be strings")
         detector = data["detector"]
         window = detector.get("token_logprob_window", 64)
         stride = detector.get("token_logprob_stride", 32)
