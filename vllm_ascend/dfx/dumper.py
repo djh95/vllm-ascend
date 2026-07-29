@@ -113,7 +113,8 @@ class Dumper:
             self.dfx_config.dump_enabled(),
             self._dynamic_dump_max_times,
             self.dfx_config.ascend_log_level(),
-            self.dfx_config.ascend_log_debug_modules(),
+            # info_once is lru_cached; args must be hashable (not list).
+            tuple(self.dfx_config.ascend_log_debug_modules()),
             self.dfx_config.metrics_enabled(),
             self.dfx_config.metrics_level(),
             self.dfx_config.trace_enabled(),
