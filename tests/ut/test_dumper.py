@@ -59,7 +59,6 @@ def test_finalize_dump_data_does_not_consume_dummy_forward():
     dumper.disable_msprobe_dump_if_needed.assert_not_called()
 
 
-
 def test_handle_anomaly_alert_calls_on_alert_armed():
     from vllm_ascend.dfx.detector.alert import AnomalyAlert
 
@@ -305,7 +304,6 @@ def test_dump_phase_idle_pending_active():
     assert dumper.dump_phase == DumpPhase.ACTIVE
 
 
-
 def test_sync_dump_pending_or_skips_or_with_real_dfx_config(tmp_path):
     """Regression: hot_reload_enabled is a property — must not call it as a method."""
     cfg = make_dfx_config(tmp_path)
@@ -547,5 +545,3 @@ def test_finalize_dump_data_swallows_step_errors():
     dumper.finalize_dump_data()
 
     dumper.disable_msprobe_dump_if_needed.assert_called_once_with()
-
-

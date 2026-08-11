@@ -91,9 +91,7 @@ def test_dfx_config_hot_reload_and_defaults(tmp_path: Path):
         ),
     ],
 )
-def test_detector_bool_knob_defaults_and_validation(
-    tmp_path: Path, payload, getter, default, expected, err_match
-):
+def test_detector_bool_knob_defaults_and_validation(tmp_path: Path, payload, getter, default, expected, err_match):
     """Shared bool knobs: default, 0/1 normalize, reject non-bool."""
     cfg = DfxRuntimeConfig(
         tmp_path / "dfx_config.json",
@@ -151,7 +149,6 @@ def test_dfx_hot_reload_disabled_when_interval_zero(tmp_path: Path):
     assert cfg.dump_max_times() == 0
 
 
-
 def test_dump_enabled_without_detector_allowed(tmp_path: Path):
     """dump.enabled and detectors are orthogonal; manual-only dump is valid."""
     cfg_path = tmp_path / "dfx_config.json"
@@ -202,8 +199,6 @@ def test_dump_once_not_consumed_when_dump_disabled(tmp_path: Path):
     det = ManualDumpDetector(dfx_config=cfg, runner=None)
     assert det.check_all() == []
     assert cfg.dump_once() is True
-
-
 
 
 def test_input_filters_roundtrip(tmp_path: Path):
@@ -294,7 +289,6 @@ def test_explicit_path_reads_json(tmp_path: Path):
     assert saved["detector"]["spec_acceptance"]["window"] == 33
 
 
-
 def test_no_explicit_path_resets_to_defaults(tmp_path: Path, monkeypatch):
     """Without dfx_config_path, default path overwrites any prior content (leader)."""
     monkeypatch.setenv("RANK", "0")
@@ -330,7 +324,6 @@ def test_no_explicit_path_resets_to_defaults(tmp_path: Path, monkeypatch):
     assert saved["detector"]["spec_acceptance"]["window"] == 10
 
 
-
 def test_bootstrap_and_save_skip_persist_on_non_leader(tmp_path: Path, monkeypatch):
     """Non-leader ranks keep in-memory merge but must not write JSON."""
     monkeypatch.setenv("RANK", "1")
@@ -354,7 +347,6 @@ def test_bootstrap_and_save_skip_persist_on_non_leader(tmp_path: Path, monkeypat
     assert cfg_path.read_text(encoding="utf-8") == before  # disk unchanged
     assert cfg.save({"dump": {"max_times": 1}}) is False
     assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["max_times"] == 2
-
 
 
 def test_ensure_persisted_deferred_to_worker_leader(tmp_path: Path, monkeypatch):
