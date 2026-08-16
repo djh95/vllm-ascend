@@ -1705,7 +1705,7 @@ class NPUModelRunner(GPUModelRunner):
                 self._execution_start_time = time.perf_counter()
         if self.execute_model_state is not None:
             raise RuntimeError("State error: sample_tokens() must be called after execute_model() returns None.")
-       
+
         # If ngram_gpu is used, we need to copy the scheduler_output to avoid
         # the modification has influence on the scheduler_output in engine core process.
         # The replace is much faster than deepcopy.
@@ -1732,7 +1732,7 @@ class NPUModelRunner(GPUModelRunner):
             get_tp_group().rank_in_group,
             get_pp_group().is_last_rank,
         )
-        self.dfx.sync_for_step()
+        self.dfx.sync_for_step(scheduler_output=scheduler_output)
 
         self._start_dump_data()
         # self._draft_token_ids is None when `input_fits_in_drafter=False`

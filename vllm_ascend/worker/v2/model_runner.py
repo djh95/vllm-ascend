@@ -159,7 +159,11 @@ class NPUModelRunner(GPUModelRunner):
     def execute_model(self, *args, **kwargs):
         """Wrap parent execute_model with DFX sync / dump window lifecycle."""
         dummy_run = bool(kwargs.get("dummy_run", False))
-        self.dfx.sync_for_step(allow_arm=not dummy_run)
+        scheduler_output = args[0] if args else kwargs.get("scheduler_output")
+        self.dfx.sync_for_step(
+            allow_arm=not dummy_run,
+            scheduler_output=scheduler_output,
+        )
         self.dfx.start_dump_data()
         try:
             return super().execute_model(*args, **kwargs)
