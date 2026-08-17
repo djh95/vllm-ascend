@@ -298,6 +298,8 @@ class NPUModelRunner(GPUModelRunner):
         finally:
             # dummy/capture must not consume the pending dump-forward window.
             self.dfx.finalize_dump_data(dump=not dummy_run)
+            if not dummy_run:
+                self.dfx.note_kv_block_writes(scheduler_output)
 
         state = self.execute_model_state
         if (
