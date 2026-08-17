@@ -169,6 +169,8 @@ class NPUModelRunner(GPUModelRunner):
             return super().execute_model(*args, **kwargs)
         finally:
             self.dfx.finalize_dump_data(dump=not dummy_run)
+            if not dummy_run:
+                self.dfx.note_kv_block_writes(scheduler_output)
 
     @torch.inference_mode()
     def profile_run(self) -> None:
