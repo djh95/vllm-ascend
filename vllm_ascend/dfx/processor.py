@@ -34,6 +34,7 @@ from vllm_ascend.dfx.io_snapshot import RequestIoSnapshotManager
 from vllm_ascend.dfx.kv_block_meta import (
     KvBlockMetaTracker,
     block_ids_for_request,
+    slot_mapping_for_request,
     touched_block_ids,
 )
 from vllm_ascend.dfx.manual_trigger import (
@@ -353,7 +354,14 @@ class DfxProcessor:
             )
 
     def _maybe_print_output_on_finish(self, finished_req_ids: Any, io_mgr: RequestIoSnapshotManager) -> None:
-        """Log output_token_ids + text for finished reqs (TP0 only)."""
+        """Log output_token_ids + text for finished reqs (TP0 only).
+
+        Content comes from DFX cumulative IO accumulated while
+        ``log.print_output_on_finish`` was true on sample steps (no historical
+        backfill). Mid-request hot-enable may print a partial sequence or
+        ``output_token_count=0`` / empty text if nothing was appended after
+        enable. See ``DfxRuntimeConfig.log_print_output_on_finish``.
+        """
         runner = self.runner
         try:
             if int(getattr(runner, "tp_rank", 0)) != 0:
@@ -388,6 +396,19 @@ class DfxProcessor:
                 text,
             )
 
+    def should_check_after_spec(self) -> bool:
+        """True when spec IO + SpecAcceptance may run this step.
+
+        When fully gated (no detector / wrong rank / dump already armed),
+        runners must skip extra accepted-token D2H before calling
+        :meth:`check_after_spec`.
+        """
+        dumper = getattr(self, "dumper", None)
+        if dumper is None:
+            return False
+        can = getattr(dumper, "can_run_anomaly_detection", None)
+        return bool(can()) if callable(can) else False
+
     def check_after_spec(
         self,
         sampled_tokens: Any,
@@ -397,6 +418,8 @@ class DfxProcessor:
 
         Detection gating (rank / dump / detector-on) lives in ``DetectorManager``.
         """
+        if not self.should_check_after_spec():
+            return
         for alert in self.detectors.check_after_spec(sampled_tokens, accepted_token_nums):
             self._handle_alert(alert, detector=self.detectors.get(alert.anomaly_type))
 
@@ -741,11 +764,12 @@ class DfxProcessor:
         req_id: str,
         req_idx: int | None = None,
     ) -> dict[str, Any]:
-        """Attach ``block_ids`` / ``blocks`` according to report.* flags."""
+        """Attach ``block_ids`` / ``blocks`` / ``slot_mapping`` per report.* flags."""
         include_ids = self.dfx_config.report_include_block_ids()
+        include_slots = self.dfx_config.report_include_slot_mapping()
         include_wave = self.dfx_config.report_block_last_write_wave()
         include_writer = self.dfx_config.report_block_last_writer()
-        if not include_ids and not include_wave and not include_writer:
+        if not include_ids and not include_slots and not include_wave and not include_writer:
             return detail
         out = dict(detail)
         ids = block_ids_for_request(self.runner, req_id, req_idx)
@@ -757,6 +781,17 @@ class DfxProcessor:
                 include_wave=include_wave,
                 include_writer=include_writer,
             )
+        if include_slots:
+            got = slot_mapping_for_request(
+                self.runner,
+                req_id,
+                req_idx,
+                scheduler_output=getattr(self, "_scheduler_output_for_step", None),
+            )
+            if got is not None:
+                values, span = got
+                out["slot_mapping"] = values
+                out["slot_mapping_span"] = [span[0], span[1]]
         return out
 
     def _batch_request_io_rows(self) -> list[tuple[str, int]]:

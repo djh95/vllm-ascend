@@ -18,13 +18,13 @@ vllm serve <model> --additional-config '{
 | `dfx_config_reload_interval > 0` | **必须**，否则改 JSON / `manual_trigger` 不生效 |
 | `dump_config_path` | msprobe 配置；无则无法落 dump。默认各 DP **共享**同一路径；仅当显式 `dump_config_isolate_by_dp=true` 且有 `VLLM_DP_RANK` 时，`ascend_config` 会物化为 `<source_dir>/dp<rank>/...` 副本（热更请改副本）。多 DP 同写一份 `dump_path` 可能互相干扰，建议隔离或分 `dump_path`。启动写入 DFX JSON 的 `dump.msprobe_config_path`（可见/可热改）。 |
 | 每 EngineCore 可读 JSON | 多 DP **不**用满编 world 做 config sync。默认共享同一 `dfx_config` 路径；仅当显式 `dfx_config_isolate_by_dp=true` 且有 `VLLM_DP_RANK` 时，路径拆成 `dp<rank>` 副本（`ascend_config` 物化，与 sync 机制正交）。热更同步：有 `inner_dp_world` 则本 DP 内 broadcast，否则各 rank **file poll**（见 [dfx_design.md](./dfx_design.md) §2.2）。 |
-| **同 EngineCore 内配置一致** | 各 TP/PP 须读**同一份** `dfx_config`（同路径）。尤其 `dump.enabled`：热更关时 pending-OR 有 fast-path，TP 间不一致会挂死（见 §3） |
+| **同 EngineCore 内配置一致** | 各 TP/PP 须读**同一份** `dfx_config`（同路径）。尤其 `dump.enabled` / detector：pending-OR idle fast-path 下 TP 间不一致会挂死（见 §3） |
 
 默认路径（未设 `dfx_config_path`）：`<cwd>/dfx/config/dfx_config.json`，报告在同级 `dfx/report/`。启动时会用默认内容覆盖该路径上的既有文件（手改不跨重启保留）；持久配置请设显式 `dfx_config_path`。
 
 - 当存在 `VLLM_DP_RANK` 且显式 `dfx_config_isolate_by_dp=true` 时，默认路径会拆分为：`<cwd>/dfx/config/dp<rank>/dfx_config.json`（路径隔离；热更仍走 per-DP `inner_dp` / file poll，**不是**跨 DP 满编 world）。
 
-**默认全关开销**：`dfx_config_reload_interval=0` 且各 detector / `dump.enabled` 均为关时，无 config 集体通信；热更关时跳过每步 filter 刷新；检测门控直接跳过。async / TP>1 下 pending-OR 在「热更关 + `dump.enabled=false`」时走 fast-path 跳过 `all_reduce`（同 EngineCore 内 `dump.enabled` 须一致，见 §3）。
+**默认全关开销**：`dfx_config_reload_interval=0` 且各 detector / `dump.enabled` 均为关时，无 config 集体通信；热更关时跳过每步 filter 刷新；检测门控直接跳过。async / TP>1 下 pending-OR 在「`dump.enabled=false` 且无 detector」时走 fast-path 跳过 `all_reduce`（热更开着也跳；同 EngineCore 内开关须一致，见 §3）。
 
 ### 1.1 msprobe 路径热更（`dump.msprobe_config_path` / `reload_msprobe`）
 
@@ -84,10 +84,10 @@ ACLGraph：重建可能采空，深度改配置仍建议 **重启 worker**。只
 
 1. 确认热更已开、`dump.enabled=true`、`dump.msprobe_config_path`（或启动时的 `dump_config_path`）有效（**不必**开 detector）。  
 2. 将 JSON 中 `"manual_trigger"` 设为：  
-   - `true`：**一直 dump**——每个「有本地 batch 请求」的真实 `execute_model` 拍都 arm，直到改回 `false`（不会自动清掉）；  
-   - 正整数 `N`：在接下来 **N** 个有本地 batch 的真实拍上各 arm 一次，每拍减 1，到 `0`/`false` 为止；  
+   - `true`：**一直 dump**——每个 **`scheduled_tokens > 0`** 的真实 `execute_model` 拍都 arm，直到改回 `false`（不会自动清掉）；  
+   - 正整数 `N`：在接下来 **N** 个有 scheduled tokens 的真实拍上各 arm 一次，每拍减 1，到 `0`/`false` 为止；  
    - `false` / `0`：关闭。  
-3. 等待**有真实请求的 batch** 的下一拍 `execute_model`（空闲 / `execute_dummy_batch` / **空 batch 清理拍** **不会**消费）。  
+3. 等待下一拍 **`total_num_scheduled_tokens > 0`（或等价 per-req scheduled）** 的 `execute_model`（空闲 / `execute_dummy_batch` / **`scheduled_tokens==0` 的 cleanup**、以及仅残留 `req_ids` 的拍 **不会**消费）。 Prefill 与 decode 都会消费（都有 scheduled tokens）。  
 4. 若 `dump.enabled=false`：**不消费**（`true` 也不清；int 次数不减）并打日志，修好后再等下一拍。  
 5. `true` 模式不写回 JSON；int 模式每成功消费一次写回剩余次数（最后一次写回 `false`）。日志可搜 `manual_trigger` / `[DFX manual_trigger]`。  
 6. **Report**：每次 arm 写一份 `manual_trigger` 报告；`detail.requests` 含该拍 batch **全部**请求的 prompt/output（`save_sensitive_info` 控制是否带 token ids）；`detail.manual_trigger_remaining_after` 为消费后剩余（`true` 时仍为 `true`）。
@@ -104,6 +104,7 @@ ACLGraph：重建可能采空，深度改配置仍建议 **重启 worker**。只
 | 开关 | 默认 | 作用 |
 |------|------|------|
 | `report.include_block_ids` | `true` | detail 带当前请求占用的 GPU `block_ids` |
+| `report.include_slot_mapping` | `false` | 从 GPU **D2H** 本拍真实 `slot_mapping` 切片写入 `detail.slot_mapping`（另有 `slot_mapping_span=[start,end]` 对齐 packed batch）。默认关：有 device sync；prefill 可能很长。anomaly / `dump_finish` / `manual_trigger` 的 `requests[]` 均可带。`manual_trigger` 若在 `execute_model` 入口写报告，可能仍是上一拍 buffer。 |
 | `report.block_last_write_wave` | `false` | 维护并写入各物理块最后写入的 DFX wave |
 | `report.block_last_writer` | `false` | 维护并写入各物理块最后写入的 `req_id` |
 
@@ -123,7 +124,7 @@ ACLGraph：重建可能采空，深度改配置仍建议 **重启 worker**。只
 | 开关 | 作用 |
 |------|------|
 | `log.print_sampling_meta` | 写 anomaly / manual report 时，TP0+last-PP 打 `[SamplingMeta]` 日志（不进 JSON） |
-| `log.print_output_on_finish` | **每个**请求结束时 TP0 打 output ids/text 日志（噪声大，默关） |
+| `log.print_output_on_finish` | **每个**请求结束时 TP0 打 output ids/text 日志（噪声大，默关）。**仅在开关为 true 的 sample 步开始向 DFX 累积**，不回填开启前已生成的 token。热更中途打开时，对已在跑的请求：finish 日志可能是**部分** output，也可能是**空**（`output_token_count=0` / text 空，若开启后该请求未再走过累积路径）。要完整输出请在发请求前打开。 |
 
 **文件产物**（默认目录 `<dfx_root>/report/`）：
 
@@ -178,7 +179,7 @@ ACLGraph：重建可能采空，深度改配置仍建议 **重启 worker**。只
 | 改 JSON 不生效 | `dfx_config_reload_interval=0`；或改了非本 DP 的文件 | 启动项 `>0`；确认本 EngineCore leader 可读路径 |
 | `manual_trigger` 为 true 仍无 dump | `dump.enabled=false`；服务空闲只走 dummy；或热更关 | 开 `dump.enabled`；打真实请求；确认 interval；要停则改 `false` |
 | 多 DP 挂死 / 集体通信超时 | 曾用满编 world 做 config sync；一侧 idle 一侧 busy | **禁止**跨 DP world config；用 per-DP `inner_dp` 或 file poll（现行代码已如此） |
-| TP>1 挂在 dump pending-OR / `all_reduce` | 同 EngineCore 内各 TP 的 `dump.enabled`（或整份 JSON）不一致：热更关时一侧走 fast-path 跳过 OR，另一侧仍进 `all_reduce` | **同一 EngineCore 共用一份** `dfx_config_path`（或同默认路径）；勿给不同 TP 挂不同 JSON / 不同 `dump.enabled` |
+| TP>1 挂在 dump pending-OR / `all_reduce` | 同 EngineCore 内各 TP 的 `dump.enabled` / detector（或整份 JSON）不一致：idle fast-path 一侧跳过 OR，另一侧仍进 `all_reduce` | **同一 EngineCore 共用一份** `dfx_config_path`（或同默认路径）；勿给不同 TP 挂不同 JSON / 不同开关 |
 | 检测有 short / report 但无 msprobe 文件 | `dump.enabled=false`；或冷却 / 配额；或 early PP | 开 dump 并设 `max_times>0`；查 cooldown；dump 仅 last-PP |
 | 完全无检测日志 | 未开任一 `detector.<name>.enabled`；或 rank / filter | 打开至少一个 detector；查 `[DFX filter]` |
 | ACLGraph：无 DFX 常开有数、DFX dump 无数 | dump 窗口外才 `start`，replay 采空 | 构图前装 hook 且保持采集；DFX 只闸 `step()` 落盘。见 [dumper_design.md](./dumper_design.md) §8 |
@@ -196,7 +197,7 @@ ACLGraph：重建可能采空，深度改配置仍建议 **重启 worker**。只
 | `[DFX print_input]` | `print_input_token_ids_once` 打印 length + prompt token ids |
 | `[DFX manual_trigger]` / `manual_trigger` | `manual_trigger` |
 | `[DFX report]` / `[DFX dump_finish]` | 即时 anomaly report / 请求结束 dump_finish 落盘 |
-| `[DFX print_output]` | `log.print_output_on_finish` |
+| `[DFX print_output]` | `log.print_output_on_finish`（开启期间累积的 output；热开 in-flight 可能不全或空） |
 | `[SamplingMeta]` | `log.print_sampling_meta` |
 | `[Anomaly spec short]` / `[Anomaly token_logprob` / `[Anomaly output_substring]` / `[Anomaly token_repeat]` | 检测 short |
 | `[Anomaly msprobe]` | dump arm / activate / 配额 |
