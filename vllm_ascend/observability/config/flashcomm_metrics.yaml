@@ -1,0 +1,15 @@
+# FlashComm decision / path / collective metrics (Ascend).
+- symbol: vllm_ascend.observability.flashcomm_stats:FlashCommMetricHooks.publish_forward_gate
+  handler: vllm_ascend.observability.handlers:flashcomm_gate_handler
+
+- symbol: vllm_ascend.ops.linear_op:SequenceRowParallelOp.matmul_and_reduce
+  handler: vllm_ascend.observability.handlers:flashcomm_path_handler
+
+- symbol: vllm_ascend.observability.flashcomm_stats:FlashCommMetricHooks.note_collective_failure
+  handler: vllm_ascend.observability.handlers:flashcomm_failure_note_handler
+
+- symbol: vllm_ascend.worker.model_runner_v1:NPUModelRunner.execute_model
+  handler: vllm_ascend.observability.handlers:flashcomm_forward_flush_handler
+
+- symbol: vllm_ascend.worker.v2.model_runner:NPUModelRunner.execute_model
+  handler: vllm_ascend.observability.handlers:flashcomm_forward_flush_handler

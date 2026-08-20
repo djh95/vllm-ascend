@@ -364,20 +364,26 @@ class SequenceRowParallelOp(CustomRowParallelOp):
 
         from vllm.model_executor.layers.linear import UnquantizedLinearMethod
 
+        from vllm_ascend.observability.flashcomm_stats import (
+            OP_MM_REDUCE_SCATTER,
+            OP_REDUCE_SCATTER,
+            CollectiveTimer,
+        )
         from vllm_ascend.quantization.method_adapters import AscendLinearMethod
         from vllm_ascend.quantization.methods import AscendW8A8LinearMethod
 
         # For unquant
         if mmrs_fusion and isinstance(self.layer.quant_method, UnquantizedLinearMethod):
-            output = DeviceOperator.npu_mm_reduce_scatter_base(
-                x,
-                self.layer.weight.t(),
-                hcom_name,
-                world_size,
-                reduce_op="sum",
-                bias=None,
-                comm_turn=0,
-            )
+            with CollectiveTimer(OP_MM_REDUCE_SCATTER, x):
+                output = DeviceOperator.npu_mm_reduce_scatter_base(
+                    x,
+                    self.layer.weight.t(),
+                    hcom_name,
+                    world_size,
+                    reduce_op="sum",
+                    bias=None,
+                    comm_turn=0,
+                )
             if bias_ is not None:
                 output.add_(bias_)
         # For w8a8 quant
@@ -397,21 +403,23 @@ class SequenceRowParallelOp(CustomRowParallelOp):
             quant_bias = self.layer.quant_bias
             deq_scale = self.layer.deq_scale
             output_dtype = torch.bfloat16
-            output = DeviceOperator.npu_mm_reduce_scatter_base(
-                x_quant,
-                self.layer.weight,
-                hcom_name,
-                world_size,
-                reduce_op="sum",
-                bias=None,
-                comm_turn=0,
-                x2_scale=deq_scale,
-                output_dtype=output_dtype,
-            )
+            with CollectiveTimer(OP_MM_REDUCE_SCATTER, x_quant):
+                output = DeviceOperator.npu_mm_reduce_scatter_base(
+                    x_quant,
+                    self.layer.weight,
+                    hcom_name,
+                    world_size,
+                    reduce_op="sum",
+                    bias=None,
+                    comm_turn=0,
+                    x2_scale=deq_scale,
+                    output_dtype=output_dtype,
+                )
             output = torch.add(output, torch.mul(quant_bias, deq_scale).to(self.layer.params_dtype))
         else:
             output_parallel = self.layer.quant_method.apply(self.layer, x, bias=bias_)
-            output = tensor_model_parallel_reduce_scatter(output_parallel, 0)
+            with CollectiveTimer(OP_REDUCE_SCATTER, output_parallel):
+                output = tensor_model_parallel_reduce_scatter(output_parallel, 0)
 
         return output
 
