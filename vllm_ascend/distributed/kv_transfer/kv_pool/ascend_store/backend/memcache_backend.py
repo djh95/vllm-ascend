@@ -214,6 +214,7 @@ class MemcacheBackend(Backend):
             res = self.store.batch_put_from_layers(key, addr, size, MmcDirect.COPY_L2G.value)
             failed_codes = [int(value) for value in res if value != 0]
             failed_count = len(failed_codes)
+            self._latest_put_failure_keys = failed_count
             if failed_count:
                 error_codes = sorted(set(failed_codes))
                 logger.error(
@@ -226,6 +227,7 @@ class MemcacheBackend(Backend):
                 if self._lazy_init:
                     logger.warning("First DSV4(compress) request failure is expected. This is normal behavior.")
         except Exception as e:
+            self._latest_put_failure_keys = len(key)
             logger.error(
                 "Failed to put %d keys out of %d. type=%s, error=%s. Check store state and memory.",
                 len(key),
