@@ -1,0 +1,27 @@
+# Scheduler semantic metrics (batch, pause, preempt, prefix connector cache).
+- symbol: vllm_ascend.core.recompute_scheduler:RecomputeScheduler.schedule
+  handler: vllm_ascend.observability.handlers:scheduler_schedule_semantic_handler
+
+- symbol: vllm_ascend.core.dyntra_lb_scheduler:DyntraLBScheduler.schedule
+  handler: vllm_ascend.observability.handlers:scheduler_schedule_semantic_handler
+
+- symbol: vllm_ascend.patch.platform.patch_balance_schedule:BalanceScheduler.schedule
+  handler: vllm_ascend.observability.handlers:scheduler_schedule_semantic_handler
+
+- symbol: vllm_ascend.core.scheduler_profiling_chunk:ProfilingChunkScheduler.schedule
+  handler: vllm_ascend.observability.handlers:scheduler_schedule_semantic_handler
+
+- symbol: vllm_ascend.core.recompute_scheduler:RecomputeScheduler.schedule
+  handler: ms_service_metric.provider_handlers:scheduler_scheduler_hooker
+
+- symbol: vllm_ascend.patch.platform.patch_balance_schedule:BalanceScheduler.schedule
+  handler: ms_service_metric.provider_handlers:scheduler_scheduler_hooker
+
+- symbol: vllm_ascend.core.scheduler_profiling_chunk:ProfilingChunkScheduler.schedule
+  handler: ms_service_metric.provider_handlers:scheduler_scheduler_hooker
+
+- symbol: vllm.v1.core.sched.scheduler:Scheduler._preempt_request
+  handler: vllm_ascend.observability.handlers:scheduler_preempt_handler
+
+- symbol: vllm_ascend.core.dyntra_lb_scheduler:DyntraLBPolicyMixin._preempt_request
+  handler: vllm_ascend.observability.handlers:scheduler_preempt_handler

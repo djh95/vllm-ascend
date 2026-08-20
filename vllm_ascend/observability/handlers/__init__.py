@@ -12,10 +12,16 @@ from vllm_ascend.observability.handlers.eplb import (
     eplb_transfer_stats_handler,
 )
 from vllm_ascend.observability.handlers.executor import sample_tokens_duration_handler
+from vllm_ascend.observability.handlers.scheduler import (
+    scheduler_preempt_handler,
+    scheduler_schedule_semantic_handler,
+)
 
 __all__ = [
     "eplb_async_worker_status_handler",
     "eplb_do_update_hotness_handler",
     "eplb_transfer_stats_handler",
     "sample_tokens_duration_handler",
+    "scheduler_preempt_handler",
+    "scheduler_schedule_semantic_handler",
 ]
