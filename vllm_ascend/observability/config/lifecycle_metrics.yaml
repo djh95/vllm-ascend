@@ -1,0 +1,16 @@
+# Sleep / wake / weight-update / routed-experts (RL training ops).
+# engine_sleep_state is provided by upstream vllm:engine_sleep_state — do not duplicate.
+- symbol: vllm_ascend.worker.worker:NPUWorker.sleep
+  handler: vllm_ascend.observability.handlers:worker_sleep_handler
+
+- symbol: vllm_ascend.worker.worker:NPUWorker.wake_up
+  handler: vllm_ascend.observability.handlers:worker_wake_handler
+
+- symbol: vllm_ascend.worker.worker:NPUWorker.update_weights
+  handler: vllm_ascend.observability.handlers:worker_update_weights_handler
+
+- symbol: vllm.v1.worker.gpu_model_runner:GPUModelRunner.init_routed_experts_capturer
+  handler: vllm_ascend.observability.handlers:routed_experts_init_handler
+
+- symbol: vllm.model_executor.layers.fused_moe.routed_experts_capturer:RoutedExpertsCapturer.capture
+  handler: vllm_ascend.observability.handlers:routed_experts_capture_handler
