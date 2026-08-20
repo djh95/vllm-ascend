@@ -1,0 +1,18 @@
+# Async scheduling placeholder / D2H / queue metrics.
+- symbol: vllm.v1.core.sched.async_scheduler:AsyncScheduler._update_after_schedule
+  handler: vllm_ascend.observability.handlers:async_after_schedule_handler
+
+- symbol: vllm_ascend.observability.async_scheduling_stats:AsyncSchedulingMetricHooks.note_stale_discard
+  handler: vllm_ascend.observability.handlers:async_note_stale_discard_handler
+
+- symbol: vllm_ascend.observability.async_scheduling_stats:AsyncSchedulingMetricHooks.note_placeholder_underflow
+  handler: vllm_ascend.observability.handlers:async_note_underflow_handler
+
+- symbol: vllm.v1.worker.gpu.async_utils:AsyncOutput.get_output
+  handler: vllm_ascend.observability.handlers:async_output_get_output_handler
+
+- symbol: vllm.v1.executor.multiproc_executor:WorkerProc.handle_output
+  handler: vllm_ascend.observability.handlers:async_output_queue_handler
+
+- symbol: vllm_ascend.worker.v2.model_runner:NPUModelRunner._update_seq_lens_cpu
+  handler: vllm_ascend.observability.handlers:async_seq_lens_barrier_handler
