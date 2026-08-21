@@ -79,13 +79,13 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     assert provider.handler_module_prefixes == ("vllm_ascend.observability.",)
     assert provider.config_paths == tuple(sorted(provider.config_paths))
     assert [Path(path).name for path in provider.config_paths] == [
-        "base_metrics.yaml",
         "eplb_metrics.yaml",
+        "executor_metrics.yaml",
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 12
-    assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
+    assert len(config) == 13
+    assert all(item["symbol"].startswith(("vllm_ascend.", "vllm.")) for item in config)
     assert all("id" not in item for item in config)
     assert all(
         item.get("handler", "").startswith(
@@ -164,6 +164,8 @@ def test_provider_yaml_symbols_exist_in_current_vllm_ascend_source():
 
     for item in config:
         module_name, attribute_path = item["symbol"].split(":", 1)
+        if not module_name.startswith("vllm_ascend."):
+            continue
         source_path = _REPOSITORY_ROOT / Path(*module_name.split(".")).with_suffix(".py")
         assert source_path.is_file(), f"Missing symbol module: {item['symbol']}"
 
