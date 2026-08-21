@@ -10,3 +10,6 @@
 
 - symbol: vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker:KVPoolWorker.start_load_kv
   handler: vllm_ascend.observability.handlers:kv_pool_start_load_handler
+
+- symbol: vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker:KVPoolWorker.get_block_ids_with_load_errors
+  handler: vllm_ascend.observability.handlers:kv_pool_load_errors_handler
