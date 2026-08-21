@@ -21,6 +21,9 @@ _HOTNESS_SUMMARY_METRICS = (
 _IMBALANCE_METRIC = "eplb:expert_hotness:imbalance"
 _eplb_metrics_recorder = None
 
+_SP_PADDING_RATIO = "parallel:sp_padding_ratio"
+_parallel_metrics_recorder = None
+
 
 def _register_eplb_metrics():
     global _eplb_metrics_recorder
@@ -41,6 +44,21 @@ def _register_eplb_metrics():
         label_names=["rank", "phase", "layer"],
     )
     _eplb_metrics_recorder = metrics
+    return metrics
+
+
+def _register_parallel_metrics():
+    global _parallel_metrics_recorder
+
+    metrics = get_metric_recorder()
+    if metrics is _parallel_metrics_recorder:
+        return metrics
+    metrics.get_or_create_metric(
+        _SP_PADDING_RATIO,
+        metric_type=getattr(MetricType, "HISTOGRAM", MetricType.GAUGE),
+        label_names=[],
+    )
+    _parallel_metrics_recorder = metrics
     return metrics
 
 
@@ -93,3 +111,21 @@ def eplb_do_update_hotness_handler(original_func, worker, *args, **kwargs):
         )
 
     return result
+
+
+def sp_pad_handler(original_func, runner, num_scheduled_tokens, *args, **kwargs):
+    """Record sequence-parallel padding overhead."""
+    before = int(num_scheduled_tokens)
+    padded = original_func(runner, num_scheduled_tokens, *args, **kwargs)
+
+    try:
+        padding_ratio = float(max(padded - before, 0)) / float(max(before, 1))
+        _register_parallel_metrics().record_metric(
+            _SP_PADDING_RATIO,
+            value=padding_ratio,
+            labels={},
+        )
+    except Exception:
+        logger.warning("Failed to record SP padding metrics", exc_info=True)
+
+    return padded
