@@ -24,3 +24,8 @@
 
 - symbol: vllm_ascend.eplb.core.eplb_device_transfer_loader:D2DExpertWeightLoader.generate_expert_d2d_transfer_task
   handler: vllm_ascend.observability.handlers:eplb_transfer_stats_handler
+
+- symbol: vllm_ascend.eplb.core.eplb_device_transfer_loader:D2DExpertWeightLoader.asyn_expert_weight_transfer
+  handler: ms_service_metric.provider_handlers:phase_all_handler
+  metrics:
+    - name: eplb:expert_weight_transfer:duration
