@@ -22,6 +22,7 @@ _IMBALANCE_METRIC = "eplb:expert_hotness:imbalance"
 _eplb_metrics_recorder = None
 
 _SP_PADDING_RATIO = "parallel:sp_padding_ratio"
+_MOE_COMM_SELECTION = "parallel:moe_comm_selection_total"
 _parallel_metrics_recorder = None
 
 
@@ -57,6 +58,11 @@ def _register_parallel_metrics():
         _SP_PADDING_RATIO,
         metric_type=getattr(MetricType, "HISTOGRAM", MetricType.GAUGE),
         label_names=[],
+    )
+    metrics.get_or_create_metric(
+        _MOE_COMM_SELECTION,
+        metric_type=getattr(MetricType, "COUNTER", MetricType.GAUGE),
+        label_names=["comm"],
     )
     _parallel_metrics_recorder = metrics
     return metrics
@@ -129,3 +135,20 @@ def sp_pad_handler(original_func, runner, num_scheduled_tokens, *args, **kwargs)
         logger.warning("Failed to record SP padding metrics", exc_info=True)
 
     return padded
+
+
+def moe_comm_selection_handler(original_func, num_tokens, vllm_config, *args, **kwargs):
+    """Record MoE communication method selection."""
+    comm_type = original_func(num_tokens, vllm_config, *args, **kwargs)
+
+    try:
+        label = "none" if comm_type is None else getattr(comm_type, "name", str(comm_type))
+        _register_parallel_metrics().record_metric(
+            _MOE_COMM_SELECTION,
+            value=1.0,
+            labels={"comm": label},
+        )
+    except Exception:
+        logger.warning("Failed to record MoE comm selection metrics", exc_info=True)
+
+    return comm_type

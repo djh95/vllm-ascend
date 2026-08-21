@@ -70,7 +70,7 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 13
+    assert len(config) == 14
     assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
     assert all("id" not in item for item in config)
     assert all(
@@ -154,6 +154,13 @@ def test_provider_yaml_symbols_exist_in_current_vllm_ascend_source():
         assert source_path.is_file(), f"Missing symbol module: {item['symbol']}"
 
         syntax_tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        if "." not in attribute_path:
+            assert any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == attribute_path
+                for node in syntax_tree.body
+            ), f"Missing symbol function: {item['symbol']}"
+            continue
+
         owner_name, method_name = attribute_path.split(".", 1)
         owner = next(
             (node for node in syntax_tree.body if isinstance(node, ast.ClassDef) and node.name == owner_name),
@@ -300,7 +307,7 @@ def test_sp_pad_handler_records_zero_and_nonzero_padding(monkeypatch):
 
     metrics.record_metric.assert_any_call("parallel:sp_padding_ratio", value=0.0, labels={})
     metrics.record_metric.assert_any_call("parallel:sp_padding_ratio", value=0.25, labels={})
-    metrics.get_or_create_metric.assert_called_once_with(
+    metrics.get_or_create_metric.assert_any_call(
         "parallel:sp_padding_ratio",
         metric_type="histogram",
         label_names=[],
@@ -319,3 +326,52 @@ def test_sp_pad_handler_preserves_result_when_metric_recording_fails(monkeypatch
     handlers = _load_source("test_parallel_handlers_sp_failure", "handlers.py")
 
     assert handlers.sp_pad_handler(lambda _runner, tokens: tokens + 1, object(), 8) == 9
+
+
+def test_moe_comm_selection_handler_records_enum_name_and_none(monkeypatch):
+    metric_type = type(
+        "MetricType",
+        (),
+        {"GAUGE": "gauge", "COUNTER": "counter", "HISTOGRAM": "histogram"},
+    )
+    metrics = Mock()
+    _install_provider_api(
+        monkeypatch,
+        MetricType=metric_type,
+        get_metric_recorder=lambda: metrics,
+    )
+    handlers = _load_source("test_parallel_handlers_moe", "handlers.py")
+    comm_type = type("CommType", (), {"name": "FUSED_MC2"})()
+
+    assert handlers.moe_comm_selection_handler(lambda *_args: comm_type, 128, object()) is comm_type
+    assert handlers.moe_comm_selection_handler(lambda *_args: None, 128, object()) is None
+
+    metrics.record_metric.assert_any_call(
+        "parallel:moe_comm_selection_total",
+        value=1.0,
+        labels={"comm": "FUSED_MC2"},
+    )
+    metrics.record_metric.assert_any_call(
+        "parallel:moe_comm_selection_total",
+        value=1.0,
+        labels={"comm": "none"},
+    )
+
+
+def test_moe_comm_selection_handler_preserves_result_when_metric_recording_fails(monkeypatch):
+    metric_type = type(
+        "MetricType",
+        (),
+        {"GAUGE": "gauge", "COUNTER": "counter", "HISTOGRAM": "histogram"},
+    )
+    metrics = Mock()
+    metrics.record_metric.side_effect = RuntimeError("registry unavailable")
+    _install_provider_api(
+        monkeypatch,
+        MetricType=metric_type,
+        get_metric_recorder=lambda: metrics,
+    )
+    handlers = _load_source("test_parallel_handlers_moe_failure", "handlers.py")
+    comm_type = object()
+
+    assert handlers.moe_comm_selection_handler(lambda *_args: comm_type, 128, object()) is comm_type

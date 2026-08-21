@@ -1,3 +1,6 @@
 # Parallelism metrics.
 - symbol: vllm_ascend.worker.model_runner_v1:NPUModelRunner._pad_for_sequence_parallelism
   handler: vllm_ascend.observability.handlers:sp_pad_handler
+
+- symbol: vllm_ascend.ascend_forward_context:select_moe_comm_method
+  handler: vllm_ascend.observability.handlers:moe_comm_selection_handler
