@@ -12,6 +12,7 @@ from vllm_ascend.observability.handlers.eplb import (
     eplb_transfer_stats_handler,
 )
 from vllm_ascend.observability.handlers.executor import sample_tokens_duration_handler
+from vllm_ascend.observability.handlers.graph import acl_graph_call_handler
 from vllm_ascend.observability.handlers.kv import (
     kv_pool_load_errors_handler,
     kv_pool_put_failure_handler,
@@ -26,6 +27,7 @@ from vllm_ascend.observability.handlers.scheduler import (
 from vllm_ascend.observability.handlers.spec_decode import spec_rejection_forward_handler
 
 __all__ = [
+    "acl_graph_call_handler",
     "eplb_async_worker_status_handler",
     "eplb_do_update_hotness_handler",
     "eplb_transfer_stats_handler",
