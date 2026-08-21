@@ -1,3 +1,6 @@
 # Async scheduling placeholder / D2H / queue metrics.
 - symbol: vllm.v1.core.sched.async_scheduler:AsyncScheduler._update_after_schedule
   handler: vllm_ascend.observability.handlers:async_after_schedule_handler
+
+- symbol: vllm_ascend.observability.async_scheduling_stats:AsyncSchedulingMetricHooks.note_stale_discard
+  handler: vllm_ascend.observability.handlers:async_note_stale_discard_handler
