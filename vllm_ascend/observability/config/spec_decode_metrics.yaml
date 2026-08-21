@@ -1,0 +1,3 @@
+# Speculative decoding (MTP / Eagle / DSpark) via rejection sampling.
+- symbol: vllm_ascend.sample.rejection_sampler:AscendRejectionSampler.forward
+  handler: vllm_ascend.observability.handlers:spec_rejection_forward_handler
