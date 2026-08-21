@@ -512,6 +512,28 @@ SERVICE_PROFILING_SYMBOLS_YAML = f"""
     expr: return | str
   - name: scheduler_finished_recving
     expr: this | attr finished_recving_kv_req_ids | str
+
+# ===== RL / Sleep-Wake / Weight Update =====
+- symbol: vllm_ascend.worker.worker:NPUWorker.wake_up
+  min_version: "0.9.1"
+  domain: RL
+  name: NPUWorker.wake_up
+  attributes:
+  - name: tags
+    expr: args[1] | str
+  - name: sleep_opt
+    expr: this | attr _observability_last_wake_sleep_opt | str
+- symbol: vllm_ascend.worker.worker:NPUWorker.update_weights
+  min_version: "0.9.1"
+  domain: RL
+  name: NPUWorker.update_weights
+- symbol: vllm_ascend.worker.worker:NPUWorker.sleep
+  min_version: "0.9.1"
+  domain: RL
+  name: NPUWorker.sleep
+  attributes:
+  - name: level
+    expr: args[1] | str
 """
 
 

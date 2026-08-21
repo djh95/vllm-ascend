@@ -236,6 +236,7 @@ class NPUWorker(WorkerBase):
         freed_bytes = free_bytes_after_sleep - free_bytes_before_sleep
         used_bytes = total - free_bytes_after_sleep
         assert freed_bytes >= 0, "Memory usage increased after sleeping."
+        self._observability_last_sleep_freed_gb = freed_bytes / GiB_bytes
 
         logger.info(
             "Sleep mode (level=%s) freed %.2f GiB memory, %.2f GiB memory is still in use.",
@@ -269,6 +270,7 @@ class NPUWorker(WorkerBase):
 
         rl_config = get_ascend_config().rl_config
         cleanup_enabled = rl_config.enabled and rl_config.sleep_mode_extra_cleanup
+        self._observability_last_wake_sleep_opt = cleanup_enabled
         if cleanup_enabled:
             self.sleep_wakeup_manager.wakeup(tags)
 

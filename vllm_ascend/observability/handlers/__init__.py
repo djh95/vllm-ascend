@@ -26,6 +26,7 @@ from vllm_ascend.observability.handlers.kv import (
     kv_update_from_output_handler,
     kv_xfer_finished_handler,
 )
+from vllm_ascend.observability.handlers.lifecycle import worker_sleep_handler
 from vllm_ascend.observability.handlers.parallel import (
     moe_comm_selection_handler,
     sp_pad_handler,
@@ -56,4 +57,5 @@ __all__ = [
     "scheduler_schedule_semantic_handler",
     "sp_pad_handler",
     "spec_rejection_forward_handler",
+    "worker_sleep_handler",
 ]
