@@ -29,3 +29,6 @@
   handler: ms_service_metric.provider_handlers:phase_all_handler
   metrics:
     - name: eplb:expert_weight_transfer:duration
+
+- symbol: vllm_ascend.eplb.eplb_updator:EplbUpdator.forward_end
+  handler: vllm_ascend.observability.handlers:eplb_async_worker_status_handler
