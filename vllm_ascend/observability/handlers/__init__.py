@@ -23,6 +23,7 @@ from vllm_ascend.observability.handlers.scheduler import (
     scheduler_preempt_handler,
     scheduler_schedule_semantic_handler,
 )
+from vllm_ascend.observability.handlers.spec_decode import spec_rejection_forward_handler
 
 __all__ = [
     "eplb_async_worker_status_handler",
@@ -36,4 +37,5 @@ __all__ = [
     "sample_tokens_duration_handler",
     "scheduler_preempt_handler",
     "scheduler_schedule_semantic_handler",
+    "spec_rejection_forward_handler",
 ]
