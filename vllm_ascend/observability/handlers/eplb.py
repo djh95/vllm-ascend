@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""vLLM Ascend-owned metric handlers."""
+"""EPLB metric handlers for MS Service Metric."""
 
 import logging
 from typing import Any
