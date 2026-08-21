@@ -4,3 +4,6 @@
 
 - symbol: vllm_ascend.worker.worker:NPUWorker.wake_up
   handler: vllm_ascend.observability.handlers:worker_wake_handler
+
+- symbol: vllm_ascend.worker.worker:NPUWorker.update_weights
+  handler: vllm_ascend.observability.handlers:worker_update_weights_handler

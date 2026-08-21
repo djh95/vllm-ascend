@@ -28,6 +28,7 @@ from vllm_ascend.observability.handlers.kv import (
 )
 from vllm_ascend.observability.handlers.lifecycle import (
     worker_sleep_handler,
+    worker_update_weights_handler,
     worker_wake_handler,
 )
 from vllm_ascend.observability.handlers.parallel import (
@@ -61,5 +62,6 @@ __all__ = [
     "sp_pad_handler",
     "spec_rejection_forward_handler",
     "worker_sleep_handler",
+    "worker_update_weights_handler",
     "worker_wake_handler",
 ]
