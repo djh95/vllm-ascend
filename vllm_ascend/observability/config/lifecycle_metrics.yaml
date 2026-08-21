@@ -7,3 +7,6 @@
 
 - symbol: vllm_ascend.worker.worker:NPUWorker.update_weights
   handler: vllm_ascend.observability.handlers:worker_update_weights_handler
+
+- symbol: vllm.v1.worker.gpu_model_runner:GPUModelRunner.init_routed_experts_capturer
+  handler: vllm_ascend.observability.handlers:routed_experts_init_handler

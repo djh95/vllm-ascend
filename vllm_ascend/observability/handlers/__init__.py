@@ -27,6 +27,7 @@ from vllm_ascend.observability.handlers.kv import (
     kv_xfer_finished_handler,
 )
 from vllm_ascend.observability.handlers.lifecycle import (
+    routed_experts_init_handler,
     worker_sleep_handler,
     worker_update_weights_handler,
     worker_wake_handler,
@@ -56,6 +57,7 @@ __all__ = [
     "kv_update_from_output_handler",
     "kv_xfer_finished_handler",
     "moe_comm_selection_handler",
+    "routed_experts_init_handler",
     "sample_tokens_duration_handler",
     "scheduler_preempt_handler",
     "scheduler_schedule_semantic_handler",
