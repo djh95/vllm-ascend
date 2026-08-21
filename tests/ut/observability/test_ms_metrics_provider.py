@@ -32,6 +32,21 @@ def _load_source(module_name: str, filename: str):
     return module
 
 
+def _load_handler_module(monkeypatch, module_name: str, filename: str):
+    package = ModuleType("vllm_ascend")
+    package.__path__ = [str(_REPOSITORY_ROOT / "vllm_ascend")]
+    obs = ModuleType("vllm_ascend.observability")
+    obs.__path__ = [str(_PACKAGE_ROOT)]
+    handlers = ModuleType("vllm_ascend.observability.handlers")
+    handlers.__path__ = [str(_PACKAGE_ROOT / "handlers")]
+    monkeypatch.setitem(sys.modules, "vllm_ascend", package)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.observability", obs)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.observability.handlers", handlers)
+    common = _load_source("vllm_ascend.observability.handlers.common", "handlers/common.py")
+    monkeypatch.setitem(sys.modules, "vllm_ascend.observability.handlers.common", common)
+    return _load_source(module_name, filename)
+
+
 def _install_provider_api(monkeypatch, **attributes):
     package = ModuleType("ms_service_metric")
     provider_api = ModuleType("ms_service_metric.provider_api")
@@ -173,7 +188,7 @@ def test_eplb_handler_records_rank_zero_hotness(monkeypatch):
         MetricType=metric_type,
         get_metric_recorder=lambda: metrics,
     )
-    handlers = _load_source("test_vllm_ascend_metric_handlers", "handlers.py")
+    handlers = _load_handler_module(monkeypatch, "test_vllm_ascend_metric_handlers", "handlers/eplb.py")
     worker = type(
         "Worker",
         (),
@@ -216,7 +231,7 @@ def test_eplb_handler_registers_metrics_once_per_recorder(monkeypatch):
         MetricType=metric_type,
         get_metric_recorder=lambda: current_metrics[0],
     )
-    handlers = _load_source("test_vllm_ascend_metric_handlers_cache", "handlers.py")
+    handlers = _load_handler_module(monkeypatch, "test_vllm_ascend_metric_handlers_cache", "handlers/eplb.py")
     worker = type(
         "Worker",
         (),
@@ -248,7 +263,7 @@ def test_eplb_handler_skips_nonzero_rank(monkeypatch):
         MetricType=metric_type,
         get_metric_recorder=lambda: metrics,
     )
-    handlers = _load_source("test_vllm_ascend_metric_handlers_nonzero", "handlers.py")
+    handlers = _load_handler_module(monkeypatch, "test_vllm_ascend_metric_handlers_nonzero", "handlers/eplb.py")
     worker = type("Worker", (), {"rank_id": 1})()
 
     assert handlers.eplb_do_update_hotness_handler(lambda _: "updated", worker) == "updated"
@@ -264,7 +279,7 @@ def test_eplb_handler_given_metric_failure_then_preserves_inference_result(monke
         MetricType=metric_type,
         get_metric_recorder=lambda: metrics,
     )
-    handlers = _load_source("test_vllm_ascend_metric_handlers_failure", "handlers.py")
+    handlers = _load_handler_module(monkeypatch, "test_vllm_ascend_metric_handlers_failure", "handlers/eplb.py")
     worker = type(
         "Worker",
         (),
