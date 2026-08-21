@@ -1,4 +1,4 @@
-# PD KV transfer + KV Pool load/save failure metrics.
+# PD KV transfer + KV Pool (ascend_store) metrics.
 - symbol: vllm.v1.core.sched.scheduler:Scheduler.update_from_output
   handler: vllm_ascend.observability.handlers:kv_update_from_output_handler
 
