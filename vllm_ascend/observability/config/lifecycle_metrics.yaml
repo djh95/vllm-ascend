@@ -1,4 +1,5 @@
-# RL / Lifecycle sleep-wake / update_weights / routed-experts metrics.
+# Sleep / wake / weight-update / routed-experts (RL training ops).
+# engine_sleep_state is provided by upstream vllm:engine_sleep_state — do not duplicate.
 - symbol: vllm_ascend.worker.worker:NPUWorker.sleep
   handler: vllm_ascend.observability.handlers:worker_sleep_handler
 
