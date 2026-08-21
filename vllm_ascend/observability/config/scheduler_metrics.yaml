@@ -19,3 +19,9 @@
 
 - symbol: vllm_ascend.core.scheduler_profiling_chunk:ProfilingChunkScheduler.schedule
   handler: ms_service_metric.provider_handlers:scheduler_scheduler_hooker
+
+- symbol: vllm.v1.core.sched.scheduler:Scheduler._preempt_request
+  handler: vllm_ascend.observability.handlers:scheduler_preempt_handler
+
+- symbol: vllm_ascend.core.dyntra_lb_scheduler:DyntraLBPolicyMixin._preempt_request
+  handler: vllm_ascend.observability.handlers:scheduler_preempt_handler
