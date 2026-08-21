@@ -1,3 +1,6 @@
 # RL / Lifecycle sleep-wake / update_weights / routed-experts metrics.
 - symbol: vllm_ascend.worker.worker:NPUWorker.sleep
   handler: vllm_ascend.observability.handlers:worker_sleep_handler
+
+- symbol: vllm_ascend.worker.worker:NPUWorker.wake_up
+  handler: vllm_ascend.observability.handlers:worker_wake_handler
