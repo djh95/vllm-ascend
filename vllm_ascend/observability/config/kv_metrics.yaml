@@ -4,3 +4,6 @@
 
 - symbol: vllm_ascend.core.recompute_scheduler:RecomputeScheduler.update_from_output
   handler: vllm_ascend.observability.handlers:kv_update_from_output_handler
+
+- symbol: vllm.v1.core.sched.scheduler:Scheduler._update_from_kv_xfer_finished
+  handler: vllm_ascend.observability.handlers:kv_xfer_finished_handler
