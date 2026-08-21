@@ -1,4 +1,4 @@
-# Scheduler semantic / preempt / prefix-connector metrics for Ascend.
+# Scheduler semantic metrics (batch, pause, preempt, prefix connector cache).
 - symbol: vllm_ascend.core.recompute_scheduler:RecomputeScheduler.schedule
   handler: vllm_ascend.observability.handlers:scheduler_schedule_semantic_handler
 
