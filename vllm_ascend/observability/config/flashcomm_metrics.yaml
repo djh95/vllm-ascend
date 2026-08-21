@@ -10,3 +10,6 @@
 
 - symbol: vllm_ascend.worker.model_runner_v1:NPUModelRunner.execute_model
   handler: vllm_ascend.observability.handlers:flashcomm_forward_flush_handler
+
+- symbol: vllm_ascend.worker.v2.model_runner:NPUModelRunner.execute_model
+  handler: vllm_ascend.observability.handlers:flashcomm_forward_flush_handler
