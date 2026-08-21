@@ -12,6 +12,12 @@ from vllm_ascend.observability.handlers.eplb import (
     eplb_transfer_stats_handler,
 )
 from vllm_ascend.observability.handlers.executor import sample_tokens_duration_handler
+from vllm_ascend.observability.handlers.flashcomm import (
+    flashcomm_failure_note_handler,
+    flashcomm_forward_flush_handler,
+    flashcomm_gate_handler,
+    flashcomm_path_handler,
+)
 from vllm_ascend.observability.handlers.graph import acl_graph_call_handler
 from vllm_ascend.observability.handlers.kv import (
     kv_pool_load_errors_handler,
@@ -35,6 +41,10 @@ __all__ = [
     "eplb_async_worker_status_handler",
     "eplb_do_update_hotness_handler",
     "eplb_transfer_stats_handler",
+    "flashcomm_failure_note_handler",
+    "flashcomm_forward_flush_handler",
+    "flashcomm_gate_handler",
+    "flashcomm_path_handler",
     "kv_pool_load_errors_handler",
     "kv_pool_put_failure_handler",
     "kv_pool_start_load_handler",
