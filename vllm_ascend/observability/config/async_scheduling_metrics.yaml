@@ -4,3 +4,6 @@
 
 - symbol: vllm_ascend.observability.async_scheduling_stats:AsyncSchedulingMetricHooks.note_stale_discard
   handler: vllm_ascend.observability.handlers:async_note_stale_discard_handler
+
+- symbol: vllm_ascend.observability.async_scheduling_stats:AsyncSchedulingMetricHooks.note_placeholder_underflow
+  handler: vllm_ascend.observability.handlers:async_note_underflow_handler
