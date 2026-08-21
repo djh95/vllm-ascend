@@ -16,6 +16,15 @@ def get_metric_provider():
         config_paths=config_paths,
         priority=200,
         framework_package="vllm_ascend",
-        owned_symbol_prefixes=("vllm_ascend.",),
+        owned_symbol_prefixes=(
+            "vllm_ascend.",
+            "vllm.v1.core.sched.scheduler",
+            "vllm.v1.core.sched.async_scheduler",
+            "vllm.v1.worker.gpu.model_runner",
+            "vllm.v1.worker.gpu_model_runner",
+            "vllm.v1.worker.gpu.async_utils",
+            "vllm.v1.executor.multiproc_executor",
+            "vllm.model_executor.layers.fused_moe.routed_experts_capturer",
+        ),
         handler_module_prefixes=("vllm_ascend.observability.",),
     )
