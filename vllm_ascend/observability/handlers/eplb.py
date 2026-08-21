@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""vLLM Ascend-owned metric handlers."""
+"""EPLB metric handlers for MS Service Metric."""
 
 import logging
 from typing import Any
 
-from ms_service_metric.provider_api import (  # type: ignore[import-not-found]
-    MetricType,
-    get_metric_recorder,
-)
+from vllm_ascend.observability.handlers.common import gauge_type, register_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -19,29 +16,16 @@ _HOTNESS_SUMMARY_METRICS = (
     "eplb:expert_hotness:update_max",
 )
 _IMBALANCE_METRIC = "eplb:expert_hotness:imbalance"
-_eplb_metrics_recorder = None
+
+_EPLB_METRICS = {
+    **{name: (gauge_type(), ["rank", "phase"]) for name in _HOTNESS_SUMMARY_METRICS},
+    _IMBALANCE_METRIC: (gauge_type(), ["rank", "phase", "layer"]),
+}
+_recorder_cache: dict[str, Any] = {}
 
 
 def _register_eplb_metrics():
-    global _eplb_metrics_recorder
-
-    metrics = get_metric_recorder()
-    if metrics is _eplb_metrics_recorder:
-        return metrics
-
-    for metric_name in _HOTNESS_SUMMARY_METRICS:
-        metrics.get_or_create_metric(
-            metric_name,
-            metric_type=MetricType.GAUGE,
-            label_names=["rank", "phase"],
-        )
-    metrics.get_or_create_metric(
-        _IMBALANCE_METRIC,
-        metric_type=MetricType.GAUGE,
-        label_names=["rank", "phase", "layer"],
-    )
-    _eplb_metrics_recorder = metrics
-    return metrics
+    return register_metrics(_EPLB_METRICS, _recorder_cache, "eplb")
 
 
 def eplb_do_update_hotness_handler(original_func, worker, *args, **kwargs):
