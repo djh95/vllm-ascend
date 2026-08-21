@@ -7,3 +7,6 @@
 
 - symbol: vllm_ascend.observability.async_scheduling_stats:AsyncSchedulingMetricHooks.note_placeholder_underflow
   handler: vllm_ascend.observability.handlers:async_note_underflow_handler
+
+- symbol: vllm.v1.worker.gpu.async_utils:AsyncOutput.get_output
+  handler: vllm_ascend.observability.handlers:async_output_get_output_handler
