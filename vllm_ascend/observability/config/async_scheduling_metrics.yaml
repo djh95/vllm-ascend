@@ -13,3 +13,6 @@
 
 - symbol: vllm.v1.executor.multiproc_executor:WorkerProc.handle_output
   handler: vllm_ascend.observability.handlers:async_output_queue_handler
+
+- symbol: vllm_ascend.worker.v2.model_runner:NPUModelRunner._update_seq_lens_cpu
+  handler: vllm_ascend.observability.handlers:async_seq_lens_barrier_handler
