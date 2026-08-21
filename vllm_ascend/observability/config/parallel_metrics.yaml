@@ -1,4 +1,4 @@
-# SP padding / MoE comm selection metrics.
+# Parallelism: SP padding, MoE comm selection (MC2 / multistream).
 - symbol: vllm_ascend.worker.model_runner_v1:NPUModelRunner._pad_for_sequence_parallelism
   handler: vllm_ascend.observability.handlers:sp_pad_handler
 
