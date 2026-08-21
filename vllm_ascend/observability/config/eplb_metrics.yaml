@@ -1,4 +1,4 @@
-# EPLB hotness is the first custom handler migrated to vLLM Ascend.
+# EPLB hotness / rebalance / transfer metrics for Ascend dynamic EPLB.
 - symbol: vllm_ascend.eplb.core.eplb_worker:EplbWorker.do_update
   handler: vllm_ascend.observability.handlers:eplb_do_update_hotness_handler
 
