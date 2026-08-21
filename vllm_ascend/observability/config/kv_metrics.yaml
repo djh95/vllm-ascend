@@ -7,3 +7,6 @@
 
 - symbol: vllm.v1.core.sched.scheduler:Scheduler._update_from_kv_xfer_finished
   handler: vllm_ascend.observability.handlers:kv_xfer_finished_handler
+
+- symbol: vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker:KVPoolWorker.start_load_kv
+  handler: vllm_ascend.observability.handlers:kv_pool_start_load_handler
