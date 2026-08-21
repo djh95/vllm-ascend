@@ -10,3 +10,6 @@
 
 - symbol: vllm.v1.worker.gpu_model_runner:GPUModelRunner.init_routed_experts_capturer
   handler: vllm_ascend.observability.handlers:routed_experts_init_handler
+
+- symbol: vllm.model_executor.layers.fused_moe.routed_experts_capturer:RoutedExpertsCapturer.capture
+  handler: vllm_ascend.observability.handlers:routed_experts_capture_handler
