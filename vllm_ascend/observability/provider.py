@@ -16,6 +16,9 @@ def get_metric_provider():
         config_paths=config_paths,
         priority=200,
         framework_package="vllm_ascend",
-        owned_symbol_prefixes=("vllm_ascend.",),
+        owned_symbol_prefixes=(
+            "vllm_ascend.",
+            "vllm.v1.core.sched.scheduler",
+        ),
         handler_module_prefixes=("vllm_ascend.observability.",),
     )
