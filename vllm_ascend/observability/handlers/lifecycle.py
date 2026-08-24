@@ -16,9 +16,11 @@ from vllm_ascend.observability.handlers.common import (
 logger = logging.getLogger(__name__)
 
 _WAKE_MS = "lifecycle:wake:duration_ms"
+_UPDATE_WEIGHTS_MS = "lifecycle:update_weights:duration_ms"
 
 _LIFECYCLE_METRICS = {
     _WAKE_MS: (histogram_type(), ["sleep_opt", "tags"]),
+    _UPDATE_WEIGHTS_MS: (histogram_type(), []),
 }
 
 _recorder_cache: dict[str, Any] = {}
@@ -59,3 +61,16 @@ def worker_wake_handler(original_func, worker, tags=None, *args, **kwargs):
             )
         except Exception:
             logger.warning("Failed to record wake metrics", exc_info=True)
+
+
+def worker_update_weights_handler(original_func, worker, update_info, *args, **kwargs):
+    """Record HCCL/IPC weight-update chunk duration for RL."""
+    start = time.perf_counter()
+    try:
+        return original_func(worker, update_info, *args, **kwargs)
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        try:
+            _metrics().record_metric(_UPDATE_WEIGHTS_MS, value=elapsed_ms, labels={})
+        except Exception:
+            logger.warning("Failed to record update_weights metrics", exc_info=True)
