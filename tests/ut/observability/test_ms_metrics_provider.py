@@ -81,10 +81,11 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     assert [Path(path).name for path in provider.config_paths] == [
         "base_metrics.yaml",
         "eplb_metrics.yaml",
+        "kv_metrics.yaml",
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 12
+    assert len(config) == 16
     assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
     assert all("id" not in item for item in config)
     assert all(
@@ -157,9 +158,23 @@ def test_ascend_handler_module_loads_from_yaml_path(monkeypatch):
     assert callable(handler_module.eplb_do_update_hotness_handler)
 
 
+def test_kv_metrics_yaml_symbols_stay_in_sync():
+    config = yaml.safe_load(
+        (_PACKAGE_ROOT / "config" / "kv_metrics.yaml").read_text(encoding="utf-8")
+    )
+
+    assert len(config) == 4
+    assert [item["symbol"] for item in config] == [
+        "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker:KVPoolWorker.start_load_kv",
+        "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.pool_worker:KVPoolWorker.get_block_ids_with_load_errors",
+        "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend.mooncake_backend:MooncakeBackend.put",
+        "vllm_ascend.distributed.kv_transfer.kv_pool.ascend_store.backend.memcache_backend:MemcacheBackend.put",
+    ]
+
+
 def test_provider_yaml_symbols_exist_in_current_vllm_ascend_source():
     config_paths = sorted((_PACKAGE_ROOT / "config").glob("*.yaml"))
-    assert len(config_paths) == 2
+    assert len(config_paths) == 3
     config = _load_all_provider_configs(config_paths)
 
     for item in config:
