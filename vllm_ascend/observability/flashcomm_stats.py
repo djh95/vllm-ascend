@@ -82,3 +82,7 @@ class FlashCommMetricHooks:
             num_tokens=num_tokens,
             pad_size=pad_size,
         )
+
+    @staticmethod
+    def note_collective_failure(op: str, reason: str) -> None:
+        """YAML-hookable failure notification."""

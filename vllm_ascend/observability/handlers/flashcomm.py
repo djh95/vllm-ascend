@@ -10,8 +10,10 @@ from vllm_ascend.observability.handlers.common import counter_type, register_met
 logger = logging.getLogger(__name__)
 
 _DECISION_METRIC = "flashcomm:decision_total"
+_FAILURE_METRIC = "flashcomm:collective_failures_total"
 _FLASHCOMM_METRICS = {
     _DECISION_METRIC: (counter_type(), ["decision"]),
+    _FAILURE_METRIC: (counter_type(), ["op", "reason"]),
 }
 _recorder_cache: dict[str, Any] = {}
 
@@ -34,3 +36,19 @@ def flashcomm_gate_handler(original_func, *args, **kwargs):
     except Exception:
         logger.warning("Failed to record FlashComm decision metrics", exc_info=True)
     return stats
+
+
+def flashcomm_failure_note_handler(original_func, *args, **kwargs):
+    """Record a collective failure Counter immediately."""
+    result = original_func(*args, **kwargs)
+    try:
+        op = args[0] if args else kwargs.get("op", "unknown")
+        reason = args[1] if len(args) > 1 else kwargs.get("reason", "other")
+        _metrics().record_metric(
+            _FAILURE_METRIC,
+            value=1.0,
+            labels={"op": str(op), "reason": str(reason)},
+        )
+    except Exception:
+        logger.warning("Failed to record FlashComm failure metrics", exc_info=True)
+    return result

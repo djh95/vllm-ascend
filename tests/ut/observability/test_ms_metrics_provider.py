@@ -86,7 +86,7 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 13
+    assert len(config) == 14
     assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
     assert all("id" not in item for item in config)
     assert all(
@@ -354,4 +354,22 @@ def test_flashcomm_classify_decision_and_gate_handler(monkeypatch):
         "flashcomm:decision_total",
         value=1.0,
         labels={"decision": "enabled"},
+    )
+
+
+def test_flashcomm_failure_handler_records_counter(monkeypatch):
+    metric_type = type("MetricType", (), {"GAUGE": "gauge", "COUNTER": "counter"})
+    metrics = Mock()
+    _install_provider_api(
+        monkeypatch,
+        MetricType=metric_type,
+        get_metric_recorder=lambda: metrics,
+    )
+    handlers = _load_handler_module(monkeypatch, "test_flashcomm_handlers_failure", "handlers/flashcomm.py")
+
+    assert handlers.flashcomm_failure_note_handler(lambda *_args: "noted", "all_gather", "timeout") == "noted"
+    metrics.record_metric.assert_called_once_with(
+        "flashcomm:collective_failures_total",
+        value=1.0,
+        labels={"op": "all_gather", "reason": "timeout"},
     )
