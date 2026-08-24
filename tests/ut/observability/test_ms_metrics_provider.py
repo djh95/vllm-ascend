@@ -75,17 +75,21 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     assert provider.name == "vllm-ascend"
     assert provider.framework_package == "vllm_ascend"
     assert provider.ownership_mode == "overlay"
-    assert provider.owned_symbol_prefixes == ("vllm_ascend.",)
+    assert provider.owned_symbol_prefixes == (
+        "vllm_ascend.",
+        "vllm.v1.core.sched.scheduler",
+    )
     assert provider.handler_module_prefixes == ("vllm_ascend.observability.",)
     assert provider.config_paths == tuple(sorted(provider.config_paths))
     assert [Path(path).name for path in provider.config_paths] == [
         "base_metrics.yaml",
         "eplb_metrics.yaml",
+        "kv_metrics.yaml",
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 12
-    assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
+    assert len(config) == 15
+    assert all(item["symbol"].startswith(("vllm_ascend.", "vllm.")) for item in config)
     assert all("id" not in item for item in config)
     assert all(
         item.get("handler", "").startswith(
@@ -157,15 +161,30 @@ def test_ascend_handler_module_loads_from_yaml_path(monkeypatch):
     assert callable(handler_module.eplb_do_update_hotness_handler)
 
 
+def test_kv_metrics_yaml_symbols_stay_in_sync():
+    config = yaml.safe_load(
+        (_PACKAGE_ROOT / "config" / "kv_metrics.yaml").read_text(encoding="utf-8")
+    )
+
+    assert len(config) == 3
+    assert [item["symbol"] for item in config] == [
+        "vllm.v1.core.sched.scheduler:Scheduler.update_from_output",
+        "vllm_ascend.core.recompute_scheduler:RecomputeScheduler.update_from_output",
+        "vllm.v1.core.sched.scheduler:Scheduler._update_from_kv_xfer_finished",
+    ]
+
+
 def test_provider_yaml_symbols_exist_in_current_vllm_ascend_source():
     config_paths = sorted((_PACKAGE_ROOT / "config").glob("*.yaml"))
-    assert len(config_paths) == 2
+    assert len(config_paths) == 3
     config = _load_all_provider_configs(config_paths)
 
     for item in config:
         module_name, attribute_path = item["symbol"].split(":", 1)
         source_path = _REPOSITORY_ROOT / Path(*module_name.split(".")).with_suffix(".py")
-        assert source_path.is_file(), f"Missing symbol module: {item['symbol']}"
+        if not source_path.is_file():
+            assert module_name.startswith("vllm."), f"Missing symbol module: {item['symbol']}"
+            continue
 
         syntax_tree = ast.parse(source_path.read_text(encoding="utf-8"))
         owner_name, method_name = attribute_path.split(".", 1)

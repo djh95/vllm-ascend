@@ -24,6 +24,10 @@ def gauge_type() -> Any:
     return MetricType.GAUGE
 
 
+def scheduler_kind(scheduler: Any) -> str:
+    return type(scheduler).__name__
+
+
 def register_metrics(
     metric_specs: dict[str, tuple[Any, list[str]]],
     cache: dict[str, Any],
@@ -41,3 +45,19 @@ def register_metrics(
         )
     cache[cache_key] = metrics
     return metrics
+
+
+def count_waiting_for_remote_kvs(scheduler: Any) -> int:
+    try:
+        from vllm.v1.request import RequestStatus
+
+        requests = getattr(scheduler, "requests", None)
+        if not requests:
+            return 0
+        return sum(
+            1
+            for request in requests.values()
+            if getattr(request, "status", None) == RequestStatus.WAITING_FOR_REMOTE_KVS
+        )
+    except Exception:
+        return 0

@@ -7,7 +7,13 @@ can keep using ``vllm_ascend.observability.handlers:function_name``.
 """
 
 from vllm_ascend.observability.handlers.eplb import eplb_do_update_hotness_handler
+from vllm_ascend.observability.handlers.kv import (
+    kv_update_from_output_handler,
+    kv_xfer_finished_handler,
+)
 
 __all__ = [
     "eplb_do_update_hotness_handler",
+    "kv_update_from_output_handler",
+    "kv_xfer_finished_handler",
 ]
