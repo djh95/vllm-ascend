@@ -16,12 +16,12 @@ def counter_type() -> Any:
     return getattr(MetricType, "COUNTER", MetricType.GAUGE)
 
 
-def histogram_type() -> Any:
-    return getattr(MetricType, "HISTOGRAM", MetricType.GAUGE)
-
-
 def gauge_type() -> Any:
     return MetricType.GAUGE
+
+
+def scheduler_kind(scheduler: Any) -> str:
+    return type(scheduler).__name__
 
 
 def register_metrics(
