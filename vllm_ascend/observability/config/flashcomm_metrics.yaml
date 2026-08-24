@@ -1,0 +1,3 @@
+# FlashComm decision metrics (Ascend).
+- symbol: vllm_ascend.observability.flashcomm_stats:FlashCommMetricHooks.publish_forward_gate
+  handler: vllm_ascend.observability.handlers:flashcomm_gate_handler

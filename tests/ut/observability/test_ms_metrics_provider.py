@@ -28,6 +28,7 @@ def _load_source(module_name: str, filename: str):
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -81,10 +82,11 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     assert [Path(path).name for path in provider.config_paths] == [
         "base_metrics.yaml",
         "eplb_metrics.yaml",
+        "flashcomm_metrics.yaml",
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 12
+    assert len(config) == 13
     assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
     assert all("id" not in item for item in config)
     assert all(
@@ -159,7 +161,7 @@ def test_ascend_handler_module_loads_from_yaml_path(monkeypatch):
 
 def test_provider_yaml_symbols_exist_in_current_vllm_ascend_source():
     config_paths = sorted((_PACKAGE_ROOT / "config").glob("*.yaml"))
-    assert len(config_paths) == 2
+    assert len(config_paths) == 3
     config = _load_all_provider_configs(config_paths)
 
     for item in config:
@@ -295,4 +297,61 @@ def test_eplb_handler_given_metric_failure_then_preserves_inference_result(monke
             worker,
         )
         == "updated"
+    )
+
+
+def test_flashcomm_classify_decision_and_gate_handler(monkeypatch):
+    metric_type = type("MetricType", (), {"GAUGE": "gauge", "COUNTER": "counter"})
+    metrics = Mock()
+    _install_provider_api(
+        monkeypatch,
+        MetricType=metric_type,
+        get_metric_recorder=lambda: metrics,
+    )
+    stats_mod = _load_source("test_flashcomm_stats_gate", "flashcomm_stats.py")
+    handlers = _load_handler_module(monkeypatch, "test_flashcomm_handlers_gate", "handlers/flashcomm.py")
+
+    assert (
+        stats_mod.classify_decision(
+            enable_sp=False,
+            is_moe_model=False,
+            is_draft_model=False,
+            num_tokens=2000,
+            flash_comm_v1_enabled=False,
+        )
+        == "config_off"
+    )
+    assert (
+        stats_mod.classify_decision(
+            enable_sp=True,
+            is_moe_model=False,
+            is_draft_model=True,
+            num_tokens=2000,
+            flash_comm_v1_enabled=False,
+        )
+        == "dense_draft"
+    )
+    assert (
+        stats_mod.classify_decision(
+            enable_sp=True,
+            is_moe_model=False,
+            is_draft_model=False,
+            num_tokens=500,
+            flash_comm_v1_enabled=False,
+        )
+        == "dense_below_threshold"
+    )
+
+    out = handlers.flashcomm_gate_handler(
+        lambda **kwargs: stats_mod.FlashCommMetricHooks.publish_forward_gate(**kwargs),
+        decision="enabled",
+        flash_comm_v1_enabled=True,
+        num_tokens=2048,
+        pad_size=2,
+    )
+    assert out.decision == "enabled"
+    metrics.record_metric.assert_called_once_with(
+        "flashcomm:decision_total",
+        value=1.0,
+        labels={"decision": "enabled"},
     )
