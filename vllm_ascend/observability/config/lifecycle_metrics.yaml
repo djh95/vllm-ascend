@@ -5,3 +5,9 @@
 
 - symbol: vllm_ascend.worker.worker:NPUWorker.update_weights
   handler: vllm_ascend.observability.handlers:worker_update_weights_handler
+
+- symbol: vllm_ascend.worker.v2.model_runner:NPUModelRunner.initialize_kv_cache
+  handler: vllm_ascend.observability.handlers:routed_experts_init_handler
+
+- symbol: vllm.model_executor.layers.fused_moe.routed_experts_capturer:RoutedExpertsCapturer.capture
+  handler: vllm_ascend.observability.handlers:routed_experts_capture_handler

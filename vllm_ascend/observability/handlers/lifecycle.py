@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from vllm_ascend.observability.handlers.common import (
+    gauge_type,
     histogram_type,
     register_metrics,
 )
@@ -17,10 +18,12 @@ logger = logging.getLogger(__name__)
 
 _WAKE_MS = "lifecycle:wake:duration_ms"
 _UPDATE_WEIGHTS_MS = "lifecycle:update_weights:duration_ms"
+_ROUTED_EXPERTS_STATE = "rl:routed_experts_state"
 
 _LIFECYCLE_METRICS = {
     _WAKE_MS: (histogram_type(), ["sleep_opt", "tags"]),
     _UPDATE_WEIGHTS_MS: (histogram_type(), []),
+    _ROUTED_EXPERTS_STATE: (gauge_type(), ["state"]),
 }
 
 _recorder_cache: dict[str, Any] = {}
@@ -74,3 +77,34 @@ def worker_update_weights_handler(original_func, worker, update_info, *args, **k
             _metrics().record_metric(_UPDATE_WEIGHTS_MS, value=elapsed_ms, labels={})
         except Exception:
             logger.warning("Failed to record update_weights metrics", exc_info=True)
+
+
+def _set_routed_experts_state(state: str, value: float = 1.0) -> None:
+    _metrics().record_metric(
+        _ROUTED_EXPERTS_STATE,
+        value=value,
+        labels={"state": state},
+    )
+
+
+def routed_experts_init_handler(original_func, runner, *args, **kwargs):
+    """Mark routed-experts capture enabled/ready after capturer init."""
+    result = original_func(runner, *args, **kwargs)
+    try:
+        enabled = bool(getattr(getattr(runner, "model_config", None), "enable_return_routed_experts", False))
+        ready = bool(getattr(runner, "routed_experts_initialized", False))
+        _set_routed_experts_state("enabled", 1.0 if enabled else 0.0)
+        _set_routed_experts_state("ready", 1.0 if ready else 0.0)
+        _set_routed_experts_state("capturing", 0.0)
+    except Exception:
+        logger.warning("Failed to record routed experts init metrics", exc_info=True)
+    return result
+
+
+def routed_experts_capture_handler(original_func, capturer, layer_id, topk_ids, *args, **kwargs):
+    """Mark capturing=1 while MoE router replay capture runs, reset afterwards."""
+    try:
+        _set_routed_experts_state("capturing", 1.0)
+        return original_func(capturer, layer_id, topk_ids, *args, **kwargs)
+    finally:
+        _set_routed_experts_state("capturing", 0.0)
