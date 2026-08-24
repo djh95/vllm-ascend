@@ -81,10 +81,11 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     assert [Path(path).name for path in provider.config_paths] == [
         "base_metrics.yaml",
         "eplb_metrics.yaml",
+        "graph_metrics.yaml",
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 12
+    assert len(config) == 13
     assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
     assert all("id" not in item for item in config)
     assert all(
@@ -159,7 +160,7 @@ def test_ascend_handler_module_loads_from_yaml_path(monkeypatch):
 
 def test_provider_yaml_symbols_exist_in_current_vllm_ascend_source():
     config_paths = sorted((_PACKAGE_ROOT / "config").glob("*.yaml"))
-    assert len(config_paths) == 2
+    assert len(config_paths) == 3
     config = _load_all_provider_configs(config_paths)
 
     for item in config:

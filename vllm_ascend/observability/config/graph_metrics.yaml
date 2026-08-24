@@ -1,0 +1,3 @@
+# ACL graph mode capture / replay / eager dispatch.
+- symbol: vllm_ascend.compilation.acl_graph:ACLGraphWrapper.__call__
+  handler: vllm_ascend.observability.handlers:acl_graph_call_handler
