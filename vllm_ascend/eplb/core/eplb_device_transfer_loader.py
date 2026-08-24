@@ -39,6 +39,8 @@ class D2DExpertWeightLoader:
         self.recv_expert_list = []
         self.num_layers = 0
         self.comm_group = get_dynamic_eplb_group()
+        # ms-service-metric: latest D2D migration snapshot for handlers.
+        self.latest_transfer_stats = None
 
     def set_adator(self, eplb_adaptor):
         self.eplb_adaptor = eplb_adaptor
@@ -55,10 +57,12 @@ class D2DExpertWeightLoader:
 
         self.layer_id = layer_id
         self.comm_op_list = []
+        est_bytes = 0
         for send_info in expert_send_info:
             dst_rank, global_expert_id_to_send = send_info
             local_expert_id = self.eplb_adaptor.expert_map_per_layer_cpu[layer_id][global_expert_id_to_send].item()
             for src_tensor in self.eplb_adaptor.expert_param_per_layer[layer_id][local_expert_id]:
+                est_bytes += int(src_tensor.numel() * src_tensor.element_size())
                 self.comm_op_list.append(
                     dist.P2POp(
                         dist.isend, src_tensor, self.comm_group.ranks[dst_rank], group=self.comm_group.device_group
@@ -69,6 +73,7 @@ class D2DExpertWeightLoader:
             recv_rank, global_expert_id_to_recv = recv_info
             expert_weight_key = self.eplb_adaptor.expert_weight_key_per_layer[layer_id]
             for buffer_tensor in self.eplb_adaptor.buffer_tensor_list[expert_weight_key][buffer_tensor_id]:
+                est_bytes += int(buffer_tensor.numel() * buffer_tensor.element_size())
                 self.comm_op_list.append(
                     dist.P2POp(
                         dist.irecv, buffer_tensor, self.comm_group.ranks[recv_rank], group=self.comm_group.device_group
@@ -77,6 +82,15 @@ class D2DExpertWeightLoader:
             local_expert_to_replace = self.updated_expert_map[global_expert_id_to_recv].item()
             self.recv_expert_list.append((local_expert_to_replace, buffer_tensor_id))
 
+        # ms-service-metric begin
+        self.latest_transfer_stats = {
+            "layer_id": int(layer_id),
+            "send_experts": len(expert_send_info),
+            "recv_experts": len(expert_recv_info),
+            "comm_ops": len(self.comm_op_list),
+            "est_bytes": est_bytes,
+        }
+        # ms-service-metric end
         self.state = ExpertWeightUpdateState.READY
 
     def set_log2phy_map(self, log2phy_map):

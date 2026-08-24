@@ -15,6 +15,8 @@
 # This file is a part of the vllm-ascend project.
 #
 # Todo: Once https://github.com/vllm-project/vllm/issues/22246 is merged in vllm. Remove this updator.
+import time
+
 import numpy
 import torch
 import torch.distributed as dist
@@ -38,6 +40,9 @@ class EplbUpdator:
         self.eplb_process = eplb_process
         self.shared_dict = self.eplb_process.shared_dict
         self.comm_group = get_dynamic_eplb_group()
+        # ms-service-metric: async worker liveness / progress snapshot.
+        self._last_progress_ts = time.time()
+        self.latest_async_worker_status = None
 
     def set_adaptor(self, adaptor: VllmEplbAdaptor):
         self.pp_rank = get_pp_group().rank_in_group
@@ -103,10 +108,21 @@ class EplbUpdator:
     def wakeup_eplb_worker(self):
         self.eplb_process.planner_q.put(1)
 
+    def _refresh_async_worker_status(self, *, note_progress: bool = False) -> None:
+        if note_progress:
+            self._last_progress_ts = time.time()
+        process = self.process
+        self.latest_async_worker_status = {
+            "worker_alive": 1.0 if process is not None and process.is_alive() else 0.0,
+            "pending_layers": float(len(self.update_info_all)),
+            "seconds_since_progress": float(max(0.0, time.time() - self._last_progress_ts)),
+        }
+
     def forward_before(self):
         # Batch after eplb process being triggered, get update info provided by eplb process
         if self.get_update_info_flag():
             self.update_info_all = self.eplb_process.block_update_q.get()
+            self._refresh_async_worker_status(note_progress=True)
         if self.update_expert_weight_flag():
             with record_function_or_nullcontext("EPLB generate p2p task"):
                 (expert_send_info, expert_recv_info, updated_expert_map, log2phy_map, layer_id) = (
@@ -125,15 +141,18 @@ class EplbUpdator:
                 # set asynchronous stream for d2d expert weight update
                 self.reqs = []
                 self.eplb_loader.asyn_expert_weight_transfer(self.reqs)
+                self._refresh_async_worker_status(note_progress=True)
 
     def forward_end(self, eplb_heat_collection_status: bool = True):
         if self.wakeup_eplb_worker_flag():
             with record_function_or_nullcontext("EPLB gather moe load"):
                 self.compute_and_set_moe_load()
                 self.wakeup_eplb_worker()
+                self._refresh_async_worker_status(note_progress=True)
 
         if self.update_expert_weight_flag() and self.expert_map_record_path is None:
             self.eplb_loader.update_expert_map_and_weight(self.reqs)
+            self._refresh_async_worker_status(note_progress=True)
 
         # One circle of eplb update includes expert_heat_collection_interval + algorithm_execution_interval
         # + num_moe_layers (for weight update). In expert_heat_collection stage, we only update the counter
@@ -141,6 +160,7 @@ class EplbUpdator:
         # TODO(Angazenn): Decouple algorithm execution && weight update with heat collection iterations.
         if self.cur_iterations >= self.expert_heat_collection_interval - 1 or eplb_heat_collection_status:
             self.update_iteration()
+        self._refresh_async_worker_status()
 
     def compute_and_set_moe_load(self):
         local_load = self.adaptor.get_rank_expert_workload().unsqueeze(1)

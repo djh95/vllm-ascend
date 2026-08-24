@@ -42,6 +42,11 @@ class EplbWorker:
         self.tp_size = tp_size
         self.rank_id = get_ep_group().rank_in_group
         self.multi_stage = policy_type == 3
+        # ms-service-metric: latest cycle snapshot for Ascend dynamic EPLB handlers.
+        self.latest_expert_hotness = None
+        self.latest_rebalance_result = None
+        self.latest_load_balance = None
+        self.latest_map_consistency = None
 
     def do_update(self):
         # put data in to queue
@@ -64,6 +69,13 @@ class EplbWorker:
         load_info = self.fetch_and_sum_load_info()
         if load_info is None:
             logger.debug("[eplb/worker] No moe_load data available yet, skipping this cycle")
+            # ms-service-metric begin
+            self.latest_rebalance_result = {
+                "result": "skipped",
+                "policy_type": int(self.policy_type),
+                "fallback_layers": 0,
+            }
+            # ms-service-metric end
             return
 
         # Get the updated expert table based on the workload information
@@ -90,6 +102,7 @@ class EplbWorker:
                 "current_imbalance_list": current_imbalance_list,
                 "update_imbalance_list": update_imbalance_list,
             }
+            self.latest_load_balance = self._compute_load_balance(load_info)
             # ms-service-metric end.
             logger.info(
                 "[eplb/worker] Expert hotness imbalance, current: mean=%.3f max=%.3f, updated: mean=%.3f max=%.3f",
@@ -101,7 +114,20 @@ class EplbWorker:
 
         if not torch.is_tensor(new_placement):
             new_placement = torch.tensor(new_placement)
-        self.check_expert_placement(old_placement, new_placement)
+        placement_stats = self.check_expert_placement(old_placement, new_placement)
+        # ms-service-metric begin
+        fallback_layers = int(placement_stats.get("fallback_layers", 0))
+        self.latest_map_consistency = {
+            "fallback_layers": fallback_layers,
+            "duplicate_count": int(placement_stats.get("duplicate_count", 0)),
+            "missing_count": int(placement_stats.get("missing_count", 0)),
+        }
+        self.latest_rebalance_result = {
+            "result": "fallback" if fallback_layers > 0 else "success",
+            "policy_type": int(self.policy_type),
+            "fallback_layers": fallback_layers,
+        }
+        # ms-service-metric end
         new_expert_maps = self.local2global(new_placement)
         self.update_expert_map(new_expert_maps)
 
@@ -116,20 +142,29 @@ class EplbWorker:
     def check_expert_placement(self, old_placement, new_placement):
         num_layers = old_placement.shape[0]
         num_ranks = old_placement.shape[1]
+        fallback_layers = 0
+        duplicate_count = 0
+        missing_count = 0
 
         for layer_id in range(num_layers):
             # check if any logical expert is not placed on any rank
-            if torch.unique(new_placement[layer_id]).numel() < torch.unique(old_placement[layer_id]).numel():
+            old_unique = int(torch.unique(old_placement[layer_id]).numel())
+            new_unique = int(torch.unique(new_placement[layer_id]).numel())
+            if new_unique < old_unique:
+                missing_count += old_unique - new_unique
                 logger.error("[eplb/worker] There exists expert not placed on any rank in layer %s", layer_id)
                 new_placement[layer_id] = old_placement[layer_id]
+                fallback_layers += 1
                 continue
 
+            layer_fell_back = False
             for rank_id in range(num_ranks):
                 new_placement_check = new_placement[layer_id][rank_id]
                 old_placement_check = old_placement[layer_id][rank_id]
 
                 # check if same logical experts are placed on the same NPU
                 if new_placement_check.numel() != torch.unique(new_placement_check).numel():
+                    duplicate_count += int(new_placement_check.numel() - torch.unique(new_placement_check).numel())
                     logger.error(
                         "[eplb/worker] Replicated experts are placed on the same NPU; "
                         "expert placement on layer %s, rank %s is invalid",
@@ -137,6 +172,7 @@ class EplbWorker:
                         rank_id,
                     )
                     new_placement[layer_id] = old_placement[layer_id]
+                    layer_fell_back = True
                     break
 
                 # check if there is any experts movement inside one NPU
@@ -149,7 +185,36 @@ class EplbWorker:
                         rank_id,
                     )
                     new_placement[layer_id] = old_placement[layer_id]
+                    layer_fell_back = True
                     break
+            if layer_fell_back:
+                fallback_layers += 1
+
+        return {
+            "fallback_layers": fallback_layers,
+            "duplicate_count": duplicate_count,
+            "missing_count": missing_count,
+        }
+
+    @staticmethod
+    def _compute_load_balance(load_info: Any) -> dict[str, float]:
+        """Aggregate per-rank token load into avg/max gauges."""
+        if load_info is None or not torch.is_tensor(load_info) or load_info.numel() == 0:
+            return {"avg_tokens": 0.0, "max_tokens": 0.0}
+
+        tensor = load_info.detach().float()
+        # Ascend moe_load is typically [layers, ranks, experts] (or 4-D multi-stage).
+        if tensor.ndim >= 2:
+            reduce_dims = tuple(i for i in range(tensor.ndim) if i != 1)
+            per_rank = tensor.sum(dim=reduce_dims) if reduce_dims else tensor
+        else:
+            per_rank = tensor
+        avg_tokens = float(per_rank.mean().item())
+        max_tokens = float(per_rank.max().item())
+        return {
+            "avg_tokens": avg_tokens,
+            "max_tokens": max_tokens,
+        }
 
     # TODO: Here only expert weight exchange is considered, need to be extended to cover other weight update cases
     def compose_expert_update_info_greedy(self, updated_expert_maps, current_expert_maps):
