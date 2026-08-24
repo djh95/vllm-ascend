@@ -10,6 +10,10 @@ from vllm.logger import logger
 from vllm.v1.core.sched.scheduler import Scheduler
 from vllm.v1.request import RequestStatus
 
+from vllm_ascend.observability.async_scheduling_stats import (
+    AsyncSchedulingMetricHooks,
+)
+
 
 def _patch_async_scheduler_update_request_with_output() -> None:
     from vllm.v1.core.sched.async_scheduler import AsyncScheduler
@@ -35,6 +39,7 @@ def _patch_async_scheduler_update_request_with_output() -> None:
                 request.request_id,
                 request.async_tokens_to_discard,
             )
+            AsyncSchedulingMetricHooks.note_stale_discard()
             request.async_tokens_to_discard -= 1
             return [], False
 
@@ -53,6 +58,7 @@ def _patch_async_scheduler_update_request_with_output() -> None:
                 len(new_token_ids),
                 request.num_output_placeholders,
             )
+            AsyncSchedulingMetricHooks.note_placeholder_underflow()
             request.num_output_placeholders = 0
 
         if status_before_update == RequestStatus.RUNNING:

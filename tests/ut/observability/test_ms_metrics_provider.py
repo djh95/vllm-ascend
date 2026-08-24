@@ -79,13 +79,14 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     assert provider.handler_module_prefixes == ("vllm_ascend.observability.",)
     assert provider.config_paths == tuple(sorted(provider.config_paths))
     assert [Path(path).name for path in provider.config_paths] == [
+        "async_scheduling_metrics.yaml",
         "base_metrics.yaml",
         "eplb_metrics.yaml",
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 12
-    assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
+    assert len(config) == 18
+    assert all(item["symbol"].startswith(("vllm.", "vllm_ascend.")) for item in config)
     assert all("id" not in item for item in config)
     assert all(
         item.get("handler", "").startswith(
@@ -159,11 +160,13 @@ def test_ascend_handler_module_loads_from_yaml_path(monkeypatch):
 
 def test_provider_yaml_symbols_exist_in_current_vllm_ascend_source():
     config_paths = sorted((_PACKAGE_ROOT / "config").glob("*.yaml"))
-    assert len(config_paths) == 2
+    assert len(config_paths) == 3
     config = _load_all_provider_configs(config_paths)
 
     for item in config:
         module_name, attribute_path = item["symbol"].split(":", 1)
+        if not module_name.startswith("vllm_ascend."):
+            continue
         source_path = _REPOSITORY_ROOT / Path(*module_name.split(".")).with_suffix(".py")
         assert source_path.is_file(), f"Missing symbol module: {item['symbol']}"
 
@@ -178,6 +181,20 @@ def test_provider_yaml_symbols_exist_in_current_vllm_ascend_source():
             isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
             for node in owner.body
         ), f"Missing symbol method: {item['symbol']}"
+
+
+def test_async_scheduling_metrics_yaml_symbols_stay_in_sync():
+    config = yaml.safe_load((_PACKAGE_ROOT / "config" / "async_scheduling_metrics.yaml").read_text(encoding="utf-8"))
+
+    assert len(config) == 6
+    assert [item["symbol"] for item in config] == [
+        "vllm.v1.core.sched.async_scheduler:AsyncScheduler._update_after_schedule",
+        "vllm_ascend.observability.async_scheduling_stats:AsyncSchedulingMetricHooks.note_stale_discard",
+        "vllm_ascend.observability.async_scheduling_stats:AsyncSchedulingMetricHooks.note_placeholder_underflow",
+        "vllm.v1.worker.gpu.async_utils:AsyncOutput.get_output",
+        "vllm.v1.executor.multiproc_executor:WorkerProc.handle_output",
+        "vllm_ascend.worker.v2.model_runner:NPUModelRunner._update_seq_lens_cpu",
+    ]
 
 
 def test_eplb_handler_records_rank_zero_hotness(monkeypatch):
