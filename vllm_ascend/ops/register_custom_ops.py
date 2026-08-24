@@ -44,27 +44,30 @@ def _maybe_all_gather_and_maybe_unpad_impl(x: torch.Tensor, label: bool, is_ep_c
 
     flash_comm_v1_enabled = _EXTRA_CTX.flash_comm_v1_enabled or (enable_sp_by_pass() and is_ep_comm)
     if flash_comm_v1_enabled and label:
+        from vllm_ascend.observability.flashcomm_stats import CollectiveObservation, OP_ALL_GATHER
+
         dp_metadata = forward_context.dp_metadata
-        if dp_metadata is None or not is_ep_comm:
-            x = tensor_model_parallel_all_gather(x, 0)
-            pad_size = _EXTRA_CTX.pad_size
-            if pad_size > 0:
-                x = x[:-pad_size]
-        else:
-            x = get_ep_group().all_gather(x, 0)
-            if enable_sp_by_pass():  # TODO: do unpad
-                return x
-            # unpad
-            num_tokens_across_dp_cpu = dp_metadata.num_tokens_across_dp_cpu
-            result = torch.empty((num_tokens_across_dp_cpu.sum(), *x.shape[1:]), device=x.device, dtype=x.dtype)
-            dp_size = get_dp_group().world_size
-            x = x.view(dp_size, _EXTRA_CTX.padded_length, *x.shape[1:])
-            offset = 0
-            for idx in range(dp_size):
-                num_tokens_dp = num_tokens_across_dp_cpu[idx]
-                result[offset : offset + num_tokens_dp] = x[idx, :num_tokens_dp]
-                offset += num_tokens_dp
-            x = result
+        with CollectiveObservation(OP_ALL_GATHER, x):
+            if dp_metadata is None or not is_ep_comm:
+                x = tensor_model_parallel_all_gather(x, 0)
+                pad_size = _EXTRA_CTX.pad_size
+                if pad_size > 0:
+                    x = x[:-pad_size]
+            else:
+                x = get_ep_group().all_gather(x, 0)
+                if enable_sp_by_pass():  # TODO: do unpad
+                    return x
+                # unpad
+                num_tokens_across_dp_cpu = dp_metadata.num_tokens_across_dp_cpu
+                result = torch.empty((num_tokens_across_dp_cpu.sum(), *x.shape[1:]), device=x.device, dtype=x.dtype)
+                dp_size = get_dp_group().world_size
+                x = x.view(dp_size, _EXTRA_CTX.padded_length, *x.shape[1:])
+                offset = 0
+                for idx in range(dp_size):
+                    num_tokens_dp = num_tokens_across_dp_cpu[idx]
+                    result[offset : offset + num_tokens_dp] = x[idx, :num_tokens_dp]
+                    offset += num_tokens_dp
+                x = result
 
     return x
 
@@ -80,26 +83,29 @@ def _maybe_pad_and_reduce_impl(x: torch.Tensor, is_ep_comm: bool = False) -> tor
     if not flash_comm_v1_enabled or (_EXTRA_CTX.is_draft_model and is_vl_model() and not is_ep_comm):
         return tensor_model_parallel_all_reduce(x)
 
-    dp_metadata = forward_context.dp_metadata
-    if dp_metadata is None or not is_ep_comm:
-        pad_size = _EXTRA_CTX.pad_size
-        if pad_size > 0:
-            x = F.pad(x, (0, 0, 0, pad_size))
-        return tensor_model_parallel_reduce_scatter(x, 0)
-    else:
-        if enable_sp_by_pass():
-            return get_ep_group().reduce_scatter(x.view(-1, *x.shape[1:]), 0)
-        # padding
-        dp_size = get_dp_group().world_size
-        num_tokens_across_dp_cpu = get_forward_context().dp_metadata.num_tokens_across_dp_cpu
-        padded_x = torch.empty((dp_size, _EXTRA_CTX.padded_length, *x.shape[1:]), device=x.device, dtype=x.dtype)
-        offset = 0
-        for idx in range(dp_size):
-            num_tokens_dp = num_tokens_across_dp_cpu[idx]
-            padded_x[idx, :num_tokens_dp] = x[offset : offset + num_tokens_dp]
-            offset += num_tokens_dp
+    from vllm_ascend.observability.flashcomm_stats import CollectiveObservation, OP_REDUCE_SCATTER
 
-        return get_ep_group().reduce_scatter(padded_x.view(-1, *x.shape[1:]), 0)
+    dp_metadata = forward_context.dp_metadata
+    with CollectiveObservation(OP_REDUCE_SCATTER, x):
+        if dp_metadata is None or not is_ep_comm:
+            pad_size = _EXTRA_CTX.pad_size
+            if pad_size > 0:
+                x = F.pad(x, (0, 0, 0, pad_size))
+            return tensor_model_parallel_reduce_scatter(x, 0)
+        else:
+            if enable_sp_by_pass():
+                return get_ep_group().reduce_scatter(x.view(-1, *x.shape[1:]), 0)
+            # padding
+            dp_size = get_dp_group().world_size
+            num_tokens_across_dp_cpu = get_forward_context().dp_metadata.num_tokens_across_dp_cpu
+            padded_x = torch.empty((dp_size, _EXTRA_CTX.padded_length, *x.shape[1:]), device=x.device, dtype=x.dtype)
+            offset = 0
+            for idx in range(dp_size):
+                num_tokens_dp = num_tokens_across_dp_cpu[idx]
+                padded_x[idx, :num_tokens_dp] = x[offset : offset + num_tokens_dp]
+                offset += num_tokens_dp
+
+            return get_ep_group().reduce_scatter(padded_x.view(-1, *x.shape[1:]), 0)
 
 
 def _maybe_all_gather_and_maybe_unpad_fake(x: torch.Tensor, label: bool, is_ep_comm: bool = False) -> torch.Tensor:

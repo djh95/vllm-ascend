@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock
 
+import pytest
 import yaml
 
 _REPOSITORY_ROOT = Path(__file__).parents[3]
@@ -86,7 +87,7 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     ]
     assert all(Path(path).is_file() for path in provider.config_paths)
     config = _load_all_provider_configs(provider.config_paths)
-    assert len(config) == 14
+    assert len(config) == 16
     assert all(item["symbol"].startswith("vllm_ascend.") for item in config)
     assert all("id" not in item for item in config)
     assert all(
@@ -373,3 +374,58 @@ def test_flashcomm_failure_handler_records_counter(monkeypatch):
         value=1.0,
         labels={"op": "all_gather", "reason": "timeout"},
     )
+
+
+def test_flashcomm_flush_handler_records_input_bytes(monkeypatch):
+    metric_type = type(
+        "MetricType",
+        (),
+        {"GAUGE": "gauge", "COUNTER": "counter", "HISTOGRAM": "histogram"},
+    )
+    metrics = Mock()
+    _install_provider_api(
+        monkeypatch,
+        MetricType=metric_type,
+        get_metric_recorder=lambda: metrics,
+    )
+    stats_mod = _load_source("test_flashcomm_stats_flush", "flashcomm_stats.py")
+    stats_mod.publish_forward_gate(
+        decision="enabled",
+        flash_comm_v1_enabled=True,
+        num_tokens=100,
+        pad_size=4,
+    )
+    stats_mod.note_collective_input(stats_mod.OP_ALL_GATHER, nbytes=128)
+    stats_mod.note_collective_input(stats_mod.OP_REDUCE_SCATTER, nbytes=64)
+    monkeypatch.setitem(sys.modules, "vllm_ascend.observability.flashcomm_stats", stats_mod)
+    handlers = _load_handler_module(monkeypatch, "test_flashcomm_handlers_flush", "handlers/flashcomm.py")
+
+    assert handlers.flashcomm_forward_flush_handler(lambda *_args, **_kwargs: "ok", object()) == "ok"
+    metrics.record_metric.assert_any_call("flashcomm:active_tokens", value=100.0, labels={})
+    metrics.record_metric.assert_any_call("flashcomm:padding_ratio", value=0.04, labels={})
+    metrics.record_metric.assert_any_call(
+        "flashcomm:input_bytes_total",
+        value=128.0,
+        labels={"op": "all_gather"},
+    )
+
+
+def test_flashcomm_collective_observation_notes_failure(monkeypatch):
+    stats_mod = _load_source("test_flashcomm_stats_observation", "flashcomm_stats.py")
+    note_failure = Mock()
+    monkeypatch.setattr(stats_mod.FlashCommMetricHooks, "note_collective_failure", note_failure)
+
+    with pytest.raises(TimeoutError):
+        with stats_mod.CollectiveObservation(stats_mod.OP_ALL_GATHER):
+            raise TimeoutError("collective timed out")
+
+    note_failure.assert_called_once_with(stats_mod.OP_ALL_GATHER, stats_mod.REASON_TIMEOUT)
+
+
+def test_flashcomm_yaml_mounts_present():
+    flashcomm_yaml = yaml.safe_load((_PACKAGE_ROOT / "config" / "flashcomm_metrics.yaml").read_text(encoding="utf-8"))
+    symbols = {item["symbol"] for item in flashcomm_yaml}
+    assert "vllm_ascend.observability.flashcomm_stats:FlashCommMetricHooks.publish_forward_gate" in symbols
+    assert "vllm_ascend.observability.flashcomm_stats:FlashCommMetricHooks.note_collective_failure" in symbols
+    assert "vllm_ascend.worker.model_runner_v1:NPUModelRunner.execute_model" in symbols
+    assert "vllm_ascend.worker.v2.model_runner:NPUModelRunner.execute_model" in symbols
