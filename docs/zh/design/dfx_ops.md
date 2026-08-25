@@ -44,6 +44,29 @@ vllm serve <model> --additional-config '{
 
 > **dump 激活（runtime）**：`auto_max_times>0` **或** `manual_dump` 有效（`true` / 正整数）。JSON **无** `dump.enabled`；旧键 `enabled` / `max_times` / `manual_trigger` / `cooldown_seconds` 校验拒绝。
 
+### 1.1a ACLGraph 预建与 idle 门控（重要）
+
+图模式（`cudagraph_mode != NONE`）下，**有 `dump_config_path` / `dump.msprobe_config_path` 就会启动预建 `AclGraphDumper`**，即使当时 `auto_max_times=0` 且 `manual_dump=false`：
+
+| 步骤 | 时机 | 作用 |
+|------|------|------|
+| 预建 debugger | `Dumper` 初始化 | 只要有 msprobe 路径就构造（dump 能力可仍关） |
+| 装 hooks | `load_model` / 每步 `start_dump_data`（构图前） | `debugger.start(model)`，保持 `_running`；**不**等于一直写盘 |
+| idle 关采集 | 预建 / recreate 后 `_close_idle_msprobe_dump_gate` | 写 msprobe `dump_enable=false` + sync 设备 `switch=0` |
+| dump 窗口开采集 | detector / `manual_dump` arm | `set_msprobe_dump_state(True)` → switch=1 → 写完再关 |
+
+**为什么：** ACLGraph 必须在 **capture 前** 把 dump 插桩编进图；事后 lazy 建 debugger / 再 hook，已 capture 的图 replay 采空。预建 + idle 关门控 = 图里有插桩，平时不写 staging，异常窗口才写。
+
+**Eager（`CUDAGraphMode.NONE`）不变：** 仅 dump 能力开时才建 `PrecisionDebugger`（避免缺省 `dump_enable` 乱 wrap API）。
+
+**运维含义：**
+
+- 图模式想以后热更开 dump：启动就要带上 `dump_config_path`（预建），不必启动就开 `auto_max_times`。
+- 启动无 msprobe 路径、构图后再配路径 / 开 dump：仍可能 lazy 且采空 → 看 WARNING，建议 **重启 worker**。
+- 勿在 dump 能力开时把 msprobe 显式写成 `dump_enable:false`（bootstrap 冲突）；idle 关门控由 DFX 自己写 false。
+
+见 [dumper_design.md](./dumper_design.md) §3 / §8。
+
 ### 1.1 msprobe 路径与 bootstrap 策略
 
 | 字段 | 作用 |
@@ -233,7 +256,9 @@ ACLGraph：重建可能采空，深度改配置仍建议 **重启 worker**。只
 | TP>1 挂在 dump pending-OR / `all_reduce` | 同 EngineCore 内各 TP 的 dump 激活态 / detector（或整份 JSON）不一致：idle fast-path 一侧跳过 OR，另一侧仍进 `all_reduce` | **同一 EngineCore 共用一份** `dfx_config_path`（或同默认路径）；勿给不同 TP 挂不同 JSON / 不同开关 |
 | 检测有 short / report 但无 msprobe 文件 | dump 未激活；或冷却 / 配额；或 early PP | 设 `auto_max_times>0` 或 `manual_dump`；查 `auto_cooldown_seconds`；dump 仅 last-PP |
 | 完全无检测日志 | 未开任一 `detector.<name>.enabled`；或 rank / filter | 打开至少一个 detector；查 `[DFX filter]` |
-| ACLGraph：无 DFX 常开有数、DFX dump 无数 | dump 窗口外才 `start`，replay 采空 | 构图前装 hook 且保持采集；DFX 只闸 `step()` 落盘。见 [dumper_design.md](./dumper_design.md) §8 |
+| ACLGraph：无 DFX 常开有数、DFX dump 无数 | dump 窗口外才 `start`，或启动无 msprobe 路径导致构图后 lazy | 启动带 `dump_config_path`（图模式预建+装 hook）；idle 关 switch，窗口内再开。见 §1.1a / [dumper_design.md](./dumper_design.md) §8 |
+| ACLGraph：dump 未开却堆满 staging | idle 未关 `dump_enable`/switch（旧版本或门控失败） | 升级含 `_close_idle_msprobe_dump_gate` 的版本；确认日志有 `idle dump gate closed` |
+| `[Anomaly msprobe] debugger lazy-initialized after startup under ACLGraph` | 构图后才建 debugger | 重启前确保启动就有 `dump_config_path`；深度改路径后建议重启 |
 | async 下只 TP0 有检测 | 设计如此（`get_output` 仅 output_rank） | dump 靠下一步 `pending-OR` 齐步；见 [async_scheduling_design.md](./async_scheduling_design.md) |
 | 某类请求从不检测 | `input_filter.filters` 不匹配；prompt 取不到 | 查 `[DFX filter] skip detect`；临时清空 `filters` |
 | 日志级别改了看不到 | ① `dfx_config_reload_interval=0`（在线改 JSON 不加载）；② 用的是**默认路径**且未设 `dfx_config_path`（启动会忽略/覆盖磁盘手改，`ascend_log` 回到 INFO）；③ 改了 `VLLM_LOGGING_LEVEL` 而非 `ascend_log`；④ 改错文件（多 DP 的 `dpN/` 副本） | 启动项 `dfx_config_reload_interval>0`；持久改级用显式 `dfx_config_path`；JSON 例：`"ascend_log": {"level": "INFO", "debug": ["dfx"]}` 或 `"level": "DEBUG"`；worker 日志里应出现 `[ascend_log] applied level=...` |

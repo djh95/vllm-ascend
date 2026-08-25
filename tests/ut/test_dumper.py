@@ -846,6 +846,104 @@ def test_dumper_init_aclgraph_prebuild_closes_idle_gate(tmp_path):
     assert cfg.dump_enabled() is False
 
 
+def test_init_debugger_graph_without_path_skips_prebuild(tmp_path):
+    """ACLGraph without dump_config_path must not construct a debugger."""
+    from vllm.config.compilation import CUDAGraphMode
+
+    cfg = make_dfx_config(tmp_path)
+    dumper = _make_dumper()
+    dumper.dfx_config = cfg
+    dumper.runner = SimpleNamespace(ascend_config=SimpleNamespace(dump_config_path=None))
+    fake_mod = SimpleNamespace(AclGraphDumper=MagicMock())
+    with patch.dict("sys.modules", {"msprobe": MagicMock(), "msprobe.pytorch": fake_mod}):
+        out = dumper._init_debugger(CUDAGraphMode.FULL)
+    assert out is None
+    assert dumper._debugger is None
+    fake_mod.AclGraphDumper.assert_not_called()
+
+
+def test_start_dump_data_installs_aclgraph_hooks_when_prebuilt(tmp_path):
+    """Prebuilt idle debugger still installs hooks on start_dump_data (before capture)."""
+    dumper = _make_dumper()
+    model = MagicMock()
+    dbg = MagicMock()
+    dumper.runner = SimpleNamespace(model=model, ascend_config=SimpleNamespace(dump_config_path="/x"))
+    dumper._debugger = dbg
+    dumper._uses_aclgraph_dumper = True
+    dumper._aclgraph_hooks_installed = False
+    dumper._debugger_started = False
+    dumper._msprobe_dump_active = False
+    dumper._dump_needs_forward = False
+    dumper.dump_rank_tag = MagicMock(return_value="tp0")
+    dumper._dump_state_tag = MagicMock(return_value="")
+    dumper._clear_aclgraph_stats = MagicMock()
+
+    dumper.start_dump_data()
+
+    dbg.start.assert_called_once_with(model)
+    assert dumper._aclgraph_hooks_installed is True
+    # Idle: no dump-forward window marked.
+    assert dumper._debugger_started is False
+    dumper._clear_aclgraph_stats.assert_called_once()
+
+
+def test_close_idle_skips_when_pending_dump(tmp_path: Path):
+    cfg = tmp_path / "msprobe_dump_config.json"
+    cfg.write_text(json.dumps({"dump_enable": True, "dump_path": str(tmp_path / "out")}), encoding="utf-8")
+
+    dumper = _make_dumper()
+    dumper.runner = SimpleNamespace(ascend_config=SimpleNamespace(dump_config_path=str(cfg)))
+    dumper._debugger = SimpleNamespace(dump_enable=True)
+    dumper._uses_aclgraph_dumper = True
+    dumper._msprobe_dump_active = False
+    dumper._pending_dump = True
+    dumper.set_msprobe_dump_state = MagicMock(return_value=True)
+
+    dumper._close_idle_msprobe_dump_gate()
+
+    dumper.set_msprobe_dump_state.assert_not_called()
+
+
+def test_enforce_dump_on_with_prebuilt_debugger_no_lazy_warning(tmp_path, caplog):
+    """Hot-enabling dump over a prebuilt debugger must not emit ACLGraph lazy WARNING."""
+    import logging
+
+    from vllm.config.compilation import CUDAGraphMode
+
+    cfg = make_dfx_config(tmp_path)
+    cfg._data["dump"]["auto_max_times"] = 2
+    cfg._data["dump"]["manual_dump"] = False
+    msprobe = tmp_path / "msprobe.json"
+    msprobe.write_text(json.dumps({"dump_enable": True, "dump_path": str(tmp_path / "out")}), encoding="utf-8")
+
+    switch = MagicMock()
+    fake_dbg = SimpleNamespace(
+        dump_enable=True,
+        switch=switch,
+        config_path=str(msprobe),
+        _config_signature=("a", 0),
+        _get_config_signature=MagicMock(return_value=("b", 1)),
+    )
+    dumper = _make_dumper()
+    dumper.dfx_config = cfg
+    dumper.runner = SimpleNamespace(
+        ascend_config=SimpleNamespace(dump_config_path=str(msprobe)),
+        compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.FULL),
+    )
+    dumper._debugger = fake_dbg
+    dumper._uses_aclgraph_dumper = True
+    dumper._startup_debugger_done = True  # would warn if lazy path ran
+    dumper._msprobe_dump_active = False
+    dumper._pending_dump = False
+    dumper.dump_rank_tag = MagicMock(return_value="tp0")
+
+    with caplog.at_level(logging.WARNING, logger="vllm_ascend.dfx.dumper.core"):
+        dumper._enforce_dump_requires_debugger()
+
+    assert not any("lazy-initialized after startup under ACLGraph" in r.message for r in caplog.records)
+    assert json.loads(msprobe.read_text(encoding="utf-8"))["dump_enable"] is False
+
+
 def test_init_debugger_soft_fails_and_forces_dump_off(tmp_path):
     from vllm.config.compilation import CUDAGraphMode
 

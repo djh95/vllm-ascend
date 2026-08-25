@@ -29,6 +29,8 @@
     // Effective msprobe JSON path. Bootstrap seeds from additional_config
     // dump_config_path / dump_config when null. Change path (or set
     // reload_msprobe) to recreate the debugger on the next hot-reload wave.
+    // ACLGraph: path present ⇒ startup prebuilds AclGraphDumper + installs
+    // hooks before capture; idle keeps dump_enable/switch off until arm.
     "msprobe_config_path": null,
     // One-shot: recreate debugger from current msprobe_config_path, then false.
     "reload_msprobe": false

@@ -50,13 +50,14 @@ Runner 侧：
 
 ### 4.1 v1
 
-1. 初始化：`Dumper(..., dfx_config=ascend_config.dfx_config)`
-2. `execute_model()` 入口：`dfx.sync_for_step()` → `dfx.start_dump_data()` → forward →（非 last PP 早 `dfx.finalize_dump_data()`；last PP 在 `sample_tokens` 末 `finalize`）
-3. 采样后：`dfx.mark_finished`→ `dfx.check_after_spec`；sync 当场 `dfx.check_after_sample`（末尾 reap），async 在 `get_output()` 中检测并 reap；idle 下一波 `sync_for_step` 也可 reap
+1. 初始化：`Dumper(..., dfx_config=ascend_config.dfx_config)`。图模式 + 有 `dump_config_path` → 预建 `AclGraphDumper` 并 idle 关 switch（dump 能力可仍关）。
+2. `load_model`：图模式下 `dfx.start_dump_data()` → `_ensure_aclgraph_hooks()`（构图前装 hook）。
+3. `execute_model()` 入口：`dfx.sync_for_step()` → `dfx.start_dump_data()` → forward →（非 last PP 早 `dfx.finalize_dump_data()`；last PP 在 `sample_tokens` 末 `finalize`）
+4. 采样后：`dfx.mark_finished`→ `dfx.check_after_spec`；sync 当场 `dfx.check_after_sample`（末尾 reap），async 在 `get_output()` 中检测并 reap；idle 下一波 `sync_for_step` 也可 reap
 
 ### 4.2 v2
 
-1. 初始化：同上；图模式下只要有 `dump_config_path` 即预建 `AclGraphDumper`（dump 能力可仍关），`load_model`/`start_dump_data` 提前装 hook 且保持 `_running=True`；idle 关 switch。构图时必须带上 dump 插桩，否则 replay 采空。
+1. 初始化：同上；图模式下只要有 `dump_config_path` 即预建 `AclGraphDumper`（dump 能力可仍关），`execute_model`/`start_dump_data` 装 hook 且保持 `_running=True`；idle 关 switch。构图时必须带上 dump 插桩，否则 replay 采空。
 2. Dump 窗口：`start` 清掉窗口前缓冲的 acl stats，`finalize.step()` 写盘；**不** `stop()`（避免卸 hook）。非 dump 步不调用 `step()`，因此不落盘。
 3. Eager（`PrecisionDebugger`）仍仅在 dump 能力开时构造，且仅在 dump 窗口 `start`，避免 profile_run AOT 被破坏。
 4. `execute_model()`：`dfx.sync_for_step(allow_arm=not dummy_run)` → `dfx.start_dump_data()` → `super().execute_model` → `finally: dfx.finalize_dump_data(dump=not dummy_run)`
@@ -121,11 +122,12 @@ start → forward → finalize → disable（需 _dump_forward_seen）
 ## 8. 已知限制
 
 1. `forward_seen` 只表示「activate 后调用过 start」，不保证 msprobe 一定写出文件。
-2. ACLGraph：必须在构图前安装 hook 且保持采集开启；DFX 只闸 `step()` 落盘。若仅在 dump 窗口才 `start`，replay 采空（「无 DFX 常开有数、DFX manual_dump 无数」）。
+2. ACLGraph：必须在构图前安装 hook；DFX 用 `dump_enable`/switch 闸采集，用 `step()` 落盘。启动有 `dump_config_path` 时会 **预建** debugger 并 idle 关 switch（见 §3）。若启动无路径、构图后再 lazy 建 debugger，replay 仍可能采空（「无 DFX 常开有数、DFX dump 无数」）——看 WARNING，建议重启。
 3. v1 EC producer 短路径可能在 activate 后用 encoder-only `start→finalize` 消费窗口；普通文本 serving 无此路径。
 4. async / sync+TP>1 下，若未走 fast-path，last PP 每步 CPU `all_reduce`（全员参与）；不能「仅 pending 的 rank 进 collective」。**Fast-path**：dump 未激活且无 detector 时跳过该 OR（热更开着也适用；见 §5）。
 5. Sync + TP>1 也走 pending-OR（与 async 相同齐步模型）；仅 Sync + TP=1 可当场 activate。
 6. Config sync 与 dump OR 使用不同 process group（per-DP/file vs tp）；二者都要求**各自组内**全员同拍进入。
+7. idle 门控依赖能写 msprobe JSON；路径不可写 / 锁失败时可能关不上 switch（查 `[Anomaly msprobe] set msprobe dump state failed`）。
 
 ## 9. 相关文档
 

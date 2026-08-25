@@ -408,6 +408,8 @@ vllm serve <model> --additional-config '{
 
 显式配置 `dfx_config_reload_interval > 0` 后，在线改 `dump.auto_max_times` / detector 阈值约 N 秒内各 worker 生效（broadcast）。
 
+**ACLGraph 提示**：只要启动带了 `dump_config_path`，即使 `auto_max_times=0` 也会预建 `AclGraphDumper` 并在构图前装 hook，idle 保持 `dump_enable`/switch 关闭；异常窗口再打开采集。详见 [dfx_ops.md](./dfx_ops.md) §1.1a、[dumper_design.md](./dumper_design.md) §3。
+
 ## 8. 相关文档
 
 | 文档 | 内容 |
