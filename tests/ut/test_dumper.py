@@ -580,6 +580,67 @@ def test_set_msprobe_dump_state_skips_reload_for_aclgraph_dumper(tmp_path: Path)
     assert loaded["dump_enable"] is True
 
 
+def test_close_idle_msprobe_dump_gate_writes_false_and_syncs_switch(tmp_path: Path):
+    """Idle capability-on must close JSON + switch so step() refresh stays off."""
+    cfg = tmp_path / "msprobe_dump_config.json"
+    # Omitted dump_enable ⇒ msprobe default on (the production staging leak).
+    cfg.write_text(json.dumps({"dump_path": str(tmp_path / "out")}), encoding="utf-8")
+
+    switch = MagicMock()
+    dbg = SimpleNamespace(
+        dump_enable=True,
+        switch=switch,
+        config_path=str(cfg),
+        _config_signature=("old", 0),
+        _get_config_signature=MagicMock(return_value=("new", 1)),
+    )
+    dumper = _make_dumper()
+    dumper.runner = SimpleNamespace(ascend_config=SimpleNamespace(dump_config_path=str(cfg)))
+    dumper._debugger = dbg
+    dumper._uses_aclgraph_dumper = True
+    dumper._msprobe_dump_active = False
+    dumper._pending_dump = False
+    dumper.dump_rank_tag = MagicMock(return_value="tp0")
+
+    dumper._close_idle_msprobe_dump_gate()
+
+    assert dbg.dump_enable is False
+    switch.fill_.assert_called_once_with(0)
+    assert json.loads(cfg.read_text(encoding="utf-8"))["dump_enable"] is False
+
+
+def test_close_idle_msprobe_dump_gate_skips_when_dump_window_open(tmp_path: Path):
+    cfg = tmp_path / "msprobe_dump_config.json"
+    cfg.write_text(json.dumps({"dump_enable": True, "dump_path": str(tmp_path / "out")}), encoding="utf-8")
+
+    dumper = _make_dumper()
+    dumper.runner = SimpleNamespace(ascend_config=SimpleNamespace(dump_config_path=str(cfg)))
+    dumper._debugger = SimpleNamespace(dump_enable=True)
+    dumper._uses_aclgraph_dumper = True
+    dumper._msprobe_dump_active = True
+    dumper._pending_dump = False
+    dumper.set_msprobe_dump_state = MagicMock(return_value=True)
+
+    dumper._close_idle_msprobe_dump_gate()
+
+    dumper.set_msprobe_dump_state.assert_not_called()
+    assert json.loads(cfg.read_text(encoding="utf-8"))["dump_enable"] is True
+
+
+def test_enforce_dump_requires_debugger_closes_idle_gate(tmp_path: Path):
+    """Startup/lazy init path must close the gate after debugger is present."""
+    dumper = _make_dumper()
+    dumper.dfx_config = SimpleNamespace(dump_enabled=lambda: True)
+    dumper._debugger = object()
+    dumper._startup_debugger_done = False
+    dumper._uses_aclgraph_dumper = True
+    dumper._close_idle_msprobe_dump_gate = MagicMock()
+
+    dumper._enforce_dump_requires_debugger()
+
+    dumper._close_idle_msprobe_dump_gate.assert_called_once_with()
+
+
 def test_set_msprobe_dump_state_syncs_aclgraph_switch(tmp_path: Path):
     """Disable/enable must update device switch, not only the shared JSON."""
     cfg = tmp_path / "msprobe_dump_config.json"

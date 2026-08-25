@@ -245,6 +245,31 @@ class Dumper(PendingDumpMixin, MsprobeBridgeMixin):
             self.dfx_config.consume_reload_msprobe()
         return ok
 
+    def _close_idle_msprobe_dump_gate(self) -> None:
+        """Force msprobe ``dump_enable`` / device switch off while no dump window is open.
+
+        DFX dump *capability* (``auto_max_times`` / ``manual_dump``) can be on
+        while idle. Msprobe often defaults ``dump_enable=true`` when the key is
+        omitted, so ``AclGraphDumper`` leaves device ``switch=1`` and every
+        forward writes staging tensors. Close the gate after debugger init /
+        recreate / lazy init; dump windows reopen it via
+        ``set_msprobe_dump_state(True)``. Writing JSON (not only syncing
+        in-memory switch) keeps a later ``step()`` / ``_refresh_dump_enable``
+        from flipping the gate back on.
+        """
+        if self._debugger is None:
+            return
+        if self._msprobe_dump_active or self._pending_dump:
+            return
+        ok = False
+        with suppress(Exception):
+            ok = bool(self.set_msprobe_dump_state(False))
+        if ok:
+            logger.info(
+                "[Anomaly msprobe] idle dump gate closed (await detector/manual arm) %s",
+                self.dump_rank_tag(),
+            )
+
     def _enforce_dump_requires_debugger(self) -> None:
         """If dump is enabled but debugger is unavailable, force dump off.
 
@@ -264,6 +289,8 @@ class Dumper(PendingDumpMixin, MsprobeBridgeMixin):
                     "worker if dump output is empty %s",
                     self.dump_rank_tag(),
                 )
+            # Capability on ≠ collection on: keep switch/JSON closed until armed.
+            self._close_idle_msprobe_dump_gate()
             return
         dump_cfg = getattr(getattr(self.runner, "ascend_config", None), "dump_config_path", None)
         if dump_cfg is None:
