@@ -776,6 +776,76 @@ def test_init_debugger_skips_when_dump_disabled(tmp_path):
     assert dumper._uses_aclgraph_dumper is False
 
 
+def test_init_debugger_prebuilds_aclgraph_when_path_set_dump_off(tmp_path):
+    """ACLGraph: msprobe path ⇒ prebuild even when dump capability is off."""
+    from vllm.config.compilation import CUDAGraphMode
+
+    cfg = make_dfx_config(tmp_path)
+    cfg._data["dump"]["auto_max_times"] = 0
+    cfg._data["dump"]["manual_dump"] = False
+    assert cfg.dump_enabled() is False
+
+    msprobe = tmp_path / "msprobe.json"
+    msprobe.write_text(json.dumps({"dump_path": str(tmp_path / "out")}), encoding="utf-8")
+
+    dumper = _make_dumper()
+    dumper.dfx_config = cfg
+    dumper.runner = SimpleNamespace(
+        ascend_config=SimpleNamespace(dump_config_path=str(msprobe)),
+    )
+    fake_dbg = MagicMock()
+    fake_mod = SimpleNamespace(AclGraphDumper=MagicMock(return_value=fake_dbg))
+    with patch.dict("sys.modules", {"msprobe": MagicMock(), "msprobe.pytorch": fake_mod}):
+        out = dumper._init_debugger(CUDAGraphMode.FULL)
+
+    assert out is fake_dbg
+    assert dumper._debugger is fake_dbg
+    assert dumper._uses_aclgraph_dumper is True
+    fake_mod.AclGraphDumper.assert_called_once_with(str(msprobe))
+
+
+def test_dumper_init_aclgraph_prebuild_closes_idle_gate(tmp_path):
+    """Prebuilt ACLGraph debugger must idle-close switch/JSON at construction."""
+    from vllm.config.compilation import CUDAGraphMode
+
+    cfg = make_dfx_config(tmp_path)
+    assert cfg.dump_enabled() is False
+    msprobe = tmp_path / "msprobe.json"
+    msprobe.write_text(json.dumps({"dump_path": str(tmp_path / "out")}), encoding="utf-8")
+
+    switch = MagicMock()
+    fake_dbg = SimpleNamespace(
+        dump_enable=True,
+        switch=switch,
+        config_path=str(msprobe),
+        _config_signature=("old", 0),
+        _get_config_signature=MagicMock(return_value=("new", 1)),
+    )
+    fake_mod = SimpleNamespace(AclGraphDumper=MagicMock(return_value=fake_dbg))
+    runner = SimpleNamespace(
+        ascend_config=SimpleNamespace(dump_config_path=str(msprobe)),
+        compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.FULL),
+        tp_rank=0,
+        dp_rank=0,
+        model=None,
+        input_batch=None,
+        requests=None,
+        req_states=None,
+        discard_request_mask=None,
+        use_async_scheduling=False,
+    )
+    with patch.dict("sys.modules", {"msprobe": MagicMock(), "msprobe.pytorch": fake_mod}):
+        dumper = Dumper(runner, dfx_config=cfg)
+
+    assert dumper._debugger is fake_dbg
+    assert dumper._uses_aclgraph_dumper is True
+    assert fake_dbg.dump_enable is False
+    switch.fill_.assert_called_with(0)
+    assert json.loads(msprobe.read_text(encoding="utf-8"))["dump_enable"] is False
+    # dump capability still off — prebuild is for hooks only
+    assert cfg.dump_enabled() is False
+
+
 def test_init_debugger_soft_fails_and_forces_dump_off(tmp_path):
     from vllm.config.compilation import CUDAGraphMode
 

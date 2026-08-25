@@ -134,8 +134,12 @@ class Dumper(PendingDumpMixin, MsprobeBridgeMixin):
 
         # Keep debugger lifecycle fully encapsulated in Dumper. Soft-fail when
         # msprobe / dump_config is missing; force dump off if still active.
+        # ACLGraph: path set ⇒ prebuild even when dump capability is off so
+        # load_model/start_dump_data can install hooks before capture.
         self._try_init_debugger()
         self._enforce_dump_requires_debugger()
+        # Always idle-close when a debugger exists (covers dump-off prebuild).
+        self._close_idle_msprobe_dump_gate()
         self._startup_debugger_done = True
         self._applied_msprobe_config_path = getattr(
             getattr(self.runner, "ascend_config", None), "dump_config_path", None
@@ -224,6 +228,7 @@ class Dumper(PendingDumpMixin, MsprobeBridgeMixin):
         self._init_debugger(self.runner.compilation_config.cudagraph_mode)
         self._reinstall_msprobe_hooks_after_recreate()
         self._enforce_dump_requires_debugger()
+        self._close_idle_msprobe_dump_gate()
         self._applied_msprobe_config_path = getattr(ascend, "dump_config_path", None) if ascend else None
         return True
 

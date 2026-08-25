@@ -38,26 +38,35 @@ class MsprobeBridgeMixin:
     def _init_debugger(self, cudagraph_mode: CUDAGraphMode):
         """Best-effort msprobe debugger init. Never raises — dump stays optional.
 
-        Skip construction when DFX ``dump.enabled=false`` even if
-        ``dump_config_path`` is set — PrecisionDebugger may wrap torch APIs
-        when msprobe ``dump_enable`` is omitted (treated as on). Hot-reload
-        that flips dump on retries via ``Dumper._enforce_dump_requires_debugger``.
+        * Eager (``CUDAGraphMode.NONE``): construct only when DFX dump capability
+          is on. PrecisionDebugger may wrap torch APIs when msprobe
+          ``dump_enable`` is omitted (treated as on).
+        * ACLGraph / cudagraph: construct whenever ``dump_config_path`` is set,
+          even if dump capability is still off, so hooks can be installed
+          **before** graph capture. Collection stays gated by ``dump_enable`` /
+          device ``switch`` (idle closed via ``_close_idle_msprobe_dump_gate``).
+          This avoids lazy-init after capture, which cannot retrofit dump ops
+          into already-captured graphs.
 
         Missing ``dump_config_path`` or msprobe import/construct failure leaves
-        ``_debugger=None``. Callers that want dump must then force
-        ``dump.enabled=false`` (see ``Dumper._enforce_dump_requires_debugger``).
+        ``_debugger=None``. Callers that want dump must then force dump off
+        (see ``Dumper._enforce_dump_requires_debugger``).
         """
-        if not bool(self.dfx_config.dump_enabled()):
-            self._debugger = None
-            self._uses_aclgraph_dumper = False
-            return None
-        dump_cfg = self.runner.ascend_config.dump_config_path
+        dump_cfg = getattr(getattr(self.runner, "ascend_config", None), "dump_config_path", None)
         if dump_cfg is None:
             self._debugger = None
             self._uses_aclgraph_dumper = False
             return None
+
+        dump_on = bool(self.dfx_config.dump_enabled())
+        is_graph = cudagraph_mode != CUDAGraphMode.NONE
+        # Eager: skip when dump capability is off. Graph: prebuild for hooks.
+        if not dump_on and not is_graph:
+            self._debugger = None
+            self._uses_aclgraph_dumper = False
+            return None
         try:
-            if cudagraph_mode == CUDAGraphMode.NONE:
+            if not is_graph:
                 from msprobe.pytorch import PrecisionDebugger
 
                 self._debugger = PrecisionDebugger(dump_cfg)
@@ -68,6 +77,12 @@ class MsprobeBridgeMixin:
 
             self._debugger = AclGraphDumper(dump_cfg)
             self._uses_aclgraph_dumper = True
+            if not dump_on:
+                logger.info(
+                    "[Anomaly msprobe] ACLGraph debugger prebuilt (dump capability "
+                    "off; hooks will install before capture; switch stays idle) path=%s",
+                    dump_cfg,
+                )
             return self._debugger
         except Exception as exc:
             logger.error(

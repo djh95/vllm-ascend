@@ -27,8 +27,9 @@ Detect 输入过滤见 [dfx_design.md](./dfx_design.md) §2.6 / [dfx_ops.md](./d
    - `apply_dfx_config()`：同步 `dump.auto_max_times` / `auto_cooldown_seconds`、调用 `apply_ascend_log_level`（`InputFilterManager` 由 `DfxProcessor` 刷新）
 
 2. **debugger 生命周期**
-   - `_init_debugger()`：仅当 runtime dump 激活时构造；按 `CUDAGraphMode` 选择 `PrecisionDebugger` 或 `AclGraphDumper`。dump 未激活时即使有 `dump_config_path` 也不建对象（避免 msprobe 在 `dump_enable` 缺省当开时挂 API wrap）。**软失败**（缺 msprobe / 构造失败 → `_debugger=None`，不杀进程）。热更打开 dump 时由 `_enforce_dump_requires_debugger` lazy 再 init。
-   - `_enforce_dump_requires_debugger()`：dump 激活但 debugger 不可用时 ERROR 并强制关闭 dump（`auto_max_times=0`、`manual_dump=false`；可热更重试：reload 时 lazy 再 `_init_debugger`；ACLGraph 下启动后 lazy 成功会 WARNING，图已 capture 时建议重启）
+   - `_init_debugger()`：按 `CUDAGraphMode` 选择 `PrecisionDebugger`（eager）或 `AclGraphDumper`（图模式）。**Eager**：仅当 runtime dump 激活时构造。**ACLGraph**：只要有 `dump_config_path` 就预建（即使 dump 能力仍关），以便构图前装 hook；采集仍由 `dump_enable`/switch 门控（idle 关）。缺 msprobe / 构造失败 → `_debugger=None`（软失败）。热更打开 dump 时若已预建则直接用；否则 lazy 再 init（图模式可能采空，会 WARNING）。
+   - `_enforce_dump_requires_debugger()`：dump 激活但 debugger 不可用时 ERROR 并强制关闭 dump（`auto_max_times=0`、`manual_dump=false`；可热更重试）。预建或 init 后调用 `_close_idle_msprobe_dump_gate`。
+   - `_close_idle_msprobe_dump_gate()`：debugger 存在且无 dump 窗口时写 `dump_enable=false` 并 sync switch，避免缺省 on 导致每拍写 staging。
    - `start_dump_data()` / `finalize_dump_data()`：按 `dump_enable` 门控的 start→forward→step
 
 3. **接 `AnomalyAlert`**
@@ -55,9 +56,9 @@ Runner 侧：
 
 ### 4.2 v2
 
-1. 初始化：同上；`load_model` 在图模式下提前 `start_dump_data` → **安装 AclGraphDumper hook 且保持 `_running=True`**（构图时必须带上 dump 插桩，否则 replay 采空）。
+1. 初始化：同上；图模式下只要有 `dump_config_path` 即预建 `AclGraphDumper`（dump 能力可仍关），`load_model`/`start_dump_data` 提前装 hook 且保持 `_running=True`；idle 关 switch。构图时必须带上 dump 插桩，否则 replay 采空。
 2. Dump 窗口：`start` 清掉窗口前缓冲的 acl stats，`finalize.step()` 写盘；**不** `stop()`（避免卸 hook）。非 dump 步不调用 `step()`，因此不落盘。
-3. Eager（`PrecisionDebugger`）仍仅在 dump 窗口 `start`，避免 profile_run AOT 被破坏。
+3. Eager（`PrecisionDebugger`）仍仅在 dump 能力开时构造，且仅在 dump 窗口 `start`，避免 profile_run AOT 被破坏。
 4. `execute_model()`：`dfx.sync_for_step(allow_arm=not dummy_run)` → `dfx.start_dump_data()` → `super().execute_model` → `finally: dfx.finalize_dump_data(dump=not dummy_run)`
 5. `postprocess_sampled()`：`dfx.check_after_spec`
 6. `sample_tokens()`：sync 当场 `dfx.check_after_sample`；async 包装为 `AscendAsyncOutput`，在 `get_output()` 后检测
