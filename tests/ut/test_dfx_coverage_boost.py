@@ -206,15 +206,15 @@ def test_manual_trigger_manager_paths(tmp_path):
     assert cfg.manual_trigger() is True
     assert cfg.manual_trigger_continuous() is True
 
-    # B2 fix: rank-gate BEFORE consume — non-TP0 must NOT consume,
-    #    value stays True (1) — non-TP0 must not burn the quota.
+    # B2 fix: rank-gate BEFORE emit — non-TP0 must NOT take the trigger
+    # (consume is deferred to successful arm on the detect rank).
     cfg._data["dump"]["manual_dump"] = 1
     with patch(
         "vllm_ascend.dfx.manual_trigger.should_run_anomaly_check_on_rank",
         return_value=False,
     ):
         assert mgr.consume_once(allow_arm=True, scheduler_output=so) is None
-    assert cfg.manual_trigger() is True, "B2 fix: non-TP0 must not consume manual_trigger"
+    assert cfg.manual_trigger() is True, "B2 fix: non-TP0 must not emit manual_trigger"
 
     cfg._data["dump"]["manual_dump"] = 2
     cfg._data["dump"]["manual_dump"] = True
@@ -227,8 +227,10 @@ def test_manual_trigger_manager_paths(tmp_path):
     assert ev is not None
     assert ev.trigger_type == "manual_trigger"
     assert ev.to_report_detail()["source"] == "dump.manual_trigger"
+    # Consume is deferred to successful dump arm — count still untouched.
     assert cfg.manual_trigger_count() == 1
-    assert ev.detail["manual_trigger_remaining_after"] == 1
+    assert cfg.manual_trigger_continuous() is True
+    assert ev.detail["manual_trigger_remaining_after"] is True
 
 
 def test_manual_trigger_v2_req_states_and_scheduler_output(tmp_path):
@@ -262,7 +264,9 @@ def test_manual_trigger_v2_req_states_and_scheduler_output(tmp_path):
     ):
         ev = ManualTriggerManager(dfx_config=cfg, runner=v2_runner).consume_once(allow_arm=True, scheduler_output=so_v2)
     assert ev is not None
-    assert cfg.manual_trigger_count() == 1
+    # Deferred consume: still 2 until dump arm succeeds.
+    assert cfg.manual_trigger_count() == 2
+    assert ev.detail["manual_trigger_remaining_after"] == 1
 
     cfg._data["dump"]["manual_dump"] = True
     cfg._data["dump"]["auto_max_times"] = 0
@@ -276,7 +280,8 @@ def test_manual_trigger_v2_req_states_and_scheduler_output(tmp_path):
     ):
         ev2 = ManualTriggerManager(dfx_config=cfg, runner=first_wave).consume_once(allow_arm=True, scheduler_output=so)
     assert ev2 is not None
-    assert cfg.manual_trigger_count() == 0
+    assert cfg.manual_trigger_count() == 1
+    assert ev2.detail["manual_trigger_remaining_after"] == 0
 
 
 def test_processor_get_tokenizer_and_save_sample_param(tmp_path):

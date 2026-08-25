@@ -73,7 +73,7 @@ vllm serve <model> --additional-config '{
 |------|------|
 | `dump.msprobe_config_path` | 当前生效的 msprobe JSON；bootstrap 从 `dump_config_path`/`dump_config` 写入。改路径 → 下一拍热更 **重建 debugger** |
 | `dump.auto_max_times` | 自动 dump 配额；`>0` 开启 auto-arm（与 `manual_dump` **互斥**） |
-| `dump.manual_dump` | 手动 dump：`false`/`0`=关；`true`=每拍持续 arm；正整数 `N`=剩余 N 拍。依赖热更 |
+| `dump.manual_dump` | 手动 dump：`false`/`0`=关；`true`=每拍持续 arm；正整数 `N`=剩余 N 拍（**成功 arm 后**递减）。依赖热更 |
 | `dump.auto_cooldown_seconds` | auto dump 冷却秒数（默认 300） |
 | `dump.reload_msprobe` | 一次性：`true` → 用当前路径重建 debugger，然后清回 `false` |
 
@@ -162,10 +162,10 @@ ACLGraph：重建可能采空，深度改配置仍建议 **重启 worker**。只
    - `true`：**一直 dump**——每个 **`scheduled_tokens > 0`** 的真实 `execute_model` 拍都 arm，直到改回 `false`（不会自动清掉）；  
    - 正整数 `N`：在接下来 **N** 个有 scheduled tokens 的真实拍上各 arm 一次，每拍减 1，到 `0`/`false` 为止；  
    - `false` / `0`：关闭。  
-3. 等待下一拍 **`total_num_scheduled_tokens > 0`（或等价 per-req scheduled）** 的 `execute_model`（空闲 / `execute_dummy_batch` / **`scheduled_tokens==0` 的 cleanup**、以及仅残留 `req_ids` 的拍 **不会**消费）。 Prefill 与 decode 都会消费（都有 scheduled tokens）。  
-4. 若 dump 未激活：**不消费**（`true` 也不清；int 次数不减）并打日志，修好后再等下一拍。  
-5. `true` 模式不写回 JSON；int 模式每成功消费一次写回剩余次数（最后一次写回 `false`）。日志可搜 `manual_trigger` / `[DFX manual_trigger]`（实现类仍为 `ManualTriggerManager`）。  
-6. **Report**：每次 arm 写一份 `manual_trigger` 类型报告；`detail.requests` 含该拍 batch **全部**请求的 prompt/output（`save_sensitive_info` 控制是否带 token ids）；`detail.manual_trigger_remaining_after` 为消费后剩余（`true` 时仍为 `true`）。
+3. 等待下一拍 **`total_num_scheduled_tokens > 0`（或等价 per-req scheduled）** 的 `execute_model`（空闲 / `execute_dummy_batch` / **`scheduled_tokens==0` 的 cleanup**、以及仅残留 `req_ids` 的拍 **不会**发出 trigger）。 Prefill 与 decode 都会触发（都有 scheduled tokens）。  
+4. 若 dump 未激活：**不发 trigger**（`true` 也不清；int 次数不减）并打日志，修好后再等下一拍。  
+5. **递减时机**：int `N` 在 **dump arm 成功之后**才减 1（不是 emit trigger 时）。这样 `manual_dump: 1` 在 `dump_enabled()` / pending-OR 检查时仍为开；arm 失败则次数保留可重试。`true` 模式不写回 JSON。日志可搜 `manual_trigger` / `[DFX manual_trigger]`（实现类仍为 `ManualTriggerManager`）。  
+6. **Report**：每次 arm 写一份 `manual_trigger` 类型报告；`detail.requests` 含该拍 batch **全部**请求的 prompt/output（`save_sensitive_info` 控制是否带 token ids）；`detail.manual_trigger_remaining_after` 为预计消费后剩余（`true` 时仍为 `true`）。
 
 ### 2.2.1 Report 截断（查命中时）
 

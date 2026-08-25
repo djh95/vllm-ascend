@@ -147,19 +147,23 @@ class PendingDumpMixin:
         ``allow_arm``: False on dummy/capture — last-PP TPs still join the
         all_reduce (avoid deadlock) but do not activate or clear pending.
         """
-        # Fast path — dump sink off AND no detector. Then nothing can arm
-        # (auto dump, anomaly arm, and manual_trigger all require
-        # ``dump.enabled``; anomaly arm also needs a detector). The pending-OR
-        # is always 0, so skip the TP all_reduce. Called after
-        # ``refresh_config`` in the same wave, so last-PP TPs share the same
-        # live flags (broadcast / file poll). Hot-reload ON is fine: the next
-        # wave that enables dump or a detector leaves this path.
-        # Drop leftover local pending if dump/detectors were just turned off,
-        # so a later re-enable cannot activate without a new trigger.
+        # Fast path — dump sink off AND no detector. Then nothing *new* can
+        # arm. Skip the TP all_reduce when there is also no local pending.
+        #
+        # Exception: ``manual_dump: 1`` is consumed right after arming pending,
+        # so ``dump_enabled()`` is already false while ``_pending_dump`` is
+        # still set for this wave. Keep that pending and fall through to OR /
+        # activate (``_pending_dump_skip_quota`` marks manual).
+        # Drop stale pending only when dump/detectors are off and we are not
+        # mid-manual-arm, so a later re-enable cannot activate without a new
+        # trigger.
         dfx_cfg = getattr(self, "dfx_config", None)
         if dfx_cfg is not None and not dfx_cfg.dump_enabled() and not dfx_cfg.any_detector_enabled():
-            self._clear_pending_dump()
-            return False
+            if self._pending_dump and self._pending_dump_skip_quota:
+                pass  # fall through — finish this manual dump wave
+            else:
+                self._clear_pending_dump()
+                return False
 
         tag = self.dump_rank_tag()
         if not self._use_pending_dump_sync():

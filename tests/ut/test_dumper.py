@@ -279,7 +279,97 @@ def test_manual_trigger_skips_quota():
 
     assert dumper._msprobe_dump_active
     assert dumper._msprobe_dump_total_count == 0
+    dumper.dfx_config.consume_manual_trigger.assert_called_once()
     InputFilterManager.reset_for_tests()
+
+
+def test_manual_dump_count_one_arms_before_consume(tmp_path: Path):
+    """Regression: ``manual_dump: 1`` must arm while still dump_enabled.
+
+    Consume-before-arm used to clear the flag first, so
+    ``enable_msprobe_dump_if_needed`` skipped with dump inactive.
+    """
+    from vllm_ascend.dfx.manual_trigger import (
+        MANUAL_TRIGGER_REQ_ID,
+        ManualTriggerManager,
+        TriggerEvent,
+    )
+
+    cfg = make_dfx_config(tmp_path)
+    assert cfg.save({"dump": {"manual_dump": 1, "auto_max_times": 0}})
+    assert cfg.dump_enabled() is True
+
+    runner = SimpleNamespace(
+        tp_rank=0,
+        use_async_scheduling=False,
+        input_batch=SimpleNamespace(req_ids=["r1"]),
+    )
+    so = SimpleNamespace(total_num_scheduled_tokens=1, num_scheduled_tokens={"r1": 1})
+    mgr = ManualTriggerManager(dfx_config=cfg, runner=runner)
+
+    with patch(
+        "vllm_ascend.dfx.manual_trigger.should_run_anomaly_check_on_rank",
+        return_value=True,
+    ):
+        trigger = mgr.consume_once(allow_arm=True, scheduler_output=so)
+    assert trigger is not None
+    assert cfg.manual_trigger_count() == 1
+    assert cfg.dump_enabled() is True
+
+    dumper = _make_dumper()
+    dumper.runner = runner
+    dumper.dfx_config = cfg
+    dumper._debugger = MagicMock()
+    dumper._pending_dump = False
+    dumper._pending_dump_req_id = None
+    dumper._pending_dump_skip_quota = False
+    dumper._msprobe_dump_active = False
+    dumper._msprobe_dumped_req_ids = set()
+    dumper._msprobe_dump_total_count = 0
+    dumper._dump_max_times = 0
+    dumper._msprobe_last_dump_ts = None
+    dumper._dump_cooldown_seconds = 0
+    dumper.set_msprobe_dump_state = MagicMock(return_value=True)
+    dumper._use_pending_dump_sync = MagicMock(return_value=False)
+    dumper._begin_dump_wave_tracking = MagicMock()
+    dumper._commit_dump_finish_metas = MagicMock()
+
+    with patch("vllm_ascend.dfx.dumper.pending.get_pp_group") as get_pp_dump:
+        get_pp_dump.return_value.is_last_rank = True
+        assert dumper.handle_manual_trigger(trigger, finish_req_ids=["r1"]) is True
+
+    assert dumper._msprobe_dump_active is True
+    assert cfg.manual_trigger_count() == 0
+    assert cfg.dump_enabled() is False
+
+
+def test_sync_pending_or_keeps_manual_pending_after_count_consume():
+    """After arm+consume of ``manual_dump: 1``, pending-OR must still activate."""
+    dumper = _make_dumper()
+    dumper.dfx_config = MagicMock()
+    dumper.dfx_config.dump_enabled.return_value = False
+    dumper.dfx_config.any_detector_enabled.return_value = False
+    dumper._pending_dump = True
+    dumper._pending_dump_req_id = None
+    dumper._pending_dump_skip_quota = True
+    dumper._activate_msprobe_dump = MagicMock(return_value=True)
+    dumper._clear_pending_dump = MagicMock()
+    dumper.dump_rank_tag = MagicMock(return_value="tp0")
+    dumper._use_pending_dump_sync = MagicMock(return_value=True)
+
+    with (
+        patch("vllm_ascend.dfx.dumper.pending.get_pp_group") as get_pp,
+        patch("vllm_ascend.dfx.dumper.pending.get_tp_group") as get_tp,
+        patch("torch.distributed.all_reduce") as ar,
+    ):
+        get_pp.return_value.is_last_rank = True
+        get_tp.return_value.world_size = 1
+        get_tp.return_value.cpu_group = object()
+        assert dumper.sync_dump_pending_or(allow_arm=True) is True
+        ar.assert_not_called()
+
+    dumper._activate_msprobe_dump.assert_called_once_with(None, consume_quota=False)
+    dumper._clear_pending_dump.assert_called_once()
 
 
 def test_consume_manual_trigger_true_stays_continuous(tmp_path: Path):
@@ -401,15 +491,15 @@ def test_sync_dump_pending_or_skips_or_when_hot_reload_on_dump_and_detectors_off
         ar.assert_not_called()
 
 
-def test_sync_dump_pending_or_fast_path_clears_stale_pending():
-    """Dump/detectors just turned off: drop leftover pending without OR."""
+def test_sync_dump_pending_or_fast_path_clears_stale_auto_pending():
+    """Dump/detectors off with auto pending (not manual skip_quota): drop without OR."""
     dumper = _make_dumper()
     dumper.dfx_config = MagicMock()
     dumper.dfx_config.dump_enabled.return_value = False
     dumper.dfx_config.any_detector_enabled.return_value = False
     dumper._pending_dump = True
     dumper._pending_dump_req_id = "r1"
-    dumper._pending_dump_skip_quota = True
+    dumper._pending_dump_skip_quota = False
     dumper._use_pending_dump_sync = MagicMock(return_value=True)
 
     with patch("torch.distributed.all_reduce") as ar:

@@ -583,12 +583,18 @@ class Dumper(PendingDumpMixin, MsprobeBridgeMixin):
         *,
         finish_req_ids: list[str] | None = None,
     ) -> bool:
-        """Arm / activate dump from a control-plane manual trigger event."""
+        """Arm / activate dump from a control-plane manual trigger event.
+
+        Consumes ``dump.manual_dump`` **after** a newly successful arm so
+        ``manual_dump: 1`` still looks active during ``dump_enabled()`` /
+        pending-OR (consume-before-arm skipped the dump window).
+        """
         if trigger is None or not trigger.req_id:
             return False
+        was_busy = bool(self._pending_dump or self._msprobe_dump_active)
         # Manual uses a synthetic req_id; finish sidecars attach to batch reqs.
         reqs = [str(r) for r in (finish_req_ids or ()) if r]
-        return self.enable_msprobe_dump_if_needed(
+        ok = self.enable_msprobe_dump_if_needed(
             trigger.req_id,
             req_idx=None,
             skip_related_check=True,
@@ -597,6 +603,11 @@ class Dumper(PendingDumpMixin, MsprobeBridgeMixin):
             anomaly_type=trigger.trigger_type,
             source="manual_trigger",
         )
+        if ok and not was_busy:
+            # New arm (pending or immediate activate). Continuous ``true`` is
+            # a no-op; int N decrements. Failed arm leaves the count for retry.
+            self.dfx_config.consume_manual_trigger()
+        return ok
 
     def anomaly_check_skip_reason(self, *, ignore_dump_busy: bool = False) -> str | None:
         """None if detectors may run; otherwise a short skip reason for logs.
