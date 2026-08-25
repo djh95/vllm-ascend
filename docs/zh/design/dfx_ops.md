@@ -32,7 +32,7 @@ vllm serve <model> --additional-config '{
 | 项 | 说明 |
 |----|------|
 | `dfx_config_reload_interval > 0` | **必须**，否则改 JSON / `dump.manual_dump` 不生效 |
-| `dump_config_path` | msprobe 配置；无则无法落 dump。默认各 DP **共享**同一路径；仅当显式 `dump_config_isolate_by_dp=true` 且有 `VLLM_DP_RANK` 时，`ascend_config` 会物化为 `<source_dir>/dp<rank>/...` 副本（热更请改副本）。多 DP 同写一份 `dump_path` 可能互相干扰，建议隔离或分 `dump_path`。启动写入 DFX JSON 的 `dump.msprobe_config_path`（可见/可热改）。**msprobe 兼容**：若用户 JSON / overlay **未写** `dump` 段，且 msprobe `dump_enable` 为 true 或缺省（当开），bootstrap 会 seed `manual_dump=true`、`auto_max_times=0`。若写了 `dump` 段但两者均关（`off_explicit`），与 msprobe 默认 on 冲突时会 **WARNING** 并写 msprobe `dump_enable=false`。显式不一致 → **启动/热更报错**（见 §1.1）。 |
+| `dump_config_path` | msprobe 配置；无则无法落 dump。默认各 DP **共享**同一路径；仅当显式 `dump_config_isolate_by_dp=true` 且有 `VLLM_DP_RANK` 时，`ascend_config` 会物化为 `<source_dir>/dp<rank>/...` 副本（热更请改副本）。多 DP 同写一份 `dump_path` 可能互相干扰，建议隔离或分 `dump_path`。启动写入 DFX JSON 的 `dump.msprobe_config_path`（可见/可热改）。**msprobe 兼容**：若用户 JSON / overlay **未写** `dump` 段，且 msprobe `dump_enable` 为 true 或缺省（当开），bootstrap 会 seed `manual_dump=true`、`auto_max_times=0`。若写了 `dump` 段但两者均关（`off_explicit`），与 msprobe 默认 on 冲突时会 **WARNING** 并写 msprobe `dump_enable=false`。`dump_enable=false` 与 DFX dump 能力开可并存（idle gate）；`DFX dump off` 但 msprobe 显式 `dump_enable=true` 仍报错（见 §1.1）。 |
 | 每 EngineCore 可读 JSON | 多 DP **不**用满编 world 做 config sync。默认共享同一 `dfx_config` 路径；仅当显式 `dfx_config_isolate_by_dp=true` 且有 `VLLM_DP_RANK` 时，路径拆成 `dp<rank>` 副本（`ascend_config` 物化，与 sync 机制正交）。热更同步：有 `inner_dp_world` 则本 DP 内 broadcast，否则各 rank **file poll**（见 [dfx_design.md](./dfx_design.md) §2.2）。 |
 | **同 EngineCore 内配置一致** | 各 TP/PP 须读**同一份** `dfx_config`（同路径）。尤其 dump 激活态 / detector：pending-OR idle fast-path 下 TP 间不一致会挂死（见 §3） |
 
@@ -63,7 +63,7 @@ vllm serve <model> --additional-config '{
 
 - 图模式想以后热更开 dump：启动就要带上 `dump_config_path`（预建），不必启动就开 `auto_max_times`。
 - 启动无 msprobe 路径、构图后再配路径 / 开 dump：仍可能 lazy 且采空 → 看 WARNING，建议 **重启 worker**。
-- 勿在 dump 能力开时把 msprobe 显式写成 `dump_enable:false`（bootstrap 冲突）；idle 关门控由 DFX 自己写 false。
+- `dump_enable=false` 与 DFX dump 能力开（`auto_max_times>0` / `manual_dump`）**可并存**：前者是 idle live gate，由 Dumper 在 dump 窗口打开；热更不会因此失败。
 
 见 [dumper_design.md](./dumper_design.md) §3 / §8。
 
@@ -92,8 +92,9 @@ vllm serve <model> --additional-config '{
 | `absent` | 默认 on / 显式 true | seed `manual_dump=true`，`auto_max_times=0` |
 | `absent` | 显式 false / 文件缺失 | 全部关闭 |
 | `on` | 缺 path | **ValueError** |
-| `on` | 显式 false | **ValueError** |
-| `on` | 默认 on / 文件缺失 | 必要时写 msprobe `dump_enable=true` |
+| `on` | 显式 false | **容忍**（idle / live gate，由 Dumper 开关采集） |
+| `on` | 默认 on（键缺省） | 对齐，无写 |
+| `on` | 文件缺失 / 不可读 | 写 stub `dump_enable=false`（idle；Dumper 开窗时再打开） |
 | `off_explicit` | 显式 true | **ValueError** |
 | `off_explicit` | 默认 on | **WARNING** + 写 msprobe `dump_enable=false` |
 | `off_explicit` | 显式 false | 对齐，无写 |

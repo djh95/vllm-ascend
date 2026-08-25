@@ -246,17 +246,69 @@ def test_msprobe_dump_enable_respects_user_dump_off_explicit(tmp_path: Path):
         )
 
 
-def test_msprobe_dump_enable_conflict_dfx_on_msprobe_false(tmp_path: Path):
+def test_msprobe_dump_enable_dfx_on_msprobe_false_is_idle_ok(tmp_path: Path):
+    """dump_enable=false is the live idle gate; DFX dump capability may stay on."""
     msprobe = tmp_path / "msprobe.json"
     msprobe.write_text(json.dumps({"dump_enable": False, "dump_path": str(tmp_path / "out")}), encoding="utf-8")
-    with pytest.raises(ValueError, match="DFX dump on but msprobe dump_enable=false explicitly"):
-        DfxRuntimeConfig(
-            tmp_path / "dfx_config.json",
-            report_dir=tmp_path / "report",
-            ensure_file=True,
-            msprobe_config_path=str(msprobe),
-            startup_overlay={"dump": {"manual_dump": True}},
-        )
+    cfg = DfxRuntimeConfig(
+        tmp_path / "dfx_config.json",
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        msprobe_config_path=str(msprobe),
+        startup_overlay={"dump": {"manual_dump": True}},
+    )
+    assert cfg.dump_enabled() is True
+    assert cfg.manual_trigger() is True
+    # Policy must not flip the live gate back on.
+    assert json.loads(msprobe.read_text(encoding="utf-8"))["dump_enable"] is False
+
+
+def test_msprobe_dump_enable_dfx_on_missing_file_seeds_idle_false(tmp_path: Path):
+    """DFX dump on + missing msprobe file → create stub with dump_enable=false."""
+    msprobe = tmp_path / "missing_msprobe.json"
+    assert not msprobe.exists()
+    cfg = DfxRuntimeConfig(
+        tmp_path / "dfx_config.json",
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        msprobe_config_path=str(msprobe),
+        startup_overlay={"dump": {"auto_max_times": 2, "manual_dump": False}},
+    )
+    assert cfg.dump_enabled() is True
+    assert msprobe.exists()
+    assert json.loads(msprobe.read_text(encoding="utf-8"))["dump_enable"] is False
+
+
+def test_reload_succeeds_when_idle_gate_closed_and_dump_on(tmp_path: Path):
+    """After idle close (dump_enable=false), hot-reload must still apply detector edits."""
+    msprobe = tmp_path / "msprobe.json"
+    msprobe.write_text(json.dumps({"dump_enable": True, "dump_path": str(tmp_path / "out")}), encoding="utf-8")
+    cfg_path = tmp_path / "dfx_config.json"
+    cfg = DfxRuntimeConfig(
+        cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        msprobe_config_path=str(msprobe),
+        startup_overlay={"dump": {"auto_max_times": 5, "manual_dump": False}},
+        reload_interval_seconds=5,
+    )
+    assert cfg.dump_enabled() is True
+    # Simulate Dumper idle close.
+    DfxRuntimeConfig._write_msprobe_dump_enable_file(str(msprobe), False)
+    assert json.loads(msprobe.read_text(encoding="utf-8"))["dump_enable"] is False
+
+    # Edit detector via disk (as ops would).
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data.setdefault("detector", {}).setdefault("token_repeat", {})["enabled"] = True
+    data["detector"]["token_repeat"]["window"] = 42
+    cfg_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    assert cfg.reload(force=True) is True
+    assert bool(cfg.detector_get("token_repeat", "enabled", False)) is True
+    assert int(cfg.detector_get("token_repeat", "window", 0)) == 42
+    assert cfg.dump_enabled() is True
+    # Still idle-closed; dumper owns reopening.
+    assert json.loads(msprobe.read_text(encoding="utf-8"))["dump_enable"] is False
 
 
 def test_msprobe_dump_enable_aligned_explicit_ok(tmp_path: Path):
@@ -318,7 +370,7 @@ def test_dump_enabled_derived_from_auto_or_manual(
     expect_auto: bool,
     expect_manual: bool,
 ):
-    # DFX dump "on" requires msprobe aligned (default on or explicit true).
+    # DFX dump "on" needs a msprobe path; dump_enable may be idle false.
     if expect_active:
         msprobe = _msprobe_path(tmp_path)  # omitted dump_enable → default on
     else:

@@ -747,7 +747,15 @@ class DfxRuntimeConfig:
         raw_file: dict[str, Any] | None,
         raw_overlay: dict[str, Any] | None,
     ) -> None:
-        """Bootstrap / reload: msprobe compat + seed manual_dump for msprobe-only users."""
+        """Bootstrap / reload: msprobe compat + seed manual_dump for msprobe-only users.
+
+        ``dump_enable`` in the msprobe JSON is a **live gate** owned by
+        ``Dumper`` (idle closed / dump-window open). DFX dump capability
+        (``auto_max_times`` / ``manual_dump``) is orthogonal. Therefore
+        ``dfx on + dump_enable=false`` is normal idle and must **not** raise —
+        otherwise every hot-reload after idle-close fails and detector edits
+        never apply.
+        """
         dump = merged.setdefault("dump", {})
         path = dump.get("msprobe_config_path")
         if not (isinstance(path, str) and path.strip()):
@@ -772,15 +780,21 @@ class DfxRuntimeConfig:
                     "DFX dump is on (auto_max_times>0 or manual_dump active) but "
                     "dump.msprobe_config_path is not set"
                 )
+            # Explicit false = idle gate (or user left collection off). Dumper
+            # opens the window via set_msprobe_dump_state(True); do not raise.
             if msprobe_explicit and not msprobe_eff:
-                raise ValueError(
-                    "DFX dump on but msprobe dump_enable=false explicitly "
-                    f"(msprobe path={path_s!r})"
+                logger.debug(
+                    "[DFX runtime_config] dump capability on; msprobe dump_enable=false "
+                    "(idle/live gate — dumper owns collection) path=%s",
+                    path_s,
                 )
-            if not msprobe_eff and not msprobe_explicit:
-                self._write_msprobe_dump_enable_file(path_s, True)
+            elif not msprobe_eff and not msprobe_explicit:
+                # Missing / unreadable file: create a stub so debugger can bind.
+                # Seed idle-closed; Dumper opens the window when a dump arms.
+                self._write_msprobe_dump_enable_file(path_s, False)
                 logger.info(
-                    "[DFX runtime_config] seeded msprobe dump_enable=true path=%s",
+                    "[DFX runtime_config] seeded msprobe dump_enable=false "
+                    "(idle gate; dump capability on) path=%s",
                     path_s,
                 )
         elif dfx_state == "off_explicit":
