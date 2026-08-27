@@ -44,6 +44,7 @@ from vllm_ascend.ascend_forward_context import (
     set_mc2_mask,
     set_mc2_tokens_capacity,
 )
+from vllm_ascend.dfx.processor import DfxProcessor
 from vllm_ascend.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
 from vllm_ascend.utils import set_weight_prefetch_method
 from vllm_ascend.worker.v2.aclgraph_utils import ModelAclGraphManager
@@ -140,9 +141,36 @@ class NPUModelRunner(GPUModelRunner):
         # so we can inherit `execute_model` method.
         self.input_batch: AscendInputBatch | None = None
 
+        # Dumper expects these attributes (aligned with v1 NPUModelRunner).
+        try:
+            from vllm.distributed.parallel_state import get_tp_group
+
+            self.tp_rank = get_tp_group().rank_in_group
+        except Exception:
+            self.tp_rank = 0
+        self.need_accepted_tokens = False
+        self.dfx = DfxProcessor(self)
+
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         with graph_manager_wrapper(self):
             super().initialize_kv_cache(kv_cache_config)
+
+    @torch.inference_mode()
+    def execute_model(self, *args, **kwargs):
+        """Wrap parent execute_model with DFX sync / dump window lifecycle."""
+        dummy_run = bool(kwargs.get("dummy_run", False))
+        scheduler_output = args[0] if args else kwargs.get("scheduler_output")
+        self.dfx.sync_for_step(
+            allow_arm=not dummy_run,
+            scheduler_output=scheduler_output,
+        )
+        self.dfx.start_dump_data()
+        try:
+            return super().execute_model(*args, **kwargs)
+        finally:
+            self.dfx.finalize_dump_data(dump=not dummy_run)
+            if not dummy_run:
+                self.dfx.note_kv_block_writes(scheduler_output)
 
     @torch.inference_mode()
     def profile_run(self) -> None:
