@@ -180,6 +180,26 @@ class NPUModelRunner(GPUModelRunner):
         set_mc2_mask(vllm_config, self.device)
         set_potential_max_tokens(vllm_config)
 
+        # msprobe dump (same as v1 NPUModelRunner; not via DFX).
+        dump_cfg = self.ascend_config.dump_config_path
+        self.debugger = None
+        if dump_cfg is not None:
+            self._debugger_started = False
+            if self.compilation_config.cudagraph_mode == CUDAGraphMode.NONE:
+                from msprobe.pytorch import PrecisionDebugger
+
+                self.debugger = PrecisionDebugger(dump_cfg)
+            else:
+                try:
+                    from msprobe.pytorch import AclGraphDumper
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Failed to import AclGraphDumper from msprobe. "
+                        "Please install/rebuild msprobe with aclgraph_dump enabled."
+                    ) from exc
+
+                self.debugger = AclGraphDumper(dump_cfg)
+
     def sample_tokens(self, grammar_output):
         output = super().sample_tokens(grammar_output)
 
@@ -187,7 +207,13 @@ class NPUModelRunner(GPUModelRunner):
             assert self.pp_handler is not None
             # Wait until propose() has populated this step's draft tokens.
             self.pp_handler.broadcast_draft_tokens()
+        self._finalize_dump_data()
         return output
+
+    def load_model(self) -> None:
+        super().load_model()
+        if self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE:
+            self._start_dump_data()
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         with graph_manager_wrapper(self):
@@ -216,6 +242,10 @@ class NPUModelRunner(GPUModelRunner):
             scheduler_output,
         )
 
+        dump_forward = dummy_run or scheduler_output.total_num_scheduled_tokens > 0
+        if dump_forward:
+            self._start_dump_data(scheduled_tokens=scheduler_output.num_scheduled_tokens)
+
         if vllm_version_is("0.27.1"):
             output = super().execute_model(
                 scheduler_output,
@@ -233,6 +263,13 @@ class NPUModelRunner(GPUModelRunner):
                 is_profile=is_profile,
                 context_len=context_len,
             )
+
+        if dump_forward:
+            if dummy_run:
+                self._finalize_dump_data(dump=False)
+            elif isinstance(output, IntermediateTensors):
+                # PP non-last rank: sample_tokens is not called (v1 parity).
+                self._finalize_dump_data()
 
         self._cpp_execution_time_ms = _finish_profiling_chunk_timing(
             profiling_config,
@@ -792,6 +829,21 @@ class NPUModelRunner(GPUModelRunner):
             num_reqs_padded = num_reqs_padded + 1
 
         return query_start_loc_np, num_reqs_padded
+
+    def _start_dump_data(self, **kwargs) -> None:
+        if self.debugger is None or self._debugger_started:
+            return
+        self.debugger.start(self.model, **kwargs)
+        self._debugger_started = True
+
+    def _finalize_dump_data(self, **kwargs) -> None:
+        if self.debugger is None or not self._debugger_started:
+            return
+        if hasattr(self.debugger, "stop"):
+            self.debugger.stop()
+            self._debugger_started = False
+
+        self.debugger.step(**kwargs)
 
 
 @contextmanager
