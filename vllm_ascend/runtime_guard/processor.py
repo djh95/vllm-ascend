@@ -222,7 +222,6 @@ class RuntimeGuardProcessor:
         self.detectors = DetectorManager(
             runtime_config=runtime_config,
             runner=runner,
-            is_related_request=self.action_executor.is_related_local_request,
             tokenizer_provider=self._get_detector_tokenizer,
             detection_gate=self.action_executor.can_run_detection,
             detection_skip_reason=self.action_executor.anomaly_check_skip_reason,

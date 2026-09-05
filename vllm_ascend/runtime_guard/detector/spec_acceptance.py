@@ -47,10 +47,8 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         *,
         runtime_config: RuntimeConfig | None = None,
         runner: Any | None = None,
-        is_related_request: Callable[[str, int | None], bool] | None = None,
     ) -> None:
         super().__init__(runtime_config=runtime_config, runner=runner, enabled=False)
-        self._is_related_request = is_related_request
         # Per-req sliding window: (accepted_draft, draft_len, sampled_ids, accepted_ids)
         self._history: dict[str, deque[tuple[int, int, list[int], list[int]]]] = defaultdict(deque)
         self._window = 10
@@ -187,11 +185,6 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
                     len(sampled_norm),
                 )
             return None
-        # Related-request filter is for dump arming only; always emit short logs
-        # for local batch rows so incorrect filters are visible.
-        related_ok = True
-        if self._is_related_request is not None and not self._is_related_request(req_id, req_idx):
-            related_ok = False
         accepted_draft_tokens = max(0, accepted_token_num - 1)
         accepted_norm = sampled_norm[:accepted_token_num] if accepted_token_num > 0 else []
         history = self._history[req_id]
@@ -216,15 +209,15 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
                 or (acceptance_rate > self._high_threshold and acceptance_len > self._len_high_threshold)
             )
 
-        # INFO only on a real alert candidate; window fill / related miss / routine
-        # steps stay DEBUG (report + on_alert_armed still emit INFO on action).
+        # INFO only on a real alert candidate; window fill / routine steps stay DEBUG
+        # (report + on_alert_armed still emit INFO on action).
         if log_leader:
             short_msg = (
                 "[Anomaly spec short] req_id=%s draft_len=%d "
                 "accepted_count=%d accepted_draft_count=%d "
                 "accept_rate=%.4f accept_len=%.4f window=%d/%d accepted=%d drafted=%d "
                 "prompt_tokens=%d output_tokens=%d "
-                "low=(%.2f,%.2f) high=(%.2f,%.2f) related=%s alert=%s"
+                "low=(%.2f,%.2f) high=(%.2f,%.2f) alert=%s"
             )
             short_args = (
                 req_id,
@@ -243,12 +236,11 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
                 self._len_low_threshold,
                 self._high_threshold,
                 self._len_high_threshold,
-                related_ok,
-                should_alert and related_ok,
+                should_alert,
             )
-            if should_alert and related_ok:
+            if should_alert:
                 logger.info(short_msg, *short_args)
-            elif just_filled or not related_ok:
+            elif just_filled:
                 logger.debug(short_msg, *short_args)
             else:
                 now = time.time()
@@ -257,7 +249,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
                     self._short_log_ts[req_id] = now
                     logger.debug(short_msg, *short_args)
 
-        if not related_ok or not window_ready or not should_alert:
+        if not window_ready or not should_alert:
             return None
 
         # Detector detail for report: acceptance metrics + per-step sample stats.

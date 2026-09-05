@@ -65,7 +65,6 @@ class DetectorManager:
         *,
         runtime_config: RuntimeConfig,
         runner: Any,
-        is_related_request: Callable[[str, int | None], bool] | None = None,
         tokenizer_provider: Callable[[], Any | None] | None = None,
         detection_gate: Callable[[], bool] | None = None,
         detection_skip_reason: Callable[[], str | None] | None = None,
@@ -80,7 +79,6 @@ class DetectorManager:
         self._spec_det = SpecAcceptanceDetector(
             runtime_config=runtime_config,
             runner=runner,
-            is_related_request=is_related_request,
         )
         self._token_det = TokenLogprobDetector(
             runtime_config=runtime_config,
@@ -384,7 +382,7 @@ class DetectorManager:
         sensitive reports). When detect is gated off but IO is still needed,
         TP0 appends so finish logs stay complete. Detection then skips
         ``stop_after_alert`` reqs by id — never by row-subsetting — so
-        ``req_idx`` stays aligned with ``input_batch`` (filters / dump related).
+        ``req_idx`` stays aligned with ``input_batch`` (filters / dump).
 
         ``OutputSubstringDetector`` and ``TokenRepeatDetector`` are called with
         ``sampled_token_ids=None`` so they read the shared cumulative IO buffer

@@ -76,9 +76,6 @@ class ActionExecutor:
 
         return anomaly_check_rank_skip_reason(self._runner)
 
-    def is_related_local_request(self, req_id: str, req_idx: int | None = None) -> bool:
-        return True
-
     def _submit_heavy(self, job: Any) -> None:
         self._queue.submit(job, heavy=True)
 
