@@ -277,46 +277,20 @@ class DetectorManager:
 
     # ---- detection gating -------------------------------------------------
 
-    def _gated(self, stage: str, *, ignore_dump_busy: bool = False) -> bool:
+    def _gated(self, stage: str) -> bool:
         """True when anomaly detection is gated off this step; logs skip reason once.
 
         ``stage`` is a short tag (``after_spec`` / ``after_sample`` / ``kv_block``)
-        for the once-per-process skip log. Gate checks live here so callers never
-        re-implement them per hook.
-
-        ``ignore_dump_busy``: still run when pending/active dump (same-step
-        follow-on detectors such as block_kv after logits/position already armed).
+        for the once-per-process skip log. Gate is rank-only (last PP); callers
+        never re-implement it per hook.
         """
         if self._detection_gate is None:
             return False
-
-        def _call_gate() -> bool:
-            try:
-                return bool(self._detection_gate(ignore_dump_busy=ignore_dump_busy))  # type: ignore[misc]
-            except TypeError:
-                if not ignore_dump_busy:
-                    return bool(self._detection_gate())
-                # Legacy gate without kwarg: treat dump-busy as not gated.
-                if self._detection_skip_reason is not None:
-                    try:
-                        reason = self._detection_skip_reason()
-                    except TypeError:
-                        reason = None
-                    if reason in (
-                        "pending_dump already armed",
-                        "msprobe dump already active",
-                    ):
-                        return True
-                return bool(self._detection_gate())
-
-        if _call_gate():
+        if bool(self._detection_gate()):
             return False
         reason = None
         if self._detection_skip_reason is not None:
-            try:
-                reason = self._detection_skip_reason(ignore_dump_busy=ignore_dump_busy)  # type: ignore[misc]
-            except TypeError:
-                reason = self._detection_skip_reason()
+            reason = self._detection_skip_reason()
         if reason and int(getattr(self._runner, "tp_rank", 0)) == 0:
             logger.info_once(
                 "[Anomaly detect short] skip gate (%s): %s (any_detector=%s dump.enabled=%s)",
@@ -516,7 +490,7 @@ class DetectorManager:
         Ignores dump-busy gate so same-step pending dump (armed by
         logits/position) does not skip KV checks.
         """
-        if self._gated("kv_block", ignore_dump_busy=True):
+        if self._gated("kv_block"):
             return []
         if not self._here(self._block_kv_det):
             return []
@@ -552,7 +526,7 @@ class DetectorManager:
         scheduled: int,
     ) -> list[Incident]:
         """Run slot-token consistency checks after this step's slot record."""
-        if self._gated("kv_block", ignore_dump_busy=True):
+        if self._gated("kv_block"):
             return []
         if not self._here(self._slot_consistency_det):
             return []

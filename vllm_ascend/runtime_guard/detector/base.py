@@ -79,7 +79,7 @@ class AnomalyDetector:
         """Refresh live thresholds then return whether this detector is enabled.
 
         Sole per-check pull from ``RuntimeConfig`` (processor no longer
-        ``refresh_all`` every step). Config-backed subclasses inherit
+        eager refresh every step). Config-backed subclasses inherit
         ``ConfigBackedDetector.refresh_from_config``; others may no-op or
         keep a fixed ``_enabled``.
         """

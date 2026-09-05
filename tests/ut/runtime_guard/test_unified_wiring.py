@@ -121,7 +121,6 @@ def test_run_sample_phase_invokes_ensure_logprobs_and_spec_hooks():
             valid_sampled_token_ids=[1],
             logprobs_lists=None,
             req_ids_output_copy=["r1"],
-            req_id_to_index_output_copy=None,
             invalid_req_indices=None,
             finished_req_ids=None,
         )

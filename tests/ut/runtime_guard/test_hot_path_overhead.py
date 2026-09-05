@@ -180,6 +180,11 @@ def test_needs_sample_phase_hooks_and_cumulative_io_flags(tmp_path: Path):
     cfg._data["report"]["save_sensitive_info"] = True
     assert cfg.needs_cumulative_io() is True
 
+    cfg2 = _cfg(tmp_path, reload=0.0)
+    assert cfg2.needs_filter_chain_apply() is False
+    cfg2._data["detector"]["token_repeat"]["enabled"] = True
+    assert cfg2.needs_filter_chain_apply() is True
+
 
 def test_run_sample_phase_idle_skips_hooks(tmp_path: Path):
     """A-path: detectors/print/block-meta off → sample_fn only."""
@@ -214,7 +219,6 @@ def test_run_sample_phase_idle_skips_hooks(tmp_path: Path):
             valid_sampled_token_ids=[1],
             logprobs_lists=None,
             req_ids_output_copy=["r1"],
-            req_id_to_index_output_copy=None,
             invalid_req_indices=None,
             finished_req_ids=None,
         )

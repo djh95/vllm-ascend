@@ -33,7 +33,6 @@ class Incident:
     ill_type: int = ILL_TYPE_NONE
     req_idx: int | None = None
     detail: dict[str, Any] = field(default_factory=dict)
-    skip_related_check: bool = False
     consume_quota: bool = True
     block_ids: list[int] = field(default_factory=list)
     wave: int | None = None
@@ -61,7 +60,6 @@ class Incident:
         result: Any,
         req_idx: int | None = None,
         detail: dict[str, Any] | None = None,
-        skip_related_check: bool = True,
         incident_type: str = "token_logprob",
     ) -> Incident | None:
         is_ill = bool(getattr(result, "is_ill", False))
@@ -74,5 +72,4 @@ class Incident:
             req_idx=req_idx,
             ill_type=ill_type,
             detail=dict(detail or {}),
-            skip_related_check=skip_related_check,
         )

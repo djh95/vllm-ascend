@@ -300,7 +300,6 @@ class NPUModelRunner(GPUModelRunner):
                 valid_sampled_token_ids=getattr(output, "sampled_token_ids", None),
                 logprobs_lists=getattr(output, "logprobs", None),
                 req_ids_output_copy=req_ids,
-                req_id_to_index_output_copy=None,
                 invalid_req_indices=None,
                 finished_req_ids=finished_req_ids,
             )
@@ -325,7 +324,7 @@ class NPUModelRunner(GPUModelRunner):
             self.pp_handler.broadcast_draft_tokens()
 
         output = result.model_runner_output
-        if isinstance(output, AsyncOutput) and self.runtime_guard.needs_async_post_sample_check():
+        if isinstance(output, AsyncOutput) and self.runtime_guard.needs_sample_phase_hooks():
             output = AscendAsyncOutput(output, self)
             try:
                 if get_tp_group().rank_in_group != 0:

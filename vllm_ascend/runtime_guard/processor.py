@@ -93,7 +93,7 @@ def _block_kv_violated_block_ids(detail: dict[str, Any]) -> list[int]:
 
 @dataclass
 class SamplePhaseResult:
-    """Runner-side sample-phase outputs needed by post-sample DFX hooks.
+    """Runner-side sample-phase outputs needed by post-sample runtime_guard hooks.
 
     Returned by the ``sample_fn`` callback passed to
     :meth:`RuntimeGuardProcessor.run_sample_phase`. Bundles the values the runner
@@ -108,7 +108,6 @@ class SamplePhaseResult:
     valid_sampled_token_ids: Any
     logprobs_lists: Any
     req_ids_output_copy: Any
-    req_id_to_index_output_copy: Any
     invalid_req_indices: Any
     finished_req_ids: Any
     hidden_states: Any = None
@@ -295,11 +294,11 @@ class RuntimeGuardProcessor:
             return False
 
         changed = self.runtime_config.sync_runtime_config()
-        # Fast path: no detector and no input filter active AND config unchanged
+        # Fast path: no detector/filter features active AND config unchanged
         # -> skip filter rebuild and the ``if changed`` re-apply cascade.
         # ``sync_runtime_config`` already ran so a hot-reload that turns a
         # detector on is observed next step and re-evaluates this gate.
-        if self._guard_inactive() and not changed:
+        if not self.runtime_config.needs_filter_chain_apply() and not changed:
             trigger = self.manual_triggers.consume_once(allow_arm=allow_arm, scheduler_output=scheduler_output)
             if trigger is not None:
                 self._handle_manual_trigger(trigger)
@@ -332,19 +331,6 @@ class RuntimeGuardProcessor:
         # refresh every detector twice per step here.
         logger.debug("[runtime_guard sync] leave stage=refresh_config changed=%s", changed)
         return changed
-
-    def _guard_inactive(self) -> bool:
-        """True when no auto detector and no input filter is active.
-
-        Used by ``_refresh_config_body`` to skip the per-step filter-chain
-        rebuild (and the ``if changed`` re-apply cascade) when the guard is
-        effectively idle. ``sync_runtime_config`` still runs first so a
-        hot-reload toggle that turns a detector on is observed on the next
-        step and re-evaluates this gate.
-        """
-        if self.runtime_config.any_detector_enabled():
-            return False
-        return not self.runtime_config.input_filter_configs()
 
     def maybe_print_input_token_ids_once(self, *, allow_arm: bool = True) -> bool:
         """If ``input_filter.print_input_token_ids_once``, log prompts once then clear.
@@ -575,10 +561,6 @@ class RuntimeGuardProcessor:
         if cfg is None:
             return True
         return bool(cfg.needs_sample_phase_hooks())
-
-    def needs_async_post_sample_check(self) -> bool:
-        """True when async ``get_output`` must run ``check_after_sample``."""
-        return self.needs_sample_phase_hooks()
 
     def _soft_fail(self, hook: str, fn: Callable[[], Any]) -> Any:
         # Guard hooks are observational: any exception must stay inside the
@@ -893,48 +875,13 @@ class RuntimeGuardProcessor:
                 self.save_sample_param(alert.req_id)
             except Exception as exc:
                 logger.warning("[runtime_guard] save_sample_param failed req_id=%s: %s", alert.req_id, exc)
-        actions = action_override
-        if actions is None:
-            det_cfg = self.runtime_config.detector_section(alert.incident_type) or {}
-            raw = det_cfg.get("on_trigger")
-            if raw is None:
-                actions = self.runtime_config.actions_default_on_trigger()
-            elif isinstance(raw, list):
-                actions = [str(x) for x in raw]
-            elif isinstance(raw, str):
-                actions = [raw]
-            else:
-                actions = self.runtime_config.actions_default_on_trigger()
-        if not write_report and "report" in (actions or []):
-            actions = [a for a in actions if a != "report"]
         self.action_executor.handle(
             alert,
             detail=detail,
             tokenizer=self._get_report_tokenizer(),
-            action_override=actions,
+            action_override=action_override,
+            write_report=write_report,
         )
-
-    def capture_incident(
-        self,
-        incident_type: str,
-        *,
-        req_id: str,
-        context: dict[str, Any] | None = None,
-        req_idx: int | None = None,
-        on_trigger: list[str] | None = None,
-    ) -> None:
-        """Imperative incident capture from application code."""
-        incident = Incident(
-            incident_type=incident_type,
-            req_id=req_id,
-            req_idx=req_idx,
-            detail=dict(context or {}),
-            skip_related_check=True,
-            consume_quota=True,
-            block_ids=block_ids_for_request(self.runner, req_id, req_idx),
-            wave=self.wave_tracker.current_wave(),
-        )
-        self._handle_alert(incident, action_override=on_trigger or ["report", "dump_kv"])
 
     def _handle_manual_trigger(
         self,
@@ -975,22 +922,25 @@ class RuntimeGuardProcessor:
             incident_type=trigger.trigger_type,
             req_id=trigger.req_id,
             detail=detail,
-            skip_related_check=True,
             consume_quota=False,
             block_ids=block_ids,
             wave=self.wave_tracker.current_wave(),
         )
+        # Prefer detector.manual_trigger.on_trigger when set; else default pair.
         det_cfg = self.runtime_config.detector_section("manual_trigger") or {}
-        raw = det_cfg.get("on_trigger", ["report", "dump_kv"])
-        actions = [str(x) for x in raw] if isinstance(raw, list) else [str(raw)]
-        if not write_report:
-            actions = [a for a in actions if a != "report"]
+        raw = det_cfg.get("on_trigger")
+        override = None
+        if raw is not None:
+            override = [str(x) for x in raw] if isinstance(raw, list) else [str(raw)]
+        else:
+            override = ["report", "dump_kv"]
         self.action_executor.handle(
             incident,
             detail=detail,
             tokenizer=self._get_report_tokenizer(),
-            action_override=actions,
+            action_override=override,
             batch_rows=batch_rows,
+            write_report=write_report,
         )
 
     def note_kv_block_writes(

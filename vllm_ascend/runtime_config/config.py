@@ -105,8 +105,6 @@ _DEFAULTS: dict[str, Any] = {
         # Effective msprobe JSON path (seeded from ascend dump_config_path at
         # bootstrap when null). Hot-change → recreate debugger.
         "msprobe_config_path": None,
-        # One-shot: recreate msprobe debugger from current path, then clear.
-        "reload_msprobe": False,
     },
     "ascend_log": {
         "level": "INFO",
@@ -271,7 +269,7 @@ def _reject_unsafe_path(path: Path, *, label: str) -> Path:
         cwd = Path.cwd().resolve()
         if resolved != cwd and cwd not in resolved.parents:
             logger.warning(
-                "[DFX runtime_config] %s is outside process cwd (%s): %s",
+                "[runtime_config] %s is outside process cwd (%s): %s",
                 label,
                 cwd,
                 resolved,
@@ -508,7 +506,7 @@ def _is_json_writer() -> bool:
 
 
 class RuntimeConfig:
-    """Runtime DFX switches loaded from JSON (per-DP broadcast or file poll).
+    """Runtime guard switches loaded from JSON (per-DP broadcast or file poll).
 
     Prefer this name over a bare ``config`` module: it is a live control plane,
     not static build/packaging config. See module docstring for multi-DP rules.
@@ -526,7 +524,7 @@ class RuntimeConfig:
         dump_dir: str | Path | None = None,
         startup_overlay: dict[str, Any] | None = None,
     ) -> None:
-        # None → default ``<cwd>/dfx/config/runtime_config.json`` (not an "explicit" path).
+        # None → default ``<cwd>/runtime/config/runtime_config.json`` (not an "explicit" path).
         self._explicit_config_path = config_path is not None
         self.config_path = resolve_runtime_config_path(str(config_path) if config_path is not None else None)
         self.report_dir = resolve_runtime_report_dir(
@@ -574,7 +572,7 @@ class RuntimeConfig:
         # :meth:`ensure_persisted` once from ``DfxProcessor``.
         self._bootstrap(persist=ensure_file)
         logger.info(
-            "[DFX runtime_config] path=%s explicit_path=%s report_dir=%s hot_reload=%s persisted=%s",
+            "[runtime_config] path=%s explicit_path=%s report_dir=%s hot_reload=%s persisted=%s",
             self.config_path,
             self._explicit_config_path,
             self.report_dir,
@@ -583,14 +581,14 @@ class RuntimeConfig:
         )
         if self.hot_reload_enabled:
             logger.info_once(
-                "[DFX runtime_config] hot-reload enabled interval=%.3fs sync_mode=%s path=%s",
+                "[runtime_config] hot-reload enabled interval=%.3fs sync_mode=%s path=%s",
                 self.reload_interval_seconds,
                 self.sync_mode,
                 str(self.config_path),
             )
         else:
             logger.info_once(
-                "[DFX runtime_config] hot-reload disabled "
+                "[runtime_config] hot-reload disabled "
                 "(set additional_config.runtime_config_reload_interval > 0 to enable; "
                 "default is 0; dump.manual_trigger also requires interval > 0)"
             )
@@ -603,14 +601,14 @@ class RuntimeConfig:
                 loaded = loads_jsonc(f.read())
             if not isinstance(loaded, dict):
                 logger.error(
-                    "[DFX runtime_config] root must be object, got %s; ignoring file",
+                    "[runtime_config] root must be object, got %s; ignoring file",
                     type(loaded).__name__,
                 )
                 return {}
             return loaded
         except Exception as exc:
             logger.warning(
-                "[DFX runtime_config] failed to read path=%s error=%s; using defaults",
+                "[runtime_config] failed to read path=%s error=%s; using defaults",
                 self.config_path,
                 exc,
             )
@@ -635,7 +633,7 @@ class RuntimeConfig:
             overlay_changes = _leaf_changes(pre, merged)
             if overlay_changes:
                 logger.info(
-                    "[DFX runtime_config] applied additional_config.runtime_config overlay (%d keys) %s",
+                    "[runtime_config] applied additional_config.runtime_config overlay (%d keys) %s",
                     len(overlay_changes),
                     "; ".join(overlay_changes[:12]) + (" ..." if len(overlay_changes) > 12 else ""),
                 )
@@ -858,7 +856,7 @@ class RuntimeConfig:
                 dump["manual_dump"] = True
                 dump["auto_max_times"] = 0
                 logger.info(
-                    "[DFX runtime_config] seeded dump.manual_dump=true from msprobe "
+                    "[runtime_config] seeded dump.manual_dump=true from msprobe "
                     "dump_enable path=%s",
                     path_s,
                 )
@@ -867,7 +865,7 @@ class RuntimeConfig:
             if path_s:
                 if msprobe_explicit and not msprobe_eff:
                     logger.debug(
-                        "[DFX runtime_config] dump capability on; msprobe dump_enable=false "
+                        "[runtime_config] dump capability on; msprobe dump_enable=false "
                         "(idle/live gate — dumper owns collection) path=%s",
                         path_s,
                     )
@@ -876,7 +874,7 @@ class RuntimeConfig:
                     # Seed idle-closed; Dumper opens the window when a dump arms.
                     self._write_msprobe_dump_enable_file(path_s, False)
                     logger.info(
-                        "[DFX runtime_config] seeded msprobe dump_enable=false "
+                        "[runtime_config] seeded msprobe dump_enable=false "
                         "(idle gate; dump capability on) path=%s",
                         path_s,
                     )
@@ -888,7 +886,7 @@ class RuntimeConfig:
                 )
             if msprobe_eff and not msprobe_explicit:
                 logger.warning(
-                    "[DFX runtime_config] dump off; overriding msprobe default "
+                    "[runtime_config] dump off; overriding msprobe default "
                     "dump_enable=true to false path=%s %s",
                     path_s,
                     _process_role_tag(),
@@ -924,7 +922,7 @@ class RuntimeConfig:
             # Same degrade semantics as hot-reload: a bad startup file must
             # never kill the service; fall back to pure defaults.
             logger.error(
-                "[DFX runtime_config] startup config rejected path=%s error=%s; using defaults",
+                "[runtime_config] startup config rejected path=%s error=%s; using defaults",
                 self.config_path,
                 exc,
             )
@@ -941,7 +939,7 @@ class RuntimeConfig:
         can_write = persist and _is_json_writer()
         if overwrite_default:
             logger.info(
-                "[DFX runtime_config] no explicit runtime_config_path; using defaults for "
+                "[runtime_config] no explicit runtime_config_path; using defaults for "
                 "unconfigured keys path=%s will_persist=%s (keys configured in this file "
                 "win; set additional_config.runtime_config_path for a dedicated config)",
                 self.config_path,
@@ -961,7 +959,7 @@ class RuntimeConfig:
                 )
                 self._bootstrap_persisted = True
                 logger.info(
-                    "[DFX runtime_config] bootstrap saved path=%s explicit_path=%s overwrite_default=%s %s",
+                    "[runtime_config] bootstrap saved path=%s explicit_path=%s overwrite_default=%s %s",
                     self.config_path,
                     self._explicit_config_path,
                     overwrite_default,
@@ -970,7 +968,7 @@ class RuntimeConfig:
                 self._warn_interaction_quirks()
             except Exception as exc:
                 logger.warning(
-                    "[DFX runtime_config] bootstrap save failed path=%s error=%s; using in-memory",
+                    "[runtime_config] bootstrap save failed path=%s error=%s; using in-memory",
                     self.config_path,
                     exc,
                 )
@@ -993,7 +991,7 @@ class RuntimeConfig:
                 self._version = 0.0
             if persist and not _is_json_writer():
                 logger.debug(
-                    "[DFX runtime_config] bootstrap skip persist (non-leader) path=%s %s",
+                    "[runtime_config] bootstrap skip persist (non-leader) path=%s %s",
                     self.config_path,
                     self.interaction_mode_summary(),
                 )
@@ -1017,7 +1015,7 @@ class RuntimeConfig:
             return True
         if not _is_json_writer():
             logger.debug(
-                "[DFX runtime_config] ensure_persisted skip (non-leader) path=%s",
+                "[runtime_config] ensure_persisted skip (non-leader) path=%s",
                 self.config_path,
             )
             return False
@@ -1051,7 +1049,7 @@ class RuntimeConfig:
                         self._version = float(mtime)
                         self._bootstrap_persisted = True
                         logger.info(
-                            "[DFX runtime_config] ensure_persisted backfilled %s path=%s",
+                            "[runtime_config] ensure_persisted backfilled %s path=%s",
                             ",".join(backfilled),
                             self.config_path,
                         )
@@ -1061,7 +1059,7 @@ class RuntimeConfig:
                     self._version = float(mtime)
                     self._bootstrap_persisted = True
                     logger.info(
-                        "[DFX runtime_config] ensure_persisted skip rewrite (explicit path, file exists) path=%s",
+                        "[runtime_config] ensure_persisted skip rewrite (explicit path, file exists) path=%s",
                         self.config_path,
                     )
                     return True
@@ -1072,7 +1070,7 @@ class RuntimeConfig:
             self._version = float(mtime)
             self._bootstrap_persisted = True
             logger.info(
-                "[DFX runtime_config] worker leader persisted path=%s explicit_path=%s overwrite_default=%s",
+                "[runtime_config] worker leader persisted path=%s explicit_path=%s overwrite_default=%s",
                 self.config_path,
                 self._explicit_config_path,
                 overwrite_default,
@@ -1080,7 +1078,7 @@ class RuntimeConfig:
             return True
         except Exception as exc:
             logger.warning(
-                "[DFX runtime_config] ensure_persisted failed path=%s error=%s",
+                "[runtime_config] ensure_persisted failed path=%s error=%s",
                 self.config_path,
                 exc,
             )
@@ -1151,7 +1149,7 @@ class RuntimeConfig:
         return False
 
     def needs_sample_phase_hooks(self) -> bool:
-        """True when post-sample DFX hooks must run (not a pure sample fast-path).
+        """True when post-sample runtime_guard hooks must run (not a pure sample fast-path).
 
         Covers detectors, finish-output logging, and KV block/slot write tracking.
         Dump-only / hot-reload-only does not need the sample-phase hook chain.
@@ -1163,6 +1161,16 @@ class RuntimeConfig:
         if self.report_block_meta_enabled() or self.report_slot_last_write():
             return True
         return False
+
+    def needs_filter_chain_apply(self) -> bool:
+        """True when filter/detector apply cascade may be needed on refresh.
+
+        Used with ``changed`` to skip per-step ``apply_from_config`` when both
+        detectors and input filters are idle.
+        """
+        if self.any_detector_enabled():
+            return True
+        return bool(self.input_filter_configs())
 
     # Known nested detector sections under ``detector``.
     DETECTOR_SECTIONS: tuple[str, ...] = (
@@ -1237,13 +1245,13 @@ class RuntimeConfig:
         """Warn on valid-but-easy-to-misread dump/detect combinations."""
         if self.dump_enabled() and not self.any_detector_enabled():
             logger.warning(
-                "[DFX runtime_config] dump active with no auto detector — "
+                "[runtime_config] dump active with no auto detector — "
                 "auto dump will not trigger; dump.manual_dump still works %s",
                 _process_role_tag(),
             )
         elif self.dump_enabled() and self.any_detector_enabled() and not self.auto_dump_on():
             logger.info(
-                "[DFX runtime_config] dump active with auto_max_times=0 — "
+                "[runtime_config] dump active with auto_max_times=0 — "
                 "detect runs; auto-arm off; dump.manual_dump still works %s",
                 _process_role_tag(),
             )
@@ -1288,35 +1296,6 @@ class RuntimeConfig:
         path = raw.strip()
         return path or None
 
-    def dump_reload_msprobe(self) -> bool:
-        """One-shot flag to recreate the msprobe debugger."""
-        return bool(self.dump.get("reload_msprobe", False))
-
-    def consume_reload_msprobe(self) -> bool:
-        """If ``reload_msprobe`` is true, clear it (persist on writer) and return True."""
-        if not self.dump_reload_msprobe():
-            return False
-        self.dump["reload_msprobe"] = False
-        if _is_json_writer():
-            if self.save({"dump": {"reload_msprobe": False}}):
-                logger.info(
-                    "[DFX runtime_config] reload_msprobe consumed → false path=%s %s",
-                    self.config_path,
-                    _process_role_tag(),
-                )
-            else:
-                logger.warning(
-                    "[DFX runtime_config] reload_msprobe cleared in-memory but failed to persist path=%s %s",
-                    self.config_path,
-                    _process_role_tag(),
-                )
-        else:
-            logger.debug(
-                "[DFX runtime_config] reload_msprobe cleared in-memory (non-writer) %s",
-                _process_role_tag(),
-            )
-        return True
-
     def input_filter_configs(self) -> list[dict[str, Any]]:
         """Normalized ``input_filter.filters`` for ``InputFilterManager``."""
         from vllm_ascend.runtime_guard.input_filters import normalize_input_filter_configs
@@ -1343,20 +1322,20 @@ class RuntimeConfig:
         if _is_json_writer():
             if self.save({"input_filter": {"print_input_token_ids_once": False}}):
                 logger.info(
-                    "[DFX runtime_config] print_input_token_ids_once consumed → false path=%s %s",
+                    "[runtime_config] print_input_token_ids_once consumed → false path=%s %s",
                     self.config_path,
                     _process_role_tag(),
                 )
             else:
                 logger.warning(
-                    "[DFX runtime_config] print_input_token_ids_once cleared in-memory "
+                    "[runtime_config] print_input_token_ids_once cleared in-memory "
                     "but failed to persist path=%s %s",
                     self.config_path,
                     _process_role_tag(),
                 )
         else:
             logger.info(
-                "[DFX runtime_config] print_input_token_ids_once cleared in-memory (non-writer) %s",
+                "[runtime_config] print_input_token_ids_once cleared in-memory (non-writer) %s",
                 _process_role_tag(),
             )
         return True
@@ -1370,7 +1349,7 @@ class RuntimeConfig:
         """
         if self.manual_trigger_continuous():
             logger.debug(
-                "[DFX runtime_config] manual_trigger continuous (true); not clearing %s",
+                "[runtime_config] manual_trigger continuous (true); not clearing %s",
                 _process_role_tag(),
             )
             return True
@@ -1405,7 +1384,7 @@ class RuntimeConfig:
                 if new_val is not None:
                     self.dump["manual_dump"] = new_val
                 logger.info(
-                    "[DFX runtime_config] manual_dump consumed \u2192 %s (was %d) path=%s %s",
+                    "[runtime_config] manual_dump consumed \u2192 %s (was %d) path=%s %s",
                     new_val,
                     derived.get("was", remaining),
                     self.config_path,
@@ -1415,7 +1394,7 @@ class RuntimeConfig:
                 new_val = False if remaining <= 1 else remaining - 1
                 self.dump["manual_dump"] = new_val
                 logger.warning(
-                    "[DFX runtime_config] manual_dump decremented in-memory but failed "
+                    "[runtime_config] manual_dump decremented in-memory but failed "
                     "to persist path=%s remaining_was=%d %s",
                     self.config_path,
                     remaining,
@@ -1425,7 +1404,7 @@ class RuntimeConfig:
             new_val = False if remaining <= 1 else remaining - 1
             self.dump["manual_dump"] = new_val
             logger.info(
-                "[DFX runtime_config] manual_dump \u2192 %s in-memory (non-writer; was %d) %s",
+                "[runtime_config] manual_dump \u2192 %s in-memory (non-writer; was %d) %s",
                 new_val,
                 remaining,
                 _process_role_tag(),
@@ -1443,26 +1422,26 @@ class RuntimeConfig:
         self.dump["auto_max_times"] = 0
         self.dump["manual_dump"] = False
         logger.error(
-            "[DFX runtime_config] dump forced off (auto_max_times=0, manual_dump=false): %s %s",
+            "[runtime_config] dump forced off (auto_max_times=0, manual_dump=false): %s %s",
             reason,
             _process_role_tag(),
         )
         if _is_json_writer():
             if self.save({"dump": {"auto_max_times": 0, "manual_dump": False}}):
                 logger.info(
-                    "[DFX runtime_config] dump off persisted path=%s %s",
+                    "[runtime_config] dump off persisted path=%s %s",
                     self.config_path,
                     _process_role_tag(),
                 )
             else:
                 logger.warning(
-                    "[DFX runtime_config] dump cleared in-memory but failed to persist path=%s %s",
+                    "[runtime_config] dump cleared in-memory but failed to persist path=%s %s",
                     self.config_path,
                     _process_role_tag(),
                 )
         else:
             logger.info(
-                "[DFX runtime_config] dump cleared in-memory (non-writer) %s",
+                "[runtime_config] dump cleared in-memory (non-writer) %s",
                 _process_role_tag(),
             )
         return True
@@ -1478,7 +1457,7 @@ class RuntimeConfig:
             return False
         sec["enabled"] = False
         logger.error(
-            "[DFX runtime_config] detector.%s.enabled forced false: %s %s",
+            "[runtime_config] detector.%s.enabled forced false: %s %s",
             section,
             reason,
             _process_role_tag(),
@@ -1486,21 +1465,21 @@ class RuntimeConfig:
         if _is_json_writer():
             if self.save({"detector": {section: {"enabled": False}}}):
                 logger.info(
-                    "[DFX runtime_config] detector.%s.enabled=false persisted path=%s %s",
+                    "[runtime_config] detector.%s.enabled=false persisted path=%s %s",
                     section,
                     self.config_path,
                     _process_role_tag(),
                 )
             else:
                 logger.warning(
-                    "[DFX runtime_config] detector.%s.enabled cleared in-memory but failed to persist path=%s %s",
+                    "[runtime_config] detector.%s.enabled cleared in-memory but failed to persist path=%s %s",
                     section,
                     self.config_path,
                     _process_role_tag(),
                 )
         else:
             logger.info(
-                "[DFX runtime_config] detector.%s.enabled cleared in-memory (non-writer) %s",
+                "[runtime_config] detector.%s.enabled cleared in-memory (non-writer) %s",
                 section,
                 _process_role_tag(),
             )
@@ -1698,7 +1677,7 @@ class RuntimeConfig:
             return False
         if _is_distributed_worker_process():
             logger.info(
-                "[DFX runtime_config] skip non-worker reloader (worker process) path=%s",
+                "[runtime_config] skip non-worker reloader (worker process) path=%s",
                 self.config_path,
             )
             return False
@@ -1708,7 +1687,7 @@ class RuntimeConfig:
         if path_key in _bg_reload_paths:
             self._bg_reloader_started = True
             logger.info(
-                "[DFX runtime_config] non-worker reloader already running for path=%s",
+                "[runtime_config] non-worker reloader already running for path=%s",
                 self.config_path,
             )
             return False
@@ -1725,7 +1704,7 @@ class RuntimeConfig:
                 if _is_distributed_worker_process():
                     _bg_reload_paths.discard(path_key)
                     logger.info(
-                        "[DFX runtime_config] non-worker reloader exiting (process is worker) path=%s",
+                        "[runtime_config] non-worker reloader exiting (process is worker) path=%s",
                         self.config_path,
                     )
                     return
@@ -1741,14 +1720,14 @@ class RuntimeConfig:
                         self.apply_ascend_log_level()
                         if self.manual_trigger():
                             logger.info(
-                                "[DFX runtime_config] dump.manual_trigger=true seen on "
+                                "[runtime_config] dump.manual_trigger=true seen on "
                                 "non-worker reload — dump arms only on worker "
                                 "execute_model (send a request). path=%s",
                                 self.config_path,
                             )
                 except Exception as exc:
                     logger.warning(
-                        "[DFX runtime_config] non-worker reload error path=%s error=%s",
+                        "[runtime_config] non-worker reload error path=%s error=%s",
                         self.config_path,
                         exc,
                     )
@@ -1760,7 +1739,7 @@ class RuntimeConfig:
         )
         self._bg_thread.start()
         logger.info(
-            "[DFX runtime_config] non-worker background reload started interval=%.3fs path=%s",
+            "[runtime_config] non-worker background reload started interval=%.3fs path=%s",
             interval,
             self.config_path,
         )
@@ -1788,7 +1767,7 @@ class RuntimeConfig:
                 _dfx_multi_dp_file_fallback_logged = True
                 if _dp_world_size_or_one() > 1:
                     logger.info(
-                        "[DFX runtime_config] multi-DP: per-DP broadcast "
+                        "[runtime_config] multi-DP: per-DP broadcast "
                         "unavailable → local file poll (no cross-DP sync); "
                         "place a readable runtime_config_path on each EngineCore "
                         "(per-node copy ok). path=%s %s",
@@ -1797,18 +1776,18 @@ class RuntimeConfig:
                     )
                 else:
                     logger.info(
-                        "[DFX runtime_config] config hot-reload uses local "
+                        "[runtime_config] config hot-reload uses local "
                         "file poll (broadcast group size<=1). path=%s %s",
                         self.config_path,
                         _process_role_tag(),
                     )
         logger.debug(
-            "[DFX sync] enter stage=config_local_reload %s",
+            "[runtime_config sync] enter stage=config_local_reload %s",
             _process_role_tag(),
         )
         changed = self._maybe_reload_local()
         logger.debug(
-            "[DFX sync] leave stage=config_local_reload changed=%s %s",
+            "[runtime_config sync] leave stage=config_local_reload changed=%s %s",
             changed,
             _process_role_tag(),
         )
@@ -1842,7 +1821,7 @@ class RuntimeConfig:
         due_local = 1.0 if ((not self._initial_broadcast_done) or (now - self._last_reload_ts >= interval)) else 0.0
         role = _process_role_tag()
         logger.debug(
-            "[DFX sync] enter stage=config_all_reduce due_local=%.0f initial_done=%s group_size=%s %s",
+            "[runtime_config sync] enter stage=config_all_reduce due_local=%.0f initial_done=%s group_size=%s %s",
             due_local,
             self._initial_broadcast_done,
             getattr(sync_group, "world_size", "?"),
@@ -1855,7 +1834,7 @@ class RuntimeConfig:
             group=sync_group.cpu_group,
         )
         due = float(due_t.item())
-        logger.debug("[DFX sync] leave stage=config_all_reduce due=%.0f %s", due, role)
+        logger.debug("[runtime_config sync] leave stage=config_all_reduce due=%.0f %s", due, role)
         if due < 0.5:
             return False
 
@@ -1863,11 +1842,11 @@ class RuntimeConfig:
         changed = False
         payload: dict[str, Any] | None = None
         if sync_group.is_first_rank:
-            logger.debug("[DFX sync] enter stage=config_reload_file %s", role)
+            logger.debug("[runtime_config sync] enter stage=config_reload_file %s", role)
             # Always re-stat; reload() no-ops when mtime unchanged.
             changed = self.reload(force=False)
             logger.debug(
-                "[DFX sync] leave stage=config_reload_file changed=%s version=%.6f %s",
+                "[runtime_config sync] leave stage=config_reload_file changed=%s version=%.6f %s",
                 changed,
                 float(self._version),
                 role,
@@ -1885,9 +1864,9 @@ class RuntimeConfig:
                     "version": float(self._version),
                     "data": None,
                 }
-        logger.debug("[DFX sync] enter stage=config_broadcast %s", role)
+        logger.debug("[runtime_config sync] enter stage=config_broadcast %s", role)
         payload = sync_group.broadcast_object(payload, src=0)
-        logger.debug("[DFX sync] leave stage=config_broadcast %s", role)
+        logger.debug("[runtime_config sync] leave stage=config_broadcast %s", role)
         first_sync = not self._initial_broadcast_done
         self._initial_broadcast_done = True
         if payload is None or not isinstance(payload, dict):
@@ -1908,7 +1887,7 @@ class RuntimeConfig:
                     return self._apply_loaded(data, version=version)
                 except Exception as exc:
                     logger.error(
-                        "[DFX runtime_config] follower _apply_loaded failed "
+                        "[runtime_config] follower _apply_loaded failed "
                         "path=%s version=%.6f error=%s — keeping last-known-good %s",
                         self.config_path,
                         version,
@@ -1947,7 +1926,7 @@ class RuntimeConfig:
             stat = self.config_path.stat()
             mtime = stat.st_mtime
         except OSError as exc:
-            logger.warning("[DFX runtime_config] stat failed path=%s error=%s", self.config_path, exc)
+            logger.warning("[runtime_config] stat failed path=%s error=%s", self.config_path, exc)
             return False
 
         try:
@@ -1955,7 +1934,7 @@ class RuntimeConfig:
                 raw = self.config_path.read_bytes()
             digest = self._digest_bytes(raw)
         except OSError as exc:
-            logger.warning("[DFX runtime_config] read failed path=%s error=%s", self.config_path, exc)
+            logger.warning("[runtime_config] read failed path=%s error=%s", self.config_path, exc)
             return False
 
         # Bug #11: NFS mtime is 1s-granular. Same-second edits that keep
@@ -1973,7 +1952,7 @@ class RuntimeConfig:
         try:
             loaded = loads_jsonc(raw.decode("utf-8"))
             if not isinstance(loaded, dict):
-                logger.error("[DFX runtime_config] root must be object, got %s", type(loaded).__name__)
+                logger.error("[runtime_config] root must be object, got %s", type(loaded).__name__)
                 return False
             merged = _deep_merge(_DEFAULTS, _normalize_config_sections(loaded))
             # Missing key ≠ explicit null: do not let _DEFAULTS wipe a seeded path.
@@ -1986,7 +1965,7 @@ class RuntimeConfig:
                 content_digest=digest,
             )
         except Exception as exc:
-            logger.error("[DFX runtime_config] reload failed path=%s error=%s", self.config_path, exc)
+            logger.error("[runtime_config] reload failed path=%s error=%s", self.config_path, exc)
             return False
 
     def _apply_loaded(
@@ -2018,7 +1997,7 @@ class RuntimeConfig:
         if announce and changes:
             # Only print fields that actually changed (e.g. dump.max_times).
             logger.info(
-                "[DFX runtime_config] updated path=%s version=%.6f %s changes=[%s] %s",
+                "[runtime_config] updated path=%s version=%.6f %s changes=[%s] %s",
                 str(self.config_path),
                 self._version,
                 _process_role_tag(),
@@ -2029,19 +2008,19 @@ class RuntimeConfig:
             if self.manual_trigger():
                 if self.dump_enabled():
                     logger.info(
-                        "[DFX runtime_config] dump.manual_dump active — next "
+                        "[runtime_config] dump.manual_dump active — next "
                         "worker execute_model will consume and arm dump %s",
                         _process_role_tag(),
                     )
                 else:
                     logger.warning(
-                        "[DFX runtime_config] dump.manual_dump set but dump inactive "
+                        "[runtime_config] dump.manual_dump set but dump inactive "
                         "(auto_max_times=0 and manual_dump off) — will not consume %s",
                         _process_role_tag(),
                     )
         elif announce:
             logger.debug(
-                "[DFX runtime_config] apply no content change path=%s version=%.6f %s",
+                "[runtime_config] apply no content change path=%s version=%.6f %s",
                 str(self.config_path),
                 self._version,
                 _process_role_tag(),
@@ -2068,7 +2047,7 @@ class RuntimeConfig:
         """
         if not _is_json_writer():
             logger.debug(
-                "[DFX runtime_config] save ignored on non-leader path=%s",
+                "[runtime_config] save ignored on non-leader path=%s",
                 self.config_path,
             )
             return False
@@ -2089,10 +2068,10 @@ class RuntimeConfig:
                 self._mtime = stat.st_mtime
                 self._content_digest = self._digest_path(self.config_path)
                 self._version = float(self._mtime)
-            logger.info("[DFX runtime_config] saved path=%s", self.config_path)
+            logger.info("[runtime_config] saved path=%s", self.config_path)
             return True
         except Exception as exc:
-            logger.error("[DFX runtime_config] save failed path=%s error=%s", self.config_path, exc)
+            logger.error("[runtime_config] save failed path=%s error=%s", self.config_path, exc)
             return False
 
     def _lock_config(self):
@@ -2173,6 +2152,10 @@ class RuntimeConfig:
         if sync_mode not in (SYNC_BROADCAST, SYNC_FILE):
             raise ValueError(f"sync_mode must be '{SYNC_BROADCAST}' or '{SYNC_FILE}'")
         unknown_dump = sorted(set(data["dump"]) - RuntimeConfig.DUMP_KEYS)
+        # Retired one-shot flag (msprobe debugger recreate); ignore in older JSON.
+        if "reload_msprobe" in data["dump"]:
+            data["dump"].pop("reload_msprobe", None)
+            unknown_dump = [k for k in unknown_dump if k != "reload_msprobe"]
         if unknown_dump:
             raise ValueError(f"dump has unknown key(s) {unknown_dump}; allowed={sorted(RuntimeConfig.DUMP_KEYS)}")
         auto_max_times = data["dump"].get("auto_max_times", 0)
@@ -2209,12 +2192,6 @@ class RuntimeConfig:
             raise ValueError("dump.msprobe_config_path must be str or null")
         if isinstance(msprobe_path, str) and not msprobe_path.strip():
             data["dump"]["msprobe_config_path"] = None
-        reload_msprobe = data["dump"].get("reload_msprobe")
-        if reload_msprobe is not None and not isinstance(reload_msprobe, bool):
-            if reload_msprobe in (0, 1):
-                data["dump"]["reload_msprobe"] = bool(reload_msprobe)
-            else:
-                raise ValueError("dump.reload_msprobe must be bool")
         save_sensitive = data["report"].get("save_sensitive_info")
         if save_sensitive is not None and not isinstance(save_sensitive, bool):
             if save_sensitive in (0, 1):

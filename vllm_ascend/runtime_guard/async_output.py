@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Async model-runner output wrappers that run DFX checks after D2H."""
+"""Async model-runner output wrappers that run runtime_guard checks after D2H."""
 
 from __future__ import annotations
 
@@ -38,12 +38,8 @@ class AscendAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
     """
 
     def __init__(self, *args: Any, runner: Any | None = None, **kwargs: Any):
-        # Backward-compat: older call sites passed dumper=
-        dumper = kwargs.pop("dumper", None)
         super().__init__(*args, **kwargs)
         self._runner = runner
-        if self._runner is None and dumper is not None:
-            self._runner = getattr(dumper, "runner", None)
 
     def get_output(self) -> ModelRunnerOutput:
         output = super().get_output()
@@ -63,7 +59,7 @@ class AscendAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
 
 
 class AscendAsyncOutput(AsyncModelRunnerOutput):
-    """Async v2 output that runs DFX checks after ``AsyncOutput`` D2H completes.
+    """Async v2 output that runs runtime_guard checks after ``AsyncOutput`` D2H completes.
 
     Under async scheduling upstream ``sample_tokens`` returns ``AsyncOutput``
     before CPU materialization; detection must wait until ``get_output()``.

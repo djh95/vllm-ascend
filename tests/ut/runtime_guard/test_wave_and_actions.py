@@ -42,7 +42,7 @@ def test_wave_tracker_sample_stamp():
 def test_dump_quota_consume():
     q = DumpQuota(_Cfg())
     assert q.can_consume()
-    assert q.consume()
+    assert q.try_consume()
     assert q.total_count == 1
 
 

@@ -84,14 +84,6 @@ class DumpQuota:
             if self._total_count > 0:
                 self._total_count -= 1
 
-    def consume(self, *, consume_quota: bool = True) -> bool:
-        with self._lock:
-            if not self.can_consume(consume_quota=consume_quota):
-                return False
-            if consume_quota:
-                self._total_count += 1
-                self._last_ts = time.time()
-            return True
 
     def snapshot(self) -> tuple[int, int]:
         return self._total_count, self._max_times

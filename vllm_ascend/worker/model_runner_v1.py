@@ -2745,7 +2745,6 @@ class NPUModelRunner(GPUModelRunner):
                 valid_sampled_token_ids=valid_sampled_token_ids,
                 logprobs_lists=logprobs_lists,
                 req_ids_output_copy=req_ids_output_copy,
-                req_id_to_index_output_copy=req_id_to_index_output_copy,
                 invalid_req_indices=invalid_req_indices,
                 finished_req_ids=getattr(scheduler_output, "finished_req_ids", None),
                 hidden_states=hidden_states,
@@ -2809,7 +2808,7 @@ class NPUModelRunner(GPUModelRunner):
         if not self.use_async_scheduling:
             return result.model_runner_output
 
-        need_async_check = self.runtime_guard.needs_async_post_sample_check()
+        need_async_check = self.runtime_guard.needs_sample_phase_hooks()
         if need_async_check:
             async_output = AscendAsyncGPUModelRunnerOutput(
                 model_runner_output=result.model_runner_output,

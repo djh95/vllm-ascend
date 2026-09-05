@@ -46,15 +46,6 @@ class DetectorRegistry:
     def get(self, incident_type: str) -> AnomalyDetector | None:
         return self._by_type.get(incident_type)
 
-    def refresh_all(self) -> None:
-        """Eagerly refresh every detector (tests / rare callers).
-
-        Production detect paths use ``AnomalyDetector._precheck`` instead so
-        ``RuntimeGuardProcessor.refresh_config`` does not double-pull every step.
-        """
-        for det in self._items:
-            det.refresh_from_config()
-
     def clear_finished(self, req_id: str) -> None:
         for det in self._items:
             det.clear_finished(req_id)

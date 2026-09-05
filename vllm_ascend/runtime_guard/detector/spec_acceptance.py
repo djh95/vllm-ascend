@@ -297,7 +297,6 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
             is_ill=True,
             ill_type=0,
             detail=detail,
-            skip_related_check=False,
             log_context={
                 "sampled_ids": sampled_norm,
                 "accepted_token_num": accepted_token_num,

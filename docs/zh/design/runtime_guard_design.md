@@ -153,10 +153,12 @@ Quota：`dump.auto_max_times > 0` 启用自动 dump 配额；`dump.auto_cooldown
 
 | Runner | bind | 主要钩子 |
 |--------|------|----------|
-| v1 | `model_runner_v1.py` 构造 | `sync_for_step`、`check_before_sample`、`check_after_sample`、`note_kv_block_writes`、`mark_finished` |
-| v2 | `worker/v2/model_runner.py` 构造 | `sync_for_step`（其余随 v2 采样路径扩展） |
+| v1 | `model_runner_v1.py` 构造 | `sync_for_step`、`run_sample_phase`（含 ensure_logprobs / note_kv / after_sample）、pre-sample wrap、async `AscendAsync*` |
+| v2 | `worker/v2/model_runner.py` 构造 | 同上（native `dump_kv`；无 v2 msprobe debugger） |
 
-v1 在 `compute_logits` 外包一层以插入 `check_before_sample`（`runner_hooks.wrap_compute_logits_for_pre_sample`）。
+Idle DP：`worker.execute_dummy_batch` 调 `sync_for_step(allow_arm=False)`，与 busy rank 对齐配置热更。
+
+v1/v2 在 `compute_logits` 外包一层以插入 `check_before_sample`（`runner_hooks.wrap_compute_logits_for_pre_sample`）。
 
 ## 7. 非 worker 与多 engine
 

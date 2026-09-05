@@ -111,10 +111,13 @@ class ActionExecutor:
         tokenizer: Any | None = None,
         action_override: list[str] | None = None,
         batch_rows: list[tuple[str, int | None]] | None = None,
+        write_report: bool = True,
     ) -> None:
         if not self.can_run_detection():
             return
         names, det_cfg = self.resolve_actions(incident.incident_type, override=action_override)
+        if not write_report:
+            names = [n for n in names if n != "report"]
         overrides = dict(det_cfg)
         overrides["_actions"] = names
         ctx = ActionContext(

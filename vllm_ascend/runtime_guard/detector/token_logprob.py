@@ -275,7 +275,6 @@ class TokenLogprobDetector(ConfigBackedDetector):
             req_id=req_id,
             result=result,
             req_idx=req_idx,
-            skip_related_check=True,
         )
         if alert is None:
             if log_leader:
