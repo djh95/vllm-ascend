@@ -2096,8 +2096,8 @@ class NPUModelRunner(GPUModelRunner):
             wrap_compute_logits_for_pre_sample,
         )
 
-        self._dfx_scheduler_output = scheduler_output
-        self._dfx_positions = positions
+        self._rg_scheduler_output = scheduler_output
+        self._rg_positions = positions
         if need_pre_sample_hook(self.runtime_guard):
             with wrap_compute_logits_for_pre_sample(self, self.input_batch):
                 return self.model.compute_logits(sample_hidden_states)

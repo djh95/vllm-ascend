@@ -48,7 +48,7 @@ def check_before_sample_from_batch(
     runner = getattr(dfx, "runner", None)
     positions = getattr(input_batch, "positions", None)
     if positions is None:
-        positions = getattr(runner, "_dfx_positions", None)
+        positions = getattr(runner, "_rg_positions", None)
     total = 0
     if scheduler_output is not None:
         total = int(getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0)
@@ -87,7 +87,7 @@ def wrap_compute_logits_for_pre_sample(runner: Any, input_batch: Any):
     had_instance_attr = "compute_logits" in getattr(model, "__dict__", {})
     orig = model.compute_logits
     dfx = runner.runtime_guard
-    scheduler_output = getattr(runner, "_dfx_scheduler_output", None)
+    scheduler_output = getattr(runner, "_rg_scheduler_output", None)
     fired = False
 
     def wrapped(hidden_states, *args, **kwargs):

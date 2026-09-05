@@ -293,7 +293,7 @@ class NPUModelRunner(GPUModelRunner):
             req_ids = list(getattr(input_batch, "req_ids", None) or [])
             sampled = self._rg_spec_sampled_tokens
             return SamplePhaseResult(
-                scheduler_output=getattr(self, "_dfx_scheduler_output", None),
+                scheduler_output=getattr(self, "_rg_scheduler_output", None),
                 input_batch=input_batch,
                 model_runner_output=output,
                 sampler_output=SimpleNamespace(sampled_token_ids=sampled),
@@ -376,7 +376,7 @@ class NPUModelRunner(GPUModelRunner):
             scheduler_output=scheduler_output,
             allow_arm=allow_arm,
         )
-        self._dfx_scheduler_output = scheduler_output
+        self._rg_scheduler_output = scheduler_output
 
         if vllm_version_is("0.27.1"):
             output = super().execute_model(

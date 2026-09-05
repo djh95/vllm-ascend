@@ -31,7 +31,7 @@ class _FakeModel:
 
 def _make_runner(logits, dfx, scheduler_output=None):
     model = _FakeModel(logits)
-    return SimpleNamespace(model=model, runtime_guard=dfx, _dfx_scheduler_output=scheduler_output), model
+    return SimpleNamespace(model=model, runtime_guard=dfx, _rg_scheduler_output=scheduler_output), model
 
 
 def test_wrap_fires_once_for_two_compute_logits_calls():
@@ -57,7 +57,7 @@ def test_wrap_restores_compute_logits():
 
 
 def test_from_batch_falls_back_to_runner_positions_and_logits_indices():
-    runner = SimpleNamespace(_dfx_positions="pos-t", logits_indices=[1, 2])
+    runner = SimpleNamespace(_rg_positions="pos-t", logits_indices=[1, 2])
     dfx = _FakeDfx(runner=runner)
     check_before_sample_from_batch(dfx, "L", SimpleNamespace(), scheduler_output=None)
     call = dfx.calls[0]
@@ -66,7 +66,7 @@ def test_from_batch_falls_back_to_runner_positions_and_logits_indices():
 
 
 def test_from_batch_prefers_input_batch_fields():
-    runner = SimpleNamespace(_dfx_positions="pos-runner", logits_indices=[9])
+    runner = SimpleNamespace(_rg_positions="pos-runner", logits_indices=[9])
     dfx = _FakeDfx(runner=runner)
     batch = SimpleNamespace(positions="pos-batch", logits_indices=[7], num_tokens=5)
     check_before_sample_from_batch(dfx, "L", batch, scheduler_output=None)
