@@ -210,6 +210,10 @@ class NPUModelRunner(GPUModelRunner):
         set_mc2_mask(vllm_config, self.device)
         set_potential_max_tokens(vllm_config)
 
+        from vllm_ascend.runtime_guard.processor import RuntimeGuardProcessor
+
+        self.runtime_guard = RuntimeGuardProcessor.bind(self)
+
     @property
     def pcp_manager_cls(self) -> type[AscendPCPManager]:
         return AscendPCPManager
@@ -242,6 +246,19 @@ class NPUModelRunner(GPUModelRunner):
             self.execute_model_state = state._replace(aux_hidden_states=[restored_aux_hidden_states])
 
     def sample_tokens(self, grammar_output):
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+
+        from vllm.distributed.parallel_state import get_tp_group
+        from vllm.v1.worker.gpu.async_utils import AsyncOutput
+
+        from vllm_ascend.runtime_guard.async_output import AscendAsyncOutput
+        from vllm_ascend.runtime_guard.processor import SamplePhaseResult
+        from vllm_ascend.runtime_guard.runner_hooks import (
+            need_pre_sample_hook,
+            wrap_compute_logits_for_pre_sample,
+        )
+
         pcp_manager = self.pcp_manager
         if pcp_manager is not None and not self.is_last_pp_rank and self.execute_model_state is not None:
             assert isinstance(pcp_manager, AscendPCPManager)
@@ -254,12 +271,75 @@ class NPUModelRunner(GPUModelRunner):
             )
 
         self._restore_replicated_draft_target_states()
-        output = super().sample_tokens(grammar_output)
+
+        # Peek before super() pops it: these refs stay valid after the pop.
+        state = self.execute_model_state
+        input_batch = getattr(state, "input_batch", None) if state is not None else None
+        finished_req_ids = getattr(state, "finished_req_ids", None) if state is not None else None
+        # Cleared each step; filled by postprocess_sampled during sample_fn.
+        self._rg_spec_sampled_tokens = None
+        self._rg_spec_num_sampled = None
+        # Capture bound super() before nested sample_fn (zero-arg super fails in nested fn).
+        _super_sample_tokens = super().sample_tokens
+
+        def sample_fn() -> SamplePhaseResult:
+            with (
+                wrap_compute_logits_for_pre_sample(self, input_batch)
+                if need_pre_sample_hook(self.runtime_guard)
+                else nullcontext()
+            ):
+                output = _super_sample_tokens(grammar_output)
+
+            req_ids = list(getattr(input_batch, "req_ids", None) or [])
+            sampled = self._rg_spec_sampled_tokens
+            return SamplePhaseResult(
+                scheduler_output=getattr(self, "_dfx_scheduler_output", None),
+                input_batch=input_batch,
+                model_runner_output=output,
+                sampler_output=SimpleNamespace(sampled_token_ids=sampled),
+                valid_sampled_token_ids=getattr(output, "sampled_token_ids", None),
+                logprobs_lists=getattr(output, "logprobs", None),
+                req_ids_output_copy=req_ids,
+                req_id_to_index_output_copy=None,
+                invalid_req_indices=None,
+                finished_req_ids=finished_req_ids,
+            )
+
+        def accepted_token_nums_fn(_result: SamplePhaseResult):
+            return self._rg_spec_num_sampled
+
+        use_async = bool(getattr(self, "use_async_scheduling", False))
+        result, _routed = self.runtime_guard.run_sample_phase(
+            sample_fn=sample_fn,
+            speculative_config=getattr(self, "speculative_config", None),
+            need_accepted_tokens=False,
+            use_async=use_async,
+            accepted_token_nums_fn=accepted_token_nums_fn
+            if getattr(self, "speculative_config", None) is not None
+            else None,
+        )
 
         if self.use_spec_pp and self.is_last_pp_rank:
             assert self.pp_handler is not None
             # Wait until propose() has populated this step's draft tokens.
             self.pp_handler.broadcast_draft_tokens()
+
+        output = result.model_runner_output
+        if isinstance(output, AsyncOutput) and self.runtime_guard.needs_async_post_sample_check():
+            output = AscendAsyncOutput(output, self)
+            try:
+                if get_tp_group().rank_in_group != 0:
+                    # Two-phase sampling: the executor forwards only the
+                    # output rank's return, so other ranks materialize (and
+                    # run post-sample checks) locally.
+                    output.get_output()
+            except Exception:
+                from vllm_ascend.logger import init_logger_ascend
+
+                init_logger_ascend(__name__).warning(
+                    "[runtime_guard soft-fail] non-output-rank get_output failed",
+                    exc_info=True,
+                )
         return output
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
@@ -290,6 +370,13 @@ class NPUModelRunner(GPUModelRunner):
             profiling_config,
             scheduler_output,
         )
+
+        allow_arm = dummy_run or scheduler_output.total_num_scheduled_tokens > 0
+        self.runtime_guard.sync_for_step(
+            scheduler_output=scheduler_output,
+            allow_arm=allow_arm,
+        )
+        self._dfx_scheduler_output = scheduler_output
 
         if vllm_version_is("0.27.1"):
             output = super().execute_model(
@@ -892,6 +979,9 @@ class NPUModelRunner(GPUModelRunner):
         """Override GPUModelRunner.postprocess_sampled for Ascend NPUs.
         npu attention backends need seq_lens_cpu to work.
         so we need to copy num_computed_tokens back to cpu here.
+
+        Also stash spec-accept stats for ``run_sample_phase`` /
+        ``check_after_spec`` (called after ``sample_fn`` returns).
         """
         super().postprocess_sampled(
             idx_mapping,
@@ -900,6 +990,8 @@ class NPUModelRunner(GPUModelRunner):
             num_rejected,
             query_start_loc,
         )
+        self._rg_spec_sampled_tokens = sampled_tokens
+        self._rg_spec_num_sampled = num_sampled
 
         # Without MTP, update_requests writes the shared NumPy/torch CPU state.
         if self.speculator is not None:

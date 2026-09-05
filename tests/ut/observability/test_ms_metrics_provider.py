@@ -281,3 +281,43 @@ def test_eplb_handler_given_metric_failure_then_preserves_inference_result(monke
         )
         == "updated"
     )
+
+
+def test_record_runtime_guard_report_increments_counter(monkeypatch):
+    metric_type = type("MetricType", (), {"GAUGE": "gauge", "COUNTER": "counter"})
+    metrics = Mock()
+    _install_provider_api(
+        monkeypatch,
+        MetricType=metric_type,
+        get_metric_recorder=lambda: metrics,
+    )
+    handlers = _load_source("test_vllm_ascend_runtime_guard_report_metric", "handlers.py")
+
+    handlers.record_runtime_guard_report(incident_type="token_repeat", rank_tag="tp0")
+    handlers.record_runtime_guard_report(incident_type="token_repeat", rank_tag="tp0")
+
+    metrics.get_or_create_metric.assert_called_once_with(
+        "runtime_guard:report:count",
+        metric_type="counter",
+        label_names=["incident_type", "rank"],
+    )
+    assert metrics.record_metric.call_count == 2
+    metrics.record_metric.assert_called_with(
+        "runtime_guard:report:count",
+        value=1.0,
+        labels={"incident_type": "token_repeat", "rank": "tp0"},
+    )
+
+
+def test_record_runtime_guard_report_swallows_metric_errors(monkeypatch):
+    metric_type = type("MetricType", (), {"GAUGE": "gauge", "COUNTER": "counter"})
+    metrics = Mock()
+    metrics.get_or_create_metric.side_effect = RuntimeError("registry unavailable")
+    _install_provider_api(
+        monkeypatch,
+        MetricType=metric_type,
+        get_metric_recorder=lambda: metrics,
+    )
+    handlers = _load_source("test_vllm_ascend_runtime_guard_report_metric_fail", "handlers.py")
+
+    handlers.record_runtime_guard_report(incident_type="token_repeat")
