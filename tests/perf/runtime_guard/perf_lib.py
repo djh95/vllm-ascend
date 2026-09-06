@@ -1,4 +1,15 @@
-"""Shared helpers for runtime_guard perf scripts (B/A toggle and baseline)."""
+"""Shared helpers for runtime_guard perf scripts.
+
+T-label terminology (see tests/perf/runtime_guard/README.md):
+- T0 = no guard code (merge-base 37e382498 worktree)
+- T1 = guard code + default startup (no --additional-config, reload=0, detectors off)
+- T2 = guard code + reload=3 + detectors off
+- T3 = guard code + reload=3 + detectors on
+
+perf_ab_quick.py: A=T2 (detectors off), B=T3 (detectors on) — compare C3.
+perf_baseline.py: T1 baseline — used in C1 (vs T0) and C2 (vs T2).
+DO NOT confuse perf_ab_quick A/B with dfx-perf-bench SKILL A/B (different project, different axis).
+"""
 
 import json
 import os

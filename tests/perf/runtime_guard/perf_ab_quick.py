@@ -1,6 +1,12 @@
-"""B/A × 3 cross-rotated perf measurement on a guard server.
+"""C3 perf comparison: T3 (B, detectors on) vs T2 (A, detectors off), ×3 cross-rotated.
 
-Restores runtime_config.json in finally. Run on a guard-mode server (``run_rg.sh guard``).
+IMPORTANT: A/B here mean detector off/on WITHIN reload=3 — NOT the same as
+``dfx-perf-bench`` SKILL's A/B which mean no-DFX / DFX+reload>0+off.
+See tests/perf/runtime_guard/README.md for the unified T-label terminology.
+
+Server must be in T2 base shape (``run_rg.sh guard`` with reload_interval=3);
+script hot-toggles detectors via JSON edits + ``trigger()`` to flip T2 ↔ T3.
+Restores runtime_config.json in finally.
 """
 
 import json
