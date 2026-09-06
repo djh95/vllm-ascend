@@ -276,7 +276,6 @@ class DfxProcessor:
             if dumper is not None and hasattr(dumper, "advance_wave"):
                 dumper.advance_wave(allow_arm=allow_arm)
             self.refresh_config(allow_arm=allow_arm, scheduler_output=scheduler_output)
-            self._cache_prompt_token_ids_from_scheduler_output(scheduler_output)
             self.sync_dump_pending_or(allow_arm=allow_arm)
             # Idle / early-return finishes never reach check_after_sample; reap
             # finished reqs whose sample-wave FIFO is already drained.
@@ -290,36 +289,6 @@ class DfxProcessor:
                 tp,
                 pp,
             )
-
-    def _cache_prompt_token_ids_from_scheduler_output(
-        self,
-        scheduler_output: Any | None,
-    ) -> None:
-        """Capture prompt_token_ids from each scheduled new request.
-
-        Bug #9 fix: v2 ``RequestState.all_token_ids`` is a StagedWriteTensor
-        whose host mirror stays 0 until ``apply_staged_writes`` commits, and
-        ``_remove_request`` pops the id from ``req_id_to_index`` on finish —
-        both windows make the snapshot path return zeros or empty. Cache the
-        ids here on the first prefill wave so later snapshots (crash or
-        finish) read the real prompt. Idempotent per request.
-        """
-        if scheduler_output is None:
-            return
-        new_reqs = getattr(scheduler_output, "scheduled_new_reqs", None)
-        if not new_reqs:
-            return
-        store = RequestDfxStore.get()
-        for req in new_reqs:
-            req_id = getattr(req, "req_id", None)
-            if not req_id:
-                continue
-            ids = getattr(req, "prompt_token_ids", None)
-            if ids is None:
-                ids = getattr(req, "prefill_token_ids", None)
-            if ids is None:
-                continue
-            store.set_prompt_token_ids(str(req_id), ids)
 
     # ---- sample / get_output hooks ----------------------------------------
 
@@ -387,33 +356,26 @@ class DfxProcessor:
         for req_id in finished_req_ids:
             if not req_id:
                 continue
-            # S3 fix: one bad req_id shouldn't skip sidecars for the rest of
-            # the reap batch. Wrap each iteration; log + continue.
-            try:
-                meta = take(req_id)
-                if meta is None:
-                    continue
-                snap = io_mgr.snapshot(runner, req_id, None, include_token_ids=True, use_cache=False)
-                detail = snap.as_detail_fields()
-                detail = self._enrich_detail_with_block_meta(detail, req_id, None)
-                writer.write_dump_finish(
-                    req_id=req_id,
-                    detail=detail,
-                    rank_tag=rank_tag,
-                    tokenizer=tokenizer,
-                    anomaly_type=meta.anomaly_type,
-                    source=meta.source,
-                    dump_arm_wave=meta.dump_arm_wave,
-                    dump_activate_wave=meta.dump_activate_wave,
-                    dump_waves_after_report=meta.dump_waves_after_report,
-                    dump_count=meta.dump_count,
-                    finish_wave=finish_wave,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[DFX processor] _maybe_write_dump_finish req_id=%s failed: %s",
-                    req_id, exc, exc_info=True,
-                )
+            # Committed (activated) or still-open pending → sidecar; else skip.
+            meta = take(req_id)
+            if meta is None:
+                continue
+            snap = io_mgr.snapshot(runner, req_id, None, include_token_ids=True, use_cache=False)
+            detail = snap.as_detail_fields()
+            detail = self._enrich_detail_with_block_meta(detail, req_id, None)
+            writer.write_dump_finish(
+                req_id=req_id,
+                detail=detail,
+                rank_tag=rank_tag,
+                tokenizer=tokenizer,
+                anomaly_type=meta.anomaly_type,
+                source=meta.source,
+                dump_arm_wave=meta.dump_arm_wave,
+                dump_activate_wave=meta.dump_activate_wave,
+                dump_waves_after_report=meta.dump_waves_after_report,
+                dump_count=meta.dump_count,
+                finish_wave=finish_wave,
+            )
 
     def _maybe_print_output_on_finish(self, finished_req_ids: Any, io_mgr: RequestIoSnapshotManager) -> None:
         """Log output_token_ids + text for finished reqs (TP0 only).
@@ -646,31 +608,17 @@ class DfxProcessor:
         """
         dump_attempted = bool(self.dfx_config.dump_enabled())
         dump_armed = False
-        # S4 fix: a dumper or writer raise used to lose the alert and propagate
-        # to the runner. Detectors are best-effort; alert sinks should be too.
-        try:
-            if dump_attempted:
-                dump_armed = bool(self.dumper.handle_anomaly_alert(alert, detector=detector, arm_wave=arm_wave))
-            else:
-                if detector is not None:
-                    detector.on_alert_armed(alert)
-        except Exception as exc:
-            logger.error(
-                "[DFX processor] _handle_alert dump-arm failed req_id=%s: %s",
-                getattr(alert, "req_id", "?"), exc, exc_info=True,
-            )
+        if dump_attempted:
+            dump_armed = bool(self.dumper.handle_anomaly_alert(alert, detector=detector, arm_wave=arm_wave))
+        else:
+            if detector is not None:
+                detector.on_alert_armed(alert)
 
         if not write_report:
             return
 
         if self.dfx_config.log_print_sampling_meta():
-            try:
-                self.save_sample_param(alert.req_id)
-            except Exception as exc:
-                logger.warning(
-                    "[DFX processor] save_sample_param req_id=%s failed: %s",
-                    alert.req_id, exc, exc_info=True,
-                )
+            self.save_sample_param(alert.req_id)
 
         detail = alert.to_report_detail()
         include_ids = self.dfx_config.report_save_sensitive_info()
@@ -813,8 +761,6 @@ class DfxProcessor:
             input_batch = getattr(runner, "input_batch", None)
         req_id_to_index = getattr(input_batch, "req_id_to_index", None) if input_batch else None
         req_ids = list(getattr(input_batch, "req_ids", None) or [])
-        # S12 fix: build index once → O(1) lookup instead of O(n) .index() per req.
-        req_id_to_idx_local = {rid: i for i, rid in enumerate(req_ids) if rid}
         for req_id, n_sched in num_scheduled.items():
             if not req_id:
                 continue
@@ -827,8 +773,8 @@ class DfxProcessor:
             req_idx = None
             if isinstance(req_id_to_index, dict) and req_id in req_id_to_index:
                 req_idx = int(req_id_to_index[req_id])
-            elif req_id in req_id_to_idx_local:
-                req_idx = req_id_to_idx_local[req_id]
+            elif req_id in req_ids:
+                req_idx = req_ids.index(req_id)
             all_ids = block_ids_for_request(
                 runner,
                 str(req_id),
@@ -984,13 +930,7 @@ class DfxProcessor:
             pres_pen = sampling_metadata.presence_penalties[req_idx].item()
             rep_pen = sampling_metadata.repetition_penalties[req_idx].item()
 
-            # S2 fix: bad_words_token_ids may be None (unlike output/spec
-            # above which are truthiness-checked) — AttributeError would crash
-            # the worker on the detect path.
-            bad_words = sampling_metadata.bad_words_token_ids
-            req_bad_words = (
-                bad_words.get(req_idx, []) if bad_words else []
-            )
+            req_bad_words = sampling_metadata.bad_words_token_ids.get(req_idx, [])
             req_output_tokens = (
                 sampling_metadata.output_token_ids[req_idx]
                 if sampling_metadata.output_token_ids and req_idx < len(sampling_metadata.output_token_ids)

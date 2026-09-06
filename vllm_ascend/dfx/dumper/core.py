@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import suppress
+import threading
 from typing import TYPE_CHECKING, Any
 
 from vllm.config.compilation import CUDAGraphMode
@@ -65,6 +66,9 @@ class Dumper(PendingDumpMixin, MsprobeBridgeMixin):
         self.runner = runner
         self.dfx_config = dfx_config
         self._debugger: Any | None = None
+        # B6 fix: protect _debugger lifecycle against
+        # hot-reload recreate racing in-flight finalize_dump_data.step().
+        self._lock = threading.RLock()
 
         self.sync_dump_limits_from_config()
 
@@ -143,31 +147,44 @@ class Dumper(PendingDumpMixin, MsprobeBridgeMixin):
         self._init_debugger(self.runner.compilation_config.cudagraph_mode)
 
     def _teardown_debugger(self) -> None:
-        """Drop the current msprobe debugger so it can be reconstructed."""
-        if bool(getattr(self, "_msprobe_dump_active", False)):
-            with suppress(Exception):
-                self.set_msprobe_dump_state(False)
-            self._msprobe_dump_active = False
-        self._pending_dump = False
-        self._pending_dump_req_id = None
-        self._pending_dump_skip_quota = False
-        self._dump_needs_forward = False
-        self._dump_forward_seen = False
-        dbg = getattr(self, "_debugger", None)
-        if dbg is not None and hasattr(dbg, "stop"):
-            with suppress(Exception):
-                dbg.stop()
-        self._debugger = None
-        self._debugger_started = False
-        self._aclgraph_hooks_installed = False
-        self._uses_aclgraph_dumper = False
+        """Drop the current msprobe debugger so it can be reconstructed.
+
+        B6 fix: hold ``self._lock`` so in-flight ``finalize_dump_data.step()``
+        on another thread cannot use a debugger we are about to stop/drop.
+        """
+        with self._lock:
+            if bool(getattr(self, "_msprobe_dump_active", False)):
+                with suppress(Exception):
+                    self.set_msprobe_dump_state(False)
+                self._msprobe_dump_active = False
+            self._pending_dump = False
+            self._pending_dump_req_id = None
+            self._pending_dump_skip_quota = False
+            self._dump_needs_forward = False
+            self._dump_forward_seen = False
+            dbg = getattr(self, "_debugger", None)
+            if dbg is not None and hasattr(dbg, "stop"):
+                with suppress(Exception):
+                    dbg.stop()
+            self._debugger = None
+            self._debugger_started = False
+            self._aclgraph_hooks_installed = False
+            self._uses_aclgraph_dumper = False
 
     def recreate_msprobe_debugger(self, *, reason: str = "config") -> bool:
         """Tear down and rebuild PrecisionDebugger / AclGraphDumper.
 
         Updates ``ascend_config.dump_config_path`` from
         ``dump.msprobe_config_path`` when set. Returns True if a recreate ran.
+
+        B6 fix: serialized against in-flight ``finalize_dump_data.step()``
+        via ``self._lock``; teardown + init are one atomic swap.
         """
+        with self._lock:
+            return self._recreate_msprobe_debugger_locked(reason=reason)
+
+    def _recreate_msprobe_debugger_locked(self, *, reason: str = "config") -> bool:
+        """Inner recreate body; caller holds ``self._lock``."""
         cfg_path = self.dfx_config.dump_msprobe_config_path()
         ascend = getattr(self.runner, "ascend_config", None)
         if cfg_path and ascend is not None:

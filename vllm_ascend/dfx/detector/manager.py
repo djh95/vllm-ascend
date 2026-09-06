@@ -295,12 +295,14 @@ class DetectorManager:
             input_batch = getattr(self._runner, "input_batch", None)
             resolved_ids = list(getattr(input_batch, "req_ids", None) or [])
 
-        # Keep a single-rank fallback for finish-print / dump_finish when detect
-        # gate is off. Normal detect path appends below after the gate check.
+        # B10 fix: always append on TP0 even when detect is gated off.
+        # Bug #5 half-fix gated append by print_output_on_finish / dump_finish,
+        # which left a gap in cumulative IO when those flags flipped mid-flight.
+        # output_substring / token_repeat read the same buffer → blinded for
+        # the gap. Append is cheap (per-req list extend); only detection is
+        # gated.
         if self._gated("after_sample"):
-            if int(getattr(self._runner, "tp_rank", 0)) == 0 and (
-                bool(self._dfx_config.log_print_output_on_finish()) or self._needs_io_for_dump_finish()
-            ):
+            if int(getattr(self._runner, "tp_rank", 0)) == 0:
                 RequestIoSnapshotManager.get().append_batch(resolved_ids, sampled_token_ids)
             return []
 

@@ -237,8 +237,13 @@ class RequestIoSnapshotManager:
         """
         if not req_id:
             return RequestIoSnapshot(req_id="", prompt_token_count=0, output_token_count=0)
+        # S16 fix: only cache the expensive path (include_token_ids=True).
+        # The count-only path is cheap to recompute; caching it returned
+        # stale output_token_count when a later append landed in the same
+        # wave after the first snapshot() call.
+        cacheable = use_cache and include_token_ids
         cache_key = f"{req_id}|{int(bool(include_token_ids))}"
-        if use_cache and cache_key in self._cache:
+        if cacheable and cache_key in self._cache:
             return self._cache[cache_key]
 
         prompt_ids: list[int] | None = None
@@ -267,7 +272,7 @@ class RequestIoSnapshotManager:
             prompt_token_ids=prompt_ids,
             output_token_ids=output_ids if include_token_ids else None,
         )
-        if use_cache:
+        if cacheable:
             self._cache[cache_key] = snap
         return snap
 

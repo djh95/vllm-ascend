@@ -123,7 +123,14 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         for batch_idx, req_id in enumerate(input_batch.req_ids):
             if skip_req_ids and req_id in skip_req_ids:
                 continue
+            # B9 fix: short batch edge — accepted_list may be shorter than
+            # req_ids under partial-batch / MTP edge cases. IndexError here
+            # would abort the whole batch's spec check.
+            if batch_idx >= len(accepted_list):
+                continue
             accepted_token_num = int(accepted_list[batch_idx])
+            if batch_idx >= len(sampled_token_rows):
+                continue
             sampled_ids = sampled_token_rows[batch_idx]
 
             if requests is not None and req_id in requests:

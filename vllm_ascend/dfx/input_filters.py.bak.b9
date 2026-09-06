@@ -392,18 +392,9 @@ def _prompt_ids_from_req_states(
                 row = row.cpu()
         except Exception:
             return None
-    # S13 fix: Bug #9 fallback path. If host mirror is all-zero (n>0 but
-    # every entry 0), the StagedWriteTensor hasn't been committed by
-    # apply_staged_writes yet. Returning [0,0,...,0] silently poisons
-    # downstream filters/snapshots. Return None so the caller falls back
-    # to scheduler_output or marks the prompt unavailable.
-    try:
-        row_list = row.tolist() if hasattr(row, "tolist") else list(row)
-    except Exception:
-        return None
-    if n > 0 and all(int(x) == 0 for x in row_list):
-        return None
-    return [int(x) for x in row_list]
+    if hasattr(row, "tolist"):
+        return [int(x) for x in row.tolist()]
+    return [int(x) for x in row]
 
 
 def _prompt_ids_from_scheduler_output(
@@ -438,15 +429,6 @@ def prompt_token_ids_for_request(
     """Best-effort prompt token ids from runner request state / input batch / MRV2."""
     if runner is None:
         return None
-    # Bug #9 fix: prefer DFX-owned cache populated from scheduler_output on
-    # first prefill wave. v2 RequestState.all_token_ids is a StagedWriteTensor
-    # whose host mirror is 0 until apply_staged_writes commits; v2 also pops
-    # req_id from req_id_to_index on finish, so post-finish snapshots return
-    # None. The cache survives both windows.
-    cached = RequestDfxStore.get().get_prompt_token_ids(req_id)
-    if cached is not None:
-        return cached
-
     requests = getattr(runner, "requests", None)
     if isinstance(requests, dict):
         req = requests.get(req_id)

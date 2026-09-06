@@ -143,65 +143,69 @@ class MsprobeBridgeMixin:
             )
 
     def finalize_dump_data(self, *, dump: bool = True) -> None:
-        if self._debugger is None or not self._debugger_started:
-            return
-        dumping = bool(self._msprobe_dump_active)
-        is_acl = self._is_aclgraph_dumper()
-        # PrecisionDebugger: stop then step. AclGraphDumper: never stop here —
-        # stop would drop hooks needed for graph replay / later dump windows.
-        if not is_acl and hasattr(self._debugger, "stop"):
-            self._debugger.stop()
-            self._debugger_started = False
+        # B6 fix: hold self._lock for the whole body so a concurrent
+        # recreate_msprobe_debugger cannot drop _debugger between the
+        # is-None guard and the dbg.step() call.
+        with self._lock:
+            if self._debugger is None or not self._debugger_started:
+                return
+            dumping = bool(self._msprobe_dump_active)
+            is_acl = self._is_aclgraph_dumper()
+            # PrecisionDebugger: stop then step. AclGraphDumper: never stop here —
+            # stop would drop hooks needed for graph replay / later dump windows.
+            if not is_acl and hasattr(self._debugger, "stop"):
+                self._debugger.stop()
+                self._debugger_started = False
 
-        try:
-            if dump:
-                self._debugger.step()
-            else:
-                self._debugger.step(dump=False)
-        except Exception as exc:
-            # Multi-rank races on shared msprobe JSON must not kill the worker.
-            logger.error(
-                "[Anomaly msprobe] debugger.step failed %s error=%s",
-                self.dump_rank_tag(),
-                exc,
-            )
-
-        if is_acl:
-            # Keep hooks + _running for future replay; only clear the step flag.
-            self._debugger_started = False
-
-        # capture/dummy (dump=False): must not consume the pending dump-forward window.
-        if not dump:
-            if self._dump_needs_forward:
-                self._dump_forward_seen = False
-            return
-        # Barrier before flipping shared dump_enable=false: peer step() may
-        # re-read the JSON (AclGraphDumper._refresh_dump_enable) and skip write.
-        if dumping and self._use_pending_dump_sync():
             try:
-                tp_group = get_tp_group()
-                if tp_group.world_size > 1:
-                    torch.distributed.barrier(group=tp_group.cpu_group)
+                if dump:
+                    self._debugger.step()
+                else:
+                    self._debugger.step(dump=False)
             except Exception as exc:
-                logger.warning(
-                    "[Anomaly msprobe] dump finalize barrier failed %s error=%s",
+                # Multi-rank races on shared msprobe JSON must not kill the worker.
+                logger.error(
+                    "[Anomaly msprobe] debugger.step failed %s error=%s",
                     self.dump_rank_tag(),
                     exc,
                 )
-        dump_path = getattr(self._debugger, "dump_path", None)
-        if dumping and dump_path:
-            logger.info(
-                "[Anomaly msprobe] step done %s dump_path=%s (check step*/rank*/ under this dir)",
-                self.dump_rank_tag(),
-                dump_path,
-            )
-        self.disable_msprobe_dump_if_needed()
-        if dumping:
-            logger.debug(
-                "[Anomaly msprobe] finalize after dump-forward %s %s",
-                self.dump_rank_tag(),
-                self._dump_state_tag(),
-            )
+
+            if is_acl:
+                # Keep hooks + _running for future replay; only clear the step flag.
+                self._debugger_started = False
+
+            # capture/dummy (dump=False): must not consume the pending dump-forward window.
+            if not dump:
+                if self._dump_needs_forward:
+                    self._dump_forward_seen = False
+                return
+            # Barrier before flipping shared dump_enable=false: peer step() may
+            # re-read the JSON (AclGraphDumper._refresh_dump_enable) and skip write.
+            if dumping and self._use_pending_dump_sync():
+                try:
+                    tp_group = get_tp_group()
+                    if tp_group.world_size > 1:
+                        torch.distributed.barrier(group=tp_group.cpu_group)
+                except Exception as exc:
+                    logger.warning(
+                        "[Anomaly msprobe] dump finalize barrier failed %s error=%s",
+                        self.dump_rank_tag(),
+                        exc,
+                    )
+            dump_path = getattr(self._debugger, "dump_path", None)
+            if dumping and dump_path:
+                logger.info(
+                    "[Anomaly msprobe] step done %s dump_path=%s (check step*/rank*/ under this dir)",
+                    self.dump_rank_tag(),
+                    dump_path,
+                )
+            self.disable_msprobe_dump_if_needed()
+            if dumping:
+                logger.debug(
+                    "[Anomaly msprobe] finalize after dump-forward %s %s",
+                    self.dump_rank_tag(),
+                    self._dump_state_tag(),
+                )
 
     @contextmanager
     def lock_msprobe_config(self, config_path: Path):

@@ -59,14 +59,26 @@ class TokenLogprobDetector(ConfigBackedDetector):
             self.refresh_from_config()
 
     def _apply_detector_values(self, getter: Callable[[str, Any], Any]) -> None:
-        self._window = int(getter("window", self._window))
-        self._stride = int(getter("stride", self._stride))
-        self._topk = int(getter("topk", self._topk))
+        # B1 fix: null config values would crash int(None) → TypeError → worker
+        # crash on every apply_dfx_config. Wrap each cast; keep prior on failure.
+        def _safe_int(key: str, default: int) -> int:
+            raw = getter(key, default)
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                logger.error(
+                    "[Anomaly token_logprob] invalid %s=%r; keeping previous %d",
+                    key, raw, default,
+                )
+                return default
+        self._window = _safe_int("window", self._window)
+        self._stride = _safe_int("stride", self._stride)
+        self._topk = _safe_int("topk", self._topk)
         self._ill_window_thresh = {
-            1: int(getter("ill_rare_window_thresh", self._ill_window_thresh[1])),
-            2: int(getter("ill_garbled_window_thresh", self._ill_window_thresh[2])),
-            3: int(getter("ill_repet_window_thresh", self._ill_window_thresh[3])),
-            4: int(getter("ill_nan_window_thresh", self._ill_window_thresh[4])),
+            1: _safe_int("ill_rare_window_thresh", self._ill_window_thresh[1]),
+            2: _safe_int("ill_garbled_window_thresh", self._ill_window_thresh[2]),
+            3: _safe_int("ill_repet_window_thresh", self._ill_window_thresh[3]),
+            4: _safe_int("ill_nan_window_thresh", self._ill_window_thresh[4]),
         }
 
     def refresh_from_config(self) -> None:
@@ -388,8 +400,10 @@ class TokenLogprobDetector(ConfigBackedDetector):
             logprobs_arr = logprobs_lists.logprobs
             cu = getattr(logprobs_lists, "cu_num_generated_tokens", None)
             if cu is not None:
-                start = cu[req_idx]
-                end = cu[req_idx + 1] if req_idx + 1 < len(cu) else start + num_tokens
+                # B8 fix: cu[req_idx] may be a 0-d tensor; min() then mixes
+                # tensor and int → wrong arg or TypeError. Cast to int.
+                start = int(cu[req_idx])
+                end = int(cu[req_idx + 1]) if req_idx + 1 < len(cu) else start + num_tokens
             else:
                 if num_tokens == 1:
                     start = req_idx

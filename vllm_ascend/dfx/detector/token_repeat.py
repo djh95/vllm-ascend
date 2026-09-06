@@ -128,9 +128,11 @@ class TokenRepeatDetector(ConfigBackedDetector):
     def _apply_detector_values(self, getter: Callable[[str, Any], Any]) -> None:
         new_window = max(1, int(getter("window", self._window)))
         if new_window != self._window and self._states:
-            # Shrinking/growing the window invalidates in-flight sliding windows.
+            # B12 fix: also clear _alerted — a req already alerted under the
+            # old window would never be re-evaluated under the new window.
             self._states.clear()
             self._consumed_len.clear()
+            self._alerted.clear()
         self._window = new_window
         self._repeat_sum_threshold = max(0, int(getter("repeat_sum_threshold", self._repeat_sum_threshold)))
         self._min_tokens = max(0, int(getter("min_tokens", self._min_tokens)))

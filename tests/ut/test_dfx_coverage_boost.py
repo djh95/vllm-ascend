@@ -200,14 +200,15 @@ def test_manual_trigger_manager_paths(tmp_path):
     assert cfg.manual_trigger() is True
     assert cfg.manual_trigger_continuous() is True
 
-    # Int count: consume even when this rank does not arm.
+    # B2 fix: rank-gate BEFORE consume — non-TP0 must NOT consume,
+#    value stays True (1) — non-TP0 must not burn the quota.
     cfg._data["dump"]["manual_trigger"] = 1
     with patch(
         "vllm_ascend.dfx.manual_trigger.should_run_anomaly_check_on_rank",
         return_value=False,
     ):
         assert mgr.consume_once(allow_arm=True, scheduler_output=so) is None
-    assert cfg.manual_trigger() is False
+    assert cfg.manual_trigger() is True, "B2 fix: non-TP0 must not consume manual_trigger"
 
     cfg._data["dump"]["manual_trigger"] = 2
     cfg._data["dump"]["enabled"] = True

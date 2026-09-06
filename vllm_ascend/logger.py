@@ -131,6 +131,19 @@ def apply_ascend_log_level(
         if h.level > logging.DEBUG:
             h.setLevel(logging.DEBUG)
 
+    # Apply the same level to the vllm root logger so that non-DFX vllm_ascend
+    # files (which use `from vllm.logger import logger`) honor ascend_log.level
+    # too. Python logging gates a record at logger.isEnabledFor(level) BEFORE
+    # any handler is consulted; if vllm logger.level stays at
+    # VLLM_LOGGING_LEVEL (default INFO), records at any other level are
+    # dropped at the logger-level gate regardless of handler levels. Setting
+    # vllm.level = root_level makes ascend_log.level bidirectional:
+    # DEBUG → opens vllm DEBUG; INFO → restores; WARNING → suppresses vllm
+    # INFO (which is verbose for Ascend debugging); ERROR → only errors.
+    # Default VLLM_LOGGING_LEVEL still wins at startup before DFX applies.
+    vllm_logger = logging.getLogger("vllm")
+    vllm_logger.setLevel(root_level)
+
     # Reset known children to the root level (clears a prior debug whitelist).
     for name in _iter_ascend_logger_names():
         logging.getLogger(name).setLevel(root_level)
@@ -147,11 +160,10 @@ def apply_ascend_log_level(
     if needs_debug:
         # Outer collectors (e.g. UC) often attach INFO-level handlers on root /
         # ``vllm``. Lower those handlers so DEBUG records are not dropped after
-        # our loggers allow them. Logger levels elsewhere stay unchanged.
+        # our loggers allow them.
         for h in logging.root.handlers:
             if h.level > logging.DEBUG:
                 h.setLevel(logging.DEBUG)
-        vllm_logger = logging.getLogger("vllm")
         for h in vllm_logger.handlers:
             if h.level > logging.DEBUG:
                 h.setLevel(logging.DEBUG)

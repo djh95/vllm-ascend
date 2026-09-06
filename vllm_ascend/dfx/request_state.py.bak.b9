@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -81,11 +81,6 @@ class RequestDfxState:
     # Scheduler finished; keep state until reap (last get_output / idle sweep).
     finished: bool = False
     finish_mark_wave: int | None = None
-    # Cached prompt token ids captured from scheduler_output.scheduled_new_reqs
-    # on the first prefill wave. Avoids reading v2 RequestState.all_token_ids
-    # StagedWriteTensor host mirror before apply_staged_writes commits (Bug #9:
-    # mirror initialized to 0, snapshot returned 19 zeros / empty after clear).
-    prompt_token_ids: list[int] | None = None
 
 
 class RequestDfxStore:
@@ -257,12 +252,6 @@ class RequestDfxStore:
                 # post-reap append is rare (force-reap / dropped output).
                 state = RequestDfxState(req_id=rid)
                 self._by_req[rid] = state
-            elif state.finished:
-                # S14 fix: zombie re-create (post-reap append on a finished state)
-                # would otherwise leave finished=False, making list_reapable
-                # skip it forever → unbounded store growth on long runs.
-                # Stamp finished=True so the next reap sweep picks it up.
-                state.finished = True
             if state.last_append_chunk == chunk:
                 return
             state.output_token_ids.extend(token_ids)
@@ -282,32 +271,6 @@ class RequestDfxStore:
         state = self.get_state(req_id)
         return len(state.output_token_ids) if state is not None else 0
 
-    # ---- prompt token ids cache (Bug #9 fix) -----------------------------
-
-    def set_prompt_token_ids(self, req_id: str, token_ids: Sequence[int] | None) -> None:
-        """Cache prompt token ids captured from scheduler_output on first wave.
-
-        Idempotent: first non-None value wins. Later calls with a different list
-        are ignored so prompt ids stay stable for the request's lifetime.
-        """
-        if not req_id or token_ids is None:
-            return
-        rid = str(req_id)
-        ids = [int(x) for x in token_ids]
-        if not ids:
-            return
-        with self._lock:
-            state = self._by_req.get(rid)
-            if state is None:
-                state = RequestDfxState(req_id=rid)
-                self._by_req[rid] = state
-            if state.prompt_token_ids is None:
-                state.prompt_token_ids = ids
-
-    def get_prompt_token_ids(self, req_id: str) -> list[int] | None:
-        state = self.get_state(req_id)
-        return list(state.prompt_token_ids) if state is not None and state.prompt_token_ids is not None else None
-
     # ---- filter -----------------------------------------------------------
 
     def get_filter_allowed(self, req_id: str) -> bool | None:
@@ -317,23 +280,12 @@ class RequestDfxStore:
     def set_filter_allowed(self, req_id: str, allowed: bool) -> None:
         if not req_id:
             return
-        # S15 fix: mutation must hold self._lock — get_or_create + assignment
-        # is not atomic; concurrent take_sample_wave could observe partial state.
-        with self._lock:
-            state = self._by_req.get(str(req_id))
-            if state is None:
-                state = RequestDfxState(req_id=str(req_id))
-                self._by_req[str(req_id)] = state
-            state.filter_allowed = bool(allowed)
+        self.get_or_create(req_id).filter_allowed = bool(allowed)
 
     def clear_filter_allowed(self, req_id: str) -> None:
-        # S15 fix: lock-protected mutation (was via get_state which drops lock).
-        if not req_id:
-            return
-        with self._lock:
-            state = self._by_req.get(str(req_id))
-            if state is not None:
-                state.filter_allowed = None
+        state = self.get_state(req_id)
+        if state is not None:
+            state.filter_allowed = None
 
     def clear_all_filter_allowed(self) -> None:
         with self._lock:
@@ -369,14 +321,9 @@ class RequestDfxStore:
             return int(state.sample_waves.popleft())
 
     def clear_sample_waves(self, req_id: str) -> None:
-        # S15 fix: lock-protected — was via get_state (drops lock before .clear()),
-        # racing take_sample_wave's popleft.
-        if not req_id:
-            return
-        with self._lock:
-            state = self._by_req.get(str(req_id))
-            if state is not None:
-                state.sample_waves.clear()
+        state = self.get_state(req_id)
+        if state is not None:
+            state.sample_waves.clear()
 
     def sample_wave_pending(self, req_id: str) -> int:
         state = self.get_state(req_id)

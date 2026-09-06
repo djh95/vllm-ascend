@@ -50,6 +50,7 @@ import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 from vllm_ascend.logger import init_logger_ascend
 
@@ -304,6 +305,34 @@ def _normalize_config_sections(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _normalize_config_sections_into(data: dict[str, Any]) -> None:
+    """In-place variant of :func:`_normalize_config_sections`.
+
+    S10 fix: used by :meth:`DfxRuntimeConfig._validate` so the validator is
+    safe regardless of whether the caller normalized first.
+    """
+    if not isinstance(data, dict):
+        return
+    ascend = data.get("ascend_log")
+    if not isinstance(ascend, dict):
+        ascend = {}
+        data["ascend_log"] = ascend
+    else:
+        # Reuse the same dict object (mutate in place).
+        pass
+    ascend.pop("enabled", None)
+    if "level" not in ascend:
+        ascend["level"] = "INFO"
+    debug = ascend.get("debug", [])
+    if debug is None:
+        debug = []
+    if isinstance(debug, str):
+        debug = [debug]
+    if not isinstance(debug, list):
+        raise ValueError("ascend_log.debug must be a list of module name strings")
+    ascend["debug"] = [str(item).strip() for item in debug if str(item).strip()]
+
+
 def _world_group_or_none():
     try:
         from vllm.distributed.parallel_state import get_world_group
@@ -449,6 +478,8 @@ class DfxRuntimeConfig:
         if self._reload_interval < 0:
             raise ValueError(f"dfx_config_reload_interval must be >= 0, got {self._reload_interval}")
         self._mtime: float | None = None
+        # S8 fix: tie-break same-second edits with file size (NFS 1s mtime granularity).
+        self._size: int | None = None
         self._version: float = 0.0
         self._last_reload_ts = 0.0
         self._ctor_sync_mode = sync_mode
@@ -763,7 +794,7 @@ class DfxRuntimeConfig:
                 with self._lock_config():
                     self._write_data_unlocked(merged)
                     mtime = self.config_path.stat().st_mtime
-                self._apply_loaded(merged, version=mtime, announce=False)
+                self._apply_loaded(merged, version=mtime, size=int(self.config_path.stat().st_size), announce=False)
                 self._bootstrap_persisted = True
                 logger.info(
                     "[DFX runtime_config] bootstrap saved path=%s explicit_path=%s overwrite_default=%s %s",
@@ -863,6 +894,7 @@ class DfxRuntimeConfig:
                 self._write_data_unlocked(self._data)
                 mtime = self.config_path.stat().st_mtime
             self._mtime = mtime
+            self._size = None  # bootstrap; will be set on first reload/save
             self._version = float(mtime)
             self._bootstrap_persisted = True
             logger.info(
@@ -1120,18 +1152,43 @@ class DfxRuntimeConfig:
         remaining = self.manual_trigger_count()
         if remaining <= 0:
             return False
-        new_val: bool | int = False if remaining <= 1 else remaining - 1
-        self.dump["manual_trigger"] = new_val
+        # B7 fix: derive new_val from disk-under-lock via save() callback so
+        # a user hand-edit between reload and consume does not get clobbered
+        # by a stale-derived updates payload. Falls back to in-mem ``remaining``
+        # when disk value is missing/non-int.
+        derived: dict[str, Any] = {"val": None, "was": remaining}
+
+        def _derive(data: dict[str, Any]) -> dict[str, Any]:
+            dump = data.setdefault("dump", {})
+            cur_raw = dump.get("manual_trigger", remaining)
+            if isinstance(cur_raw, bool) or not isinstance(cur_raw, int):
+                cur = remaining
+            else:
+                cur = cur_raw
+            if cur <= 1:
+                new_val: bool | int = False
+            else:
+                new_val = cur - 1
+            dump["manual_trigger"] = new_val
+            derived["val"] = new_val
+            derived["was"] = cur
+            return data
+
         if _is_json_writer():
-            if self.save({"dump": {"manual_trigger": new_val}}):
+            if self.save(derive_from_disk=_derive):
+                new_val = derived["val"]
+                if new_val is not None:
+                    self.dump["manual_trigger"] = new_val
                 logger.info(
-                    "[DFX runtime_config] manual_trigger consumed → %s (was %d) path=%s %s",
+                    "[DFX runtime_config] manual_trigger consumed \u2192 %s (was %d) path=%s %s",
                     new_val,
-                    remaining,
+                    derived.get("was", remaining),
                     self.config_path,
                     _process_role_tag(),
                 )
             else:
+                new_val = False if remaining <= 1 else remaining - 1
+                self.dump["manual_trigger"] = new_val
                 logger.warning(
                     "[DFX runtime_config] manual_trigger decremented in-memory but failed "
                     "to persist path=%s remaining_was=%d %s",
@@ -1140,8 +1197,10 @@ class DfxRuntimeConfig:
                     _process_role_tag(),
                 )
         else:
+            new_val = False if remaining <= 1 else remaining - 1
+            self.dump["manual_trigger"] = new_val
             logger.info(
-                "[DFX runtime_config] manual_trigger → %s in-memory (non-writer; was %d) %s",
+                "[DFX runtime_config] manual_trigger \u2192 %s in-memory (non-writer; was %d) %s",
                 new_val,
                 remaining,
                 _process_role_tag(),
@@ -1543,7 +1602,18 @@ class DfxRuntimeConfig:
             return False
         if not sync_group.is_first_rank:
             if version != self._version:
-                return self._apply_loaded(data, version=version)
+                # S7 fix: payload corruption or _validate ValueError must not
+                # crash the follower worker. Keep last-known-good self._data
+                # and log; the next broadcast with a valid payload recovers.
+                try:
+                    return self._apply_loaded(data, version=version)
+                except Exception as exc:
+                    logger.error(
+                        "[DFX runtime_config] follower _apply_loaded failed "
+                        "path=%s version=%.6f error=%s — keeping last-known-good %s",
+                        self.config_path, version, exc, _process_role_tag(),
+                    )
+                    return False
             return False
         # Leader: true if file changed, or first sync (refresh callers once).
         return changed or first_sync
@@ -1561,12 +1631,19 @@ class DfxRuntimeConfig:
             return False
 
         try:
-            mtime = self.config_path.stat().st_mtime
+            stat = self.config_path.stat()
+            mtime = stat.st_mtime
+            size = int(stat.st_size)
         except OSError as exc:
             logger.warning("[DFX runtime_config] stat failed path=%s error=%s", self.config_path, exc)
             return False
 
-        if not force and self._mtime is not None and mtime <= self._mtime:
+        # S8 fix: tie-break same-second edits with file size. NFS mtime is
+        # 1s granularity; two edits in the same second with different content
+        # would otherwise be silently dropped by `mtime <= self._mtime`.
+        if not force and self._mtime is not None and (
+            mtime < self._mtime or (mtime == self._mtime and size == self._size)
+        ):
             return False
 
         try:
@@ -1578,7 +1655,7 @@ class DfxRuntimeConfig:
             merged = _deep_merge(_DEFAULTS, _normalize_config_sections(loaded))
             # Missing key ≠ explicit null: do not let _DEFAULTS wipe a seeded path.
             self._apply_msprobe_path_seed(merged, loaded)
-            return self._apply_loaded(_normalize_config_sections(merged), version=mtime)
+            return self._apply_loaded(_normalize_config_sections(merged), version=mtime, size=size)
         except Exception as exc:
             logger.error("[DFX runtime_config] reload failed path=%s error=%s", self.config_path, exc)
             return False
@@ -1588,6 +1665,7 @@ class DfxRuntimeConfig:
         merged: dict[str, Any],
         *,
         version: float,
+        size: int | None = None,
         announce: bool = True,
     ) -> bool:
         merged = _normalize_config_sections(merged)
@@ -1596,6 +1674,9 @@ class DfxRuntimeConfig:
         self._data = merged
         self._mtime = version
         self._version = version
+        # S8 fix: remember size for same-second tie-break.
+        if size is not None:
+            self._size = int(size)
         if announce and changes:
             # Only print fields that actually changed (e.g. dump.max_times).
             logger.info(
@@ -1629,12 +1710,18 @@ class DfxRuntimeConfig:
             )
         return True
 
-    def save(self, updates: dict[str, Any] | None = None) -> bool:
+    def save(self, updates: dict[str, Any] | None = None, *, derive_from_disk: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> bool:
         """Merge ``updates`` and write JSON. Leader (or single-process) only.
 
         Under the config lock, re-read disk first so a stale in-memory snapshot
         cannot wipe concurrent hand-edits (e.g. ``dump.max_times``) when only
         flushing ``manual_trigger``.
+
+        ``derive_from_disk``: optional callback invoked AFTER the in-lock disk
+        re-read + ``updates`` merge. Use this when the caller needs to derive
+        a value from current disk (e.g. ``consume_manual_trigger`` deriving
+        ``new_val`` from disk rather than stale in-mem), so ``updates`` does
+        not inject stale-derived values back over the disk read.
         """
         if not _is_json_writer():
             logger.debug(
@@ -1649,11 +1736,15 @@ class DfxRuntimeConfig:
                 data = _deep_merge(deepcopy(self._data), on_disk) if on_disk else deepcopy(self._data)
                 if updates:
                     data = _deep_merge(data, updates)
+                if derive_from_disk is not None:
+                    data = derive_from_disk(data)
                 data = _normalize_config_sections(data)
                 self._validate(data)
                 self._write_data_unlocked(data)
                 self._data = data
-                self._mtime = self.config_path.stat().st_mtime
+                stat = self.config_path.stat()
+                self._mtime = stat.st_mtime
+                self._size = int(stat.st_size)
                 self._version = float(self._mtime)
             logger.info("[DFX runtime_config] saved path=%s", self.config_path)
             return True
@@ -1685,7 +1776,13 @@ class DfxRuntimeConfig:
 
         Detect and dump are orthogonal: dump-only / detect-only / both are valid.
         Soft warnings for easy-to-misread combos live in ``_warn_interaction_quirks``.
+
+        S10 fix: defensively re-run ``_normalize_config_sections`` at entry so
+        ``_validate`` is safe to call regardless of whether the caller normalized
+        first. Idempotent — if already normalized, this is a no-op. Eliminates
+        the drift between inline normalize-in-validate and the standalone helper.
         """
+        _normalize_config_sections_into(data)
         for section in (
             "dump",
             "ascend_log",
@@ -1787,14 +1884,12 @@ class DfxRuntimeConfig:
         from vllm_ascend.dfx.input_filters import normalize_input_filter_configs
 
         data["input_filter"]["filters"] = normalize_input_filter_configs(data["input_filter"].get("filters", []))
+        # S10 fix: normalization happens via _normalize_config_sections_into
+        # at the start of _validate. Only type-check here.
         level = data["ascend_log"].get("level", "INFO")
         if not isinstance(level, str):
             raise ValueError("ascend_log.level must be str")
         debug = data["ascend_log"].get("debug", [])
-        if debug is None:
-            debug = []
-        if isinstance(debug, str):
-            debug = [debug]
         if not isinstance(debug, list):
             raise ValueError("ascend_log.debug must be a list of module name strings")
         for item in debug:

@@ -158,12 +158,15 @@ class ManualTriggerManager:
                 remaining,
             )
             return None
+        # B2 fix: rank-gate BEFORE consume — non-TP0 ranks used to silently
+        # burn the quota on their local config, so manual_trigger_count=1
+        # vanished without firing on the detect rank.
+        if not should_run_anomaly_check_on_rank(self._runner):
+            return None
         continuous = self._dfx_config.manual_trigger_continuous()
         if not self._dfx_config.consume_manual_trigger():
             return None
         left = self._dfx_config.manual_trigger_count()
-        if not should_run_anomaly_check_on_rank(self._runner):
-            return None
         if continuous:
             logger.info("[DFX manual_trigger] dump.manual_trigger armed (continuous)")
             remaining_after: bool | int = True
