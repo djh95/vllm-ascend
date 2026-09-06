@@ -168,22 +168,161 @@ def test_needs_sample_phase_hooks_and_cumulative_io_flags(tmp_path: Path):
     assert cfg.needs_cumulative_io() is False
 
     cfg._data["log"]["print_output_on_finish"] = True
+    cfg._invalidate_hot_path_gates()
     assert cfg.needs_sample_phase_hooks() is True
     assert cfg.needs_cumulative_io() is True
 
     cfg._data["log"]["print_output_on_finish"] = False
     cfg._data["detector"]["token_logprob"]["enabled"] = True
+    cfg._invalidate_hot_path_gates()
     assert cfg.needs_sample_phase_hooks() is True
     # token_logprob alone does not need cumulative IO without sensitive reports
     assert cfg.needs_cumulative_io() is False
 
     cfg._data["report"]["save_sensitive_info"] = True
+    cfg._invalidate_hot_path_gates()
     assert cfg.needs_cumulative_io() is True
 
     cfg2 = _cfg(tmp_path, reload=0.0)
     assert cfg2.needs_filter_chain_apply() is False
     cfg2._data["detector"]["token_repeat"]["enabled"] = True
+    cfg2._invalidate_hot_path_gates()
     assert cfg2.needs_filter_chain_apply() is True
+
+
+def test_hot_path_gates_cache_and_early_sync_skip(tmp_path: Path):
+    """Gates stay cached until invalidate; sync skips while clearly not due."""
+    cfg = _cfg(tmp_path, reload=5.0)
+    assert cfg.needs_sample_phase_hooks() is False
+    g1 = cfg._hot_path_gates
+    assert g1 is not None
+    assert cfg.needs_sample_phase_hooks() is False
+    assert cfg._hot_path_gates is g1
+
+    cfg._last_reload_ts = time.time()
+    cfg._initial_broadcast_done = True
+    # Far from due → no file poll / collective entry work.
+    assert cfg.sync_runtime_config() is False
+
+    cfg._data["detector"]["token_repeat"]["enabled"] = True
+    # Stale cache until invalidate / apply_loaded / save.
+    assert cfg.needs_sample_phase_hooks() is False
+    cfg._invalidate_hot_path_gates()
+    assert cfg.needs_sample_phase_hooks() is True
+
+
+def test_sync_for_step_skips_refresh_when_not_due_idle(tmp_path: Path):
+    """T2 idle shell: not due + idle gates → advance only, no refresh."""
+    RuntimeGuardProcessor.reset_for_tests()
+    cfg = _cfg(tmp_path, reload=5.0)
+    cfg._last_reload_ts = time.time()
+    cfg._initial_broadcast_done = True
+    assert cfg.reload_clearly_not_due() is True
+
+    runner = MagicMock()
+    runner.tp_rank = 0
+    runner.dp_rank = 0
+
+    def _init(self, r):
+        self.runner = r
+        self.runtime_config = cfg
+        self.manual_triggers = MagicMock()
+        self.action_executor = MagicMock()
+        self.detectors = MagicMock()
+        self.report_writer = MagicMock()
+        self.kv_reader = MagicMock()
+        self.quota = MagicMock()
+        self.wave_tracker = MagicMock()
+
+    with (
+        patch.object(RuntimeGuardProcessor, "_init_from_runner", _init),
+        patch.object(RuntimeGuardProcessor, "refresh_config") as refresh,
+        patch(
+            "vllm_ascend.runtime_guard.processor.get_pp_group",
+            side_effect=Exception("no pp"),
+        ),
+    ):
+        proc = RuntimeGuardProcessor.bind(runner)
+        proc.sync_for_step(allow_arm=True, scheduler_output=None)
+        proc.wave_tracker.advance.assert_called_once_with(allow_arm=True)
+        refresh.assert_not_called()
+        proc.manual_triggers.consume_once.assert_not_called()
+
+    RuntimeGuardProcessor.reset_for_tests()
+
+
+def test_sync_for_step_skips_refresh_when_reload_off_idle(tmp_path: Path):
+    """T1 idle shell: reload=0 + idle gates → advance only."""
+    RuntimeGuardProcessor.reset_for_tests()
+    cfg = _cfg(tmp_path, reload=0.0)
+    assert cfg.hot_reload_enabled is False
+
+    runner = MagicMock()
+    runner.tp_rank = 0
+    runner.dp_rank = 0
+
+    def _init(self, r):
+        self.runner = r
+        self.runtime_config = cfg
+        self.manual_triggers = MagicMock()
+        self.action_executor = MagicMock()
+        self.detectors = MagicMock()
+        self.report_writer = MagicMock()
+        self.kv_reader = MagicMock()
+        self.quota = MagicMock()
+        self.wave_tracker = MagicMock()
+
+    with (
+        patch.object(RuntimeGuardProcessor, "_init_from_runner", _init),
+        patch.object(RuntimeGuardProcessor, "refresh_config") as refresh,
+        patch(
+            "vllm_ascend.runtime_guard.processor.get_pp_group",
+            side_effect=Exception("no pp"),
+        ),
+    ):
+        proc = RuntimeGuardProcessor.bind(runner)
+        proc.sync_for_step(allow_arm=True, scheduler_output=None)
+        proc.wave_tracker.advance.assert_called_once_with(allow_arm=True)
+        refresh.assert_not_called()
+
+    RuntimeGuardProcessor.reset_for_tests()
+
+
+def test_refresh_config_skips_clear_wave_cache_when_idle(tmp_path: Path):
+    RuntimeGuardProcessor.reset_for_tests()
+    cfg = _cfg(tmp_path, reload=0.0)
+    runner = MagicMock()
+    runner.tp_rank = 0
+
+    def _init(self, r):
+        self.runner = r
+        self.runtime_config = cfg
+        self.manual_triggers = MagicMock()
+        self.manual_triggers.consume_once.return_value = None
+        self.action_executor = MagicMock()
+        self.detectors = MagicMock()
+        self.report_writer = MagicMock()
+        self.kv_reader = MagicMock()
+        self.quota = MagicMock()
+
+    with (
+        patch.object(RuntimeGuardProcessor, "_init_from_runner", _init),
+        patch(
+            "vllm_ascend.runtime_guard.processor.RequestIoSnapshotManager"
+        ) as io_mgr,
+    ):
+        io = MagicMock()
+        io_mgr.get.return_value = io
+        proc = RuntimeGuardProcessor.bind(runner)
+        proc.refresh_config(allow_arm=True)
+        io.clear_wave_cache.assert_not_called()
+
+        cfg._data["log"]["print_output_on_finish"] = True
+        cfg._invalidate_hot_path_gates()
+        proc.refresh_config(allow_arm=True)
+        io.clear_wave_cache.assert_called_once()
+
+    RuntimeGuardProcessor.reset_for_tests()
 
 
 def test_run_sample_phase_idle_skips_hooks(tmp_path: Path):

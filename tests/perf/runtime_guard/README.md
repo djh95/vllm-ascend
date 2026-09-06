@@ -25,7 +25,7 @@ csrc is unchanged between merge-base and HEAD, so **no `.so` rebuild needed**.
 | ID | Compare | What it proves | Status (2026-09-05) |
 |----|---------|----------------|------|
 | **C1** | T0 vs T1 | Guard infrastructure (`RuntimeGuardProcessor.bind` + `sync_for_step` + `refresh_config` early-return + hook installation) has zero overhead in default-off state | ❌ **NOT DONE** — never checked out merge-base on a live server |
-| **C2** | T1 vs T2 | Hot-reload `all_reduce` cost (per-step collective in `_maybe_reload_broadcast`) | ✅ 0.4% (perf_baseline=8.12 vs perf_ab A=8.09) |
+| **C2** | T1 vs T2 | Hot-reload poll shell (per-step `sync_for_step` / interval gate; collective only near due) | ✅ ~0.4% pre-opt (perf_baseline=8.12 vs perf_ab A=8.09); re-measure after idle not-due short-circuit |
 | **C3** | T2 vs T3 | Detector enable cost (within reload=3) | ✅ 0.6% (perf_ab A=8.09 vs B=8.04) |
 | **C4** | Functional isolation | `temp=0` outputs bit-identical across T0–T3 | ⚠️ partial (B14 verified T2/T3 only; T0/T1 not bit-compared) |
 
@@ -41,10 +41,13 @@ csrc is unchanged between merge-base and HEAD, so **no `.so` rebuild needed**.
 
 C1 is the most fundamental perf question: **does loading the guard infrastructure cost anything when everything is off?**
 
-The 0.4% gap measured in C2 is **NOT** the guard infra cost — it's the
-hot-reload `all_reduce` collective cost. C1 measures the guard-infra-only
-overhead and is the right experiment to answer "guard adds zero overhead in
-default-off startup."
+The ~0.4% gap previously measured in C2 is **NOT** a per-step `all_reduce`
+cost. With skew / `reload_clearly_not_due`, collectives run only near the
+reload interval; the residual is mostly the Python idle shell on T2
+(`sync_for_step` → refresh/consume when due, advance-only when not due).
+C1 measures the guard-infra-only overhead (T1 early-return / advance-only)
+and is the right experiment for "guard adds zero overhead in default-off
+startup."
 
 To run C1:
 1. Stop current guard server (cards 6-7)
@@ -58,11 +61,11 @@ To run C1:
    `perf_baseline.jsonl` if environment matches (same NPU, same time window)
 8. Compare T0 vs T1: expect gap ≤0.1% if guard infra is truly zero-cost
 
-If C1 ≤0.1%: guard infra is clean; C2's 0.4% is purely hot-reload cost, which
-production can avoid by setting `reload_interval=0` (then prod == T1 == ~T0).
+If C1 ≤0.1%: guard infra is clean; C2's residual is hot-reload poll cost,
+which production can avoid by setting `reload_interval=0` (then prod == T1 ≈ T0).
 
-If C1 >0.1%: guard infra itself has cost; need to profile and optimize
-`sync_for_step` body even in the early-return path.
+If C1 >0.1%: guard infra itself has cost; profile `sync_for_step` even on the
+advance-only / early-return path.
 
 ## Scripts
 

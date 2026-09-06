@@ -154,7 +154,7 @@ Quota：`dump.auto_max_times > 0` 启用自动 dump 配额；`dump.auto_cooldown
 | Runner | bind | 主要钩子 |
 |--------|------|----------|
 | v1 | `model_runner_v1.py` 构造 | `sync_for_step`、`run_sample_phase`（含 ensure_logprobs / note_kv / after_sample）、pre-sample wrap、async `AscendAsync*` |
-| v2 | `worker/v2/model_runner.py` 构造 | 同上（native `dump_kv`；无 v2 msprobe debugger） |
+| v2 | `worker/v2/model_runner.py` 构造 | 同上（native `dump_kv`；与 msprobe dump 解耦） |
 
 Idle DP：`worker.execute_dummy_batch` 调 `sync_for_step(allow_arm=False)`，与 busy rank 对齐配置热更。
 

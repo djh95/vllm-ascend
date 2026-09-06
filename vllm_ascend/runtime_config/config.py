@@ -38,6 +38,10 @@ Design (multi-DP safe — avoid full-world collectives):
 
 Production: ``AscendConfig`` uses ``ensure_file=False``; worker
 :meth:`RuntimeConfig.ensure_persisted` materializes JSON on the writer.
+
+Implementation is split across:
+``_defaults`` (schema), ``_paths``, ``_dist``, ``_merge``, ``_validate``;
+this module keeps the live ``RuntimeConfig`` control plane.
 """
 
 from __future__ import annotations
@@ -54,456 +58,51 @@ from pathlib import Path
 from typing import Any
 
 from vllm_ascend.logger import init_logger_ascend
+from vllm_ascend.runtime_config._defaults import (
+    DETECTOR_KEYS as _DETECTOR_KEYS,
+    DETECTOR_SECTIONS as _DETECTOR_SECTIONS,
+    DUMP_KEYS as _DUMP_KEYS,
+    LOG_KEYS as _LOG_KEYS,
+    REPORT_KEYS as _REPORT_KEYS,
+    _DEFAULTS,
+)
+from vllm_ascend.runtime_config._dist import (
+    SYNC_BROADCAST,
+    SYNC_FILE,
+    _BROADCAST_DUE_SKEW_SEC,
+    _bg_reload_paths,
+    _dp_world_size_or_one,
+    _is_distributed_worker_process,
+    _is_json_writer,
+    _process_role_tag,
+    _runtime_config_sync_group_or_none,
+)
+from vllm_ascend.runtime_config._merge import (
+    _deep_merge,
+    _leaf_changes,
+    _normalize_config_sections,
+)
+from vllm_ascend.runtime_config._paths import (
+    DEFAULT_CONFIG_FILENAME,
+    _reject_unsafe_path,
+    default_config_dir,
+    default_runtime_root,
+    resolve_runtime_config_path,
+    resolve_runtime_report_dir,
+)
+from vllm_ascend.runtime_config._validate import (
+    float_field,
+    int_field,
+    validate_dump_mutual_exclusive,
+    validate_runtime_config,
+)
 from vllm_ascend.runtime_config.jsonc_io import loads_jsonc
 
+# Re-export for UT / callers that poke ``config._DEFAULTS`` / path helpers.
+# ``_dfx_multi_dp_file_fallback_logged`` is mutated by sync_runtime_config.
+from vllm_ascend.runtime_config import _dist as _dist_mod
+
 logger = init_logger_ascend(__name__)
-
-DEFAULT_CONFIG_FILENAME = "runtime_config.json"
-
-# sync_mode values
-SYNC_BROADCAST = "broadcast"
-SYNC_FILE = "file"
-
-# Broadcast hot-reload: skip per-step all_reduce when wall-clock is clearly
-# before the interval. Budget covers modest inter-rank clock skew after the
-# last lockstep sync updated ``_last_reload_ts`` on every rank.
-_BROADCAST_DUE_SKEW_SEC = 0.5
-
-
-def default_runtime_root() -> Path:
-    """Execution-directory runtime root: ``<cwd>/runtime``."""
-    return Path(os.getcwd()) / "runtime"
-
-
-def default_config_dir() -> Path:
-    return default_runtime_root() / "config"
-
-
-_DEFAULTS: dict[str, Any] = {
-    # broadcast: EngineCore leader reads JSON, in-DP broadcast (or file poll);
-    # file: each rank polls the path (shared FS / per-node copy).
-    "sync_mode": SYNC_BROADCAST,
-    # Kept in JSON for visibility; effective hot-reload interval is set at
-    # process start via additional_config.runtime_config_reload_interval (default 0).
-    # Set >0 at startup to enable. JSON field alone cannot re-enable after start.
-    "reload_interval_seconds": 0,
-    "dump": {
-        # Auto dump (detector anomaly arm): quota >0 enables; mutually exclusive
-        # with manual_dump. dump.enabled is derived at runtime (auto || manual).
-        "auto_max_times": 0,
-        "auto_cooldown_seconds": 5 * 60,
-        # Manual dump: false/0=off; true=continuous until hot-reload false;
-        # positive int N = next N execute_model waves with scheduled_tokens>0.
-        # Needs runtime_config_reload_interval>0. Skips auto quota/cooldown/filters.
-        "manual_dump": False,
-        "dump_all_blocks": False,
-        # KV dump landing root (default derived: <report_dir>/kv_cache).
-        # ``<incident_type>/<req_id>/`` is created under it per incident.
-        # Settable at startup (additional_config.runtime_dump_dir) and via
-        # this JSON key (hot-reload); startup value seeds JSON when unset.
-        "dump_dir": None,
-        # Effective msprobe JSON path (seeded from ascend dump_config_path at
-        # bootstrap when null). Hot-change → recreate debugger.
-        "msprobe_config_path": None,
-    },
-    "ascend_log": {
-        "level": "INFO",
-        # Relative module paths under vllm_ascend forced to DEBUG, e.g. ["dfx"].
-        "debug": [],
-        # Per-logger overrides, e.g. {"vllm.worker": "WARNING", "dfx": "DEBUG"}.
-        "modules": {},
-    },
-    # Ops logging switches (not persisted into anomaly report JSON files).
-    "log": {
-        # Log [SamplingMeta] for the anomalous req (TP0 + last PP only).
-        "print_sampling_meta": False,
-        # When a request finishes: log output_token_ids + decoded text (TP0 only).
-        # Applies to every finished request. Accumulate only while true
-        # (no backfill); mid-request enable may be partial or empty.
-        "print_output_on_finish": False,
-    },
-    "report": {
-        # Default False: anomaly reports store lengths only.
-        # Set true to persist prompt_token_ids + cumulative output_token_ids.
-        "save_sensitive_info": False,
-        # When save_sensitive_info, decode prompt/output ids to text (lazy tokenizer).
-        "decode_token_ids": True,
-        # Cap persisted token-id list lengths (0 = unlimited). Counts stay full.
-        "max_prompt_token_ids": 1000,
-        "max_output_token_ids": 1000,
-        # Persist each request's current GPU block_ids in report detail.
-        "include_block_ids": True,
-        # D2H this wave's real paged-attention slot_mapping slice (default off).
-        "include_slot_mapping": False,
-        # Track/report last write wave per physical block (see blocks[]).
-        "block_last_write_wave": False,
-        # Track/report last writer req_id per physical block (see blocks[]).
-        "block_last_writer": False,
-        # Track/report per-slot last write: writer req_id, wave, ts and the
-        # token id whose KV was written at that slot (see slots[]).
-        "slot_last_write": False,
-    },
-    # Per-detector nested sections. Each has ``enabled`` (default false).
-    "actions": {
-        "defaults": {
-            "on_trigger": ["report"],
-        },
-    },
-    "detector": {
-        # Shared detect behavior (not a detector section): keep detecting a
-        # request on every step, but once an anomaly is found for it, stop
-        # detecting that request (prevents endless reports for the same req).
-        "stop_after_alert": True,
-        "spec_acceptance": {
-            "enabled": False,
-            # Where this detector runs: auto/leader/any/all/external
-            # (see detector/placement.py; "auto" = planner decides).
-            "exec_scope": "auto",
-            "window": 10,
-            "low_threshold": 0.3,
-            "len_low_threshold": 1.4,
-            "high_threshold": 0.96,
-            "len_high_threshold": 2.8,
-        },
-        "token_logprob": {
-            "enabled": False,
-            "exec_scope": "auto",
-            "window": 64,
-            "stride": 32,
-            "topk": 20,
-            "ill_nan_window_thresh": 1,
-            "ill_rare_window_thresh": 1,
-            "ill_garbled_window_thresh": 1,
-            "ill_repet_window_thresh": 2,
-        },
-        "output_substring": {
-            "enabled": False,
-            "exec_scope": "auto",
-            "patterns": [],
-            "add_special_tokens": False,
-            # true: patterns match only at the start (prefix) of cumulative output;
-            # false (default): match anywhere as a contiguous token-id subsequence.
-            "match_prefix": False,
-        },
-        # Sliding-window token re-read detector (no logprobs). Per new token:
-        # score = count of that id in the previous ``window`` content tokens;
-        # alert when sum of the last ``window`` scores exceeds threshold.
-        "token_repeat": {
-            "enabled": False,
-            "exec_scope": "auto",
-            "window": 32,
-            "repeat_sum_threshold": 64,
-            # Require this many content tokens before alerting (0 = no warmup).
-            "min_tokens": 32,
-            # Require this many consecutive over-threshold steps.
-            "consecutive_hits": 1,
-            # Token ids skipped for the content window (e.g. punctuation fillers).
-            "ignore_token_ids": [],
-        },
-        # KV block write integrity (uses KvBlockMetaTracker; no msprobe).
-        "block_kv": {
-            "enabled": False,
-            "exec_scope": "auto",
-            "check_wave_regression": True,
-            "check_same_wave_writer": True,
-        },
-        # Slot-token consistency: the token id recorded at each of the
-        # request's block slots (write-time meta) must equal the token at the
-        # same position in the request's inference sequence (prompt+output).
-        # Catches wrong-block / stale-reuse / cross-request KV contamination
-        # (metadata level; actual tensor verification stays offline in
-        # verify_request_kv.py).
-        "slot_consistency": {
-            "enabled": False,
-            "exec_scope": "auto",
-            # "first": full prefix check once per request at its first note
-            #          step (covers prefix-cache imported slots).
-            # "step":  recheck the whole prefix every step — strongest, but
-            #          O(prefix_len) per request per step; debug only.
-            "mode": "first",
-        },
-        # 1-D position_ids alignment for newly scheduled tokens (no msprobe).
-        "position_alignment": {
-            "enabled": False,
-            "exec_scope": "auto",
-        },
-        # Pre-sample logits NaN/Inf on sampling rows (no msprobe; ill_type=nan).
-        "logits_finite": {
-            "enabled": False,
-            "exec_scope": "auto",
-        },
-    },
-    # Detector→rank placement (ExecScope scheduling; detector/placement.py).
-    # Detection no longer pins to TP0: logits are all-gathered per rank,
-    # sampling is redundant, and scheduler metadata is TP-replicated, so
-    # detectors spread across TP ranks to avoid a rank-0 hot-path bottleneck.
-    "detector_placement": {
-        # "auto": LPT load-balance enabled detectors across TP ranks.
-        # "manual": detector_placement.manual entries win for ANY detectors.
-        "mode": "auto",
-        # incident_type -> tp_rank (honored in manual mode; out-of-range
-        # entries are ignored by the planner).
-        "manual": {},
-        # Keep current assignments on re-plan; place only newly enabled ones.
-        "pin": False,
-    },
-    # Detect-time InputFilterManager (+ one-shot prompt print for authoring).
-    "input_filter": {
-        # [] = no filter. Use type input_token_id_prefix for prefix matching.
-        "filters": [],
-        # One-shot: next real execute_model with requests logs prompt token ids
-        # and length, then cleared to false. Needs reload_interval > 0.
-        "print_input_token_ids_once": False,
-    },
-}
-
-
-def _reject_unsafe_path(path: Path, *, label: str) -> Path:
-    """Resolve and reject NUL / empty paths (basic path hygiene)."""
-    raw = str(path)
-    if not raw or "\x00" in raw:
-        raise ValueError(f"invalid {label}: empty or contains NUL")
-    resolved = path.expanduser().resolve()
-    # Soft sandbox: warn when outside cwd (shared NFS paths are common).
-    try:
-        cwd = Path.cwd().resolve()
-        if resolved != cwd and cwd not in resolved.parents:
-            logger.warning(
-                "[runtime_config] %s is outside process cwd (%s): %s",
-                label,
-                cwd,
-                resolved,
-            )
-    except Exception:
-        pass
-    return resolved
-
-
-def resolve_runtime_config_path(configured_path: str | None = None) -> Path:
-    """Resolve config file path.
-
-    Priority:
-    1. Explicit ``runtime_config_path`` / ``runtime-config`` from additional_config
-    2. Default ``<cwd>/dfx/config/runtime_config.json``
-    """
-    if configured_path:
-        return _reject_unsafe_path(Path(configured_path), label="runtime_config_path")
-    return _reject_unsafe_path(default_config_dir() / DEFAULT_CONFIG_FILENAME, label="runtime_config_path")
-
-
-def resolve_runtime_report_dir(config_path: Path, configured_report_dir: str | None = None) -> Path:
-    if configured_report_dir:
-        return _reject_unsafe_path(Path(configured_report_dir), label="dfx_report_dir")
-    runtime_root = config_path.parent.parent if config_path.parent.name == "config" else config_path.parent
-    return _reject_unsafe_path(runtime_root / "report", label="dfx_report_dir")
-
-
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    out = deepcopy(base)
-    for key, value in override.items():
-        if key in out and isinstance(out[key], dict) and isinstance(value, dict):
-            out[key] = _deep_merge(out[key], value)
-        else:
-            out[key] = deepcopy(value)
-    return out
-
-
-def _leaf_changes(old: Any, new: Any, prefix: str = "") -> list[str]:
-    """Return ``path: old -> new`` strings for leaf values that differ."""
-    if isinstance(old, dict) and isinstance(new, dict):
-        keys = set(old) | set(new)
-        out: list[str] = []
-        for key in sorted(keys):
-            path = f"{prefix}.{key}" if prefix else str(key)
-            if key not in old:
-                out.append(f"{path}: <missing> -> {new[key]!r}")
-            elif key not in new:
-                out.append(f"{path}: {old[key]!r} -> <missing>")
-            else:
-                out.extend(_leaf_changes(old[key], new[key], path))
-        return out
-    if old != new:
-        path = prefix or "<root>"
-        return [f"{path}: {old!r} -> {new!r}"]
-    return []
-
-
-# Paths that already have a non-worker background reloader in this process.
-_bg_reload_paths: set[str] = set()
-
-
-def _normalize_ascend_log_section_into(ascend: dict[str, Any]) -> None:
-    """Normalize ``ascend_log`` in place (level, debug list, modules dict)."""
-    ascend.pop("enabled", None)
-    if "level" not in ascend:
-        ascend["level"] = "INFO"
-    debug = ascend.get("debug", [])
-    if debug is None:
-        debug = []
-    if isinstance(debug, str):
-        debug = [debug]
-    if not isinstance(debug, list):
-        raise ValueError("ascend_log.debug must be a list of module name strings")
-    ascend["debug"] = [str(item).strip() for item in debug if str(item).strip()]
-    modules = ascend.get("modules", {})
-    if modules is None:
-        modules = {}
-    if not isinstance(modules, dict):
-        raise ValueError("ascend_log.modules must be an object")
-    normalized_modules: dict[str, str] = {}
-    for key, val in modules.items():
-        name = str(key).strip()
-        if not name:
-            continue
-        normalized_modules[name] = str(val).strip().upper()
-    ascend["modules"] = normalized_modules
-
-
-def _normalize_config_sections(data: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the ``ascend_log`` section (level + debug list + modules dict).
-
-    ``ascend_log`` has no ``enabled`` field (level controls logging); strip it
-    if a user adds one so the section stays canonical.
-    """
-    out = dict(data)
-    ascend = out.get("ascend_log")
-    if not isinstance(ascend, dict):
-        ascend = {}
-    else:
-        ascend = dict(ascend)
-    _normalize_ascend_log_section_into(ascend)
-    out["ascend_log"] = ascend
-    return out
-
-
-def _normalize_config_sections_into(data: dict[str, Any]) -> None:
-    """In-place variant of :func:`_normalize_config_sections`.
-
-    S10 fix: used by :meth:`RuntimeConfig._validate` so the validator is
-    safe regardless of whether the caller normalized first.
-    """
-    if not isinstance(data, dict):
-        return
-    ascend = data.get("ascend_log")
-    if not isinstance(ascend, dict):
-        ascend = {}
-        data["ascend_log"] = ascend
-    else:
-        # Reuse the same dict object (mutate in place).
-        pass
-    _normalize_ascend_log_section_into(ascend)
-
-
-def _world_group_or_none():
-    try:
-        from vllm.distributed.parallel_state import get_world_group
-
-        return get_world_group()
-    except Exception:
-        return None
-
-
-def _dp_world_size_or_one() -> int:
-    try:
-        from vllm.distributed.parallel_state import get_dp_group
-
-        return int(get_dp_group().world_size)
-    except Exception:
-        return 1
-
-
-def _inner_dp_world_or_none():
-    try:
-        from vllm.distributed.parallel_state import get_inner_dp_world_group
-
-        return get_inner_dp_world_group()
-    except Exception:
-        return None
-
-
-def _runtime_config_sync_group_or_none():
-    """Process group for DFX config broadcast, or None → local file poll.
-
-    Never return the full multi-DP ``get_world_group()`` when ``dp_size>1``:
-    after a request, one EngineCore may still ``execute_dummy_batch`` while the
-    peer has gone idle — a cross-DP collective deadlocks.
-
-    - dp==1: ``get_world_group()``
-    - dp>1 + ``inner_dp_world``: that per-DP group (leader monitors JSON)
-    - dp>1 without ``inner_dp_world``: ``None`` → file poll per rank
-    """
-    world = _world_group_or_none()
-    if world is None:
-        return None
-    if _dp_world_size_or_one() <= 1:
-        return world
-    return _inner_dp_world_or_none()
-
-
-_dfx_multi_dp_file_fallback_logged = False
-
-
-def _is_distributed_worker_process() -> bool:
-    """True when this process is (or is becoming) a distributed Worker.
-
-    Used to keep the non-worker file-poll reloader off Workers. Prefer env
-    markers (``RANK`` / ``LOCAL_RANK`` / ``VLLM_DP_RANK``) and a live world
-    group — AscendConfig may run before ``RANK`` is set, so the background
-    loop must re-check and exit if the process later becomes a Worker.
-    """
-    if os.environ.get("RANK") is not None:
-        return True
-    if os.environ.get("LOCAL_RANK") is not None:
-        return True
-    if os.environ.get("VLLM_DP_RANK") is not None:
-        return True
-    return _world_group_or_none() is not None
-
-
-def _process_role_tag() -> str:
-    """Identify which process applied config (worker broadcast vs API file-poll)."""
-    world = _world_group_or_none()
-    if world is not None:
-        return f"role=worker world_rank={world.rank}/{world.world_size}"
-    rank_env = os.environ.get("RANK")
-    if rank_env is not None:
-        return f"role=worker RANK={rank_env} (world not ready)"
-    if _is_distributed_worker_process():
-        return "role=worker (pre-world)"
-    return "role=non-worker"
-
-
-def _is_json_writer() -> bool:
-    """True if this process may write the DFX JSON (one leader per EngineCore).
-
-    Order:
-    1. ``inner_dp_world`` first rank (per-DP monitor when the group exists)
-    2. Multi-DP without that group: TP0 ∧ PP0 (one writer on each DP replica)
-    3. Full world first rank / ``RANK==0`` / single-process
-    """
-    inner = _inner_dp_world_or_none()
-    if inner is not None and inner.world_size > 1:
-        return bool(inner.is_first_rank)
-
-    if _dp_world_size_or_one() > 1:
-        try:
-            from vllm.distributed.parallel_state import get_pp_group, get_tp_group
-
-            return bool(get_tp_group().is_first_rank and get_pp_group().is_first_rank)
-        except Exception:
-            pass
-
-    world = _world_group_or_none()
-    if world is not None and world.world_size > 1:
-        return bool(world.is_first_rank)
-    rank_env = os.environ.get("RANK")
-    if rank_env is not None:
-        try:
-            return int(rank_env) == 0
-        except ValueError:
-            pass
-    return True
-
 
 class RuntimeConfig:
     """Runtime guard switches loaded from JSON (per-DP broadcast or file poll).
@@ -520,7 +119,6 @@ class RuntimeConfig:
         ensure_file: bool = False,
         sync_mode: str | None = None,
         reload_interval_seconds: float | int | None = None,
-        msprobe_config_path: str | None = None,
         dump_dir: str | Path | None = None,
         startup_overlay: dict[str, Any] | None = None,
     ) -> None:
@@ -554,11 +152,11 @@ class RuntimeConfig:
         )
         self._initial_broadcast_done = False
         self._data = deepcopy(_DEFAULTS)
+        # Lazily filled hot-path bools; cleared on every ``_data`` mutation.
+        self._hot_path_gates: dict[str, Any] | None = None
         self._bootstrap_persisted = False
         self._bg_reloader_started = False
         self._bg_thread: threading.Thread | None = None
-        # Seed into bootstrap merge when dump.msprobe_config_path is still null.
-        self._startup_msprobe_config_path = (str(msprobe_config_path).strip() if msprobe_config_path else None) or None
         # Same seeding contract for dump.dump_dir (startup arg → JSON when unset).
         self._startup_dump_dir = (str(dump_dir).strip() if dump_dir else None) or None
         # ``additional_config.runtime_config`` (same schema as JSON file); applied once
@@ -642,60 +240,16 @@ class RuntimeConfig:
         # Persist startup hot-reload interval for visibility (runtime gate is still
         # ``self._reload_interval`` only).
         merged["reload_interval_seconds"] = self._reload_interval
-        # Seed visible msprobe path when JSON left it null / omitted.
         loaded_for_seed = loaded if self._explicit_config_path else None
-        self._apply_msprobe_path_seed(merged, loaded_for_seed)
         self._apply_startup_dump_dir_seed(merged, loaded_for_seed)
-        self._apply_dump_msprobe_policy(
-            merged,
-            loaded_for_seed,
-            self._startup_overlay,
-        )
         return _normalize_config_sections(merged)
-
-    @staticmethod
-    def _dump_omits_msprobe_config_path(data: dict[str, Any] | None) -> bool:
-        """True when ``dump.msprobe_config_path`` is absent (not explicitly null)."""
-        if not isinstance(data, dict):
-            return True
-        dump = data.get("dump")
-        if not isinstance(dump, dict):
-            return True
-        return "msprobe_config_path" not in dump
-
-    def _fallback_msprobe_config_path(self) -> str | None:
-        """In-memory path, else the startup dump_config path used to seed JSON."""
-        cur = (self._data.get("dump") or {}).get("msprobe_config_path")
-        if isinstance(cur, str) and cur.strip():
-            return cur.strip()
-        return self._startup_msprobe_config_path
-
-    def _apply_msprobe_path_seed(
-        self,
-        merged: dict[str, Any],
-        loaded: dict[str, Any] | None,
-    ) -> None:
-        """Keep / seed ``dump.msprobe_config_path`` unless JSON set it explicitly.
-
-        Omitted key: bootstrap seed or previous in-memory value.
-        Explicit ``null`` / empty string: leave cleared (user intent).
-        """
-        dump = merged.setdefault("dump", {})
-        if loaded is not None and not self._dump_omits_msprobe_config_path(loaded):
-            return
-        cur = dump.get("msprobe_config_path")
-        if isinstance(cur, str) and cur.strip():
-            return
-        fallback = self._fallback_msprobe_config_path()
-        if fallback:
-            dump["msprobe_config_path"] = fallback
 
     def _apply_startup_dump_dir_seed(
         self,
         merged: dict[str, Any],
         loaded: dict[str, Any] | None,
     ) -> None:
-        """Same seeding contract as msprobe path, for ``dump.dump_dir``.
+        """Seed ``dump.dump_dir`` from startup when JSON left it unset.
 
         Omitted key: seed from the startup ``runtime_dump_dir`` arg.
         Explicit ``null`` / empty string: leave cleared (user intent → default).
@@ -730,171 +284,9 @@ class RuntimeConfig:
     def _manual_dump_active(raw: Any) -> bool:
         return raw not in (False, 0)
 
-    @classmethod
-    def _read_dfx_dump_state(
-        cls,
-        raw_file: dict[str, Any] | None,
-        raw_overlay: dict[str, Any] | None,
-    ) -> str:
-        """``absent`` | ``on`` | ``off_explicit`` from pre-merge user JSON."""
-        file_has = isinstance(raw_file, dict) and "dump" in raw_file
-        overlay_has = isinstance(raw_overlay, dict) and "dump" in raw_overlay
-        if not file_has and not overlay_has:
-            return "absent"
-        effective: dict[str, Any] = {}
-        if file_has and isinstance(raw_file.get("dump"), dict):
-            effective = dict(raw_file["dump"])
-        if overlay_has and isinstance(raw_overlay.get("dump"), dict):
-            effective = {**effective, **raw_overlay["dump"]}
-        if cls._auto_on_from_dump(effective) or cls._manual_dump_active(effective.get("manual_dump", False)):
-            return "on"
-        return "off_explicit"
-
-    @staticmethod
-    def _parse_msprobe_dump_enable_raw(raw: Any) -> bool:
-        if raw is None:
-            return True
-        if isinstance(raw, bool):
-            return raw
-        if raw in (0, 1):
-            return bool(raw)
-        if isinstance(raw, str):
-            s = raw.strip().lower()
-            if s in ("0", "false", "no", "off"):
-                return False
-            if s in ("1", "true", "yes", "on"):
-                return True
-        return True
-
-    @staticmethod
-    def _read_msprobe_dump_enable(path: str | None) -> tuple[bool, bool]:
-        """Return ``(effective, explicit)`` for msprobe ``dump_enable``.
-
-        ``explicit=False`` when the key is omitted (msprobe default on) or when
-        the path is unset / the file is missing. ``(False, False)`` when there is
-        no usable msprobe config file at the path.
-        """
-        if not isinstance(path, str) or not path.strip():
-            return (False, False)
-        cfg_path = Path(path.strip())
-        if not cfg_path.exists():
-            return (False, False)
-        try:
-            with cfg_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return (False, False)
-        if not isinstance(data, dict):
-            return (False, False)
-        if "dump_enable" not in data:
-            return (True, False)
-        return (RuntimeConfig._parse_msprobe_dump_enable_raw(data.get("dump_enable")), True)
-
-    @staticmethod
-    def _write_msprobe_dump_enable_file(path: str, enabled: bool) -> None:
-        cfg_path = Path(path.strip())
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        # C2: per-process tmp name + read/modify/write under a file lock —
-        # ranks sharing one msprobe JSON must not clobber each other's keys.
-        tmp_path = cfg_path.with_suffix(f".tmp.{os.getpid()}")
-        lock_path = Path(f"{cfg_path}.lock")
-        with lock_path.open("w", encoding="utf-8") as lock_fd:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            try:
-                data: dict[str, Any] = {}
-                if cfg_path.exists():
-                    try:
-                        with cfg_path.open("r", encoding="utf-8") as f:
-                            existing = json.load(f)
-                        if isinstance(existing, dict):
-                            data = existing
-                    except Exception:
-                        pass
-                data["dump_enable"] = enabled
-                with tmp_path.open("w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                    f.write("\n")
-                os.replace(tmp_path, cfg_path)
-            finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-
     @staticmethod
     def _validate_dump_mutual_exclusive(dump: dict[str, Any]) -> None:
-        auto_on = RuntimeConfig._auto_on_from_dump(dump)
-        manual_on = RuntimeConfig._manual_dump_active(dump.get("manual_dump", False))
-        if auto_on and manual_on:
-            raise ValueError(
-                "dump.auto_max_times>0 and dump.manual_dump active are mutually exclusive"
-            )
-
-    def _apply_dump_msprobe_policy(
-        self,
-        merged: dict[str, Any],
-        raw_file: dict[str, Any] | None,
-        raw_overlay: dict[str, Any] | None,
-    ) -> None:
-        """Bootstrap / reload: msprobe compat + seed manual_dump for msprobe-only users.
-
-        ``dump_enable`` in the msprobe JSON is a **live gate** owned by
-        ``Dumper`` (idle closed / dump-window open). DFX dump capability
-        (``auto_max_times`` / ``manual_dump``) is orthogonal. Therefore
-        ``dfx on + dump_enable=false`` is normal idle and must **not** raise —
-        otherwise every hot-reload after idle-close fails and detector edits
-        never apply.
-        """
-        dump = merged.setdefault("dump", {})
-        path = dump.get("msprobe_config_path")
-        if not (isinstance(path, str) and path.strip()):
-            path = self._startup_msprobe_config_path
-        path_s = path.strip() if isinstance(path, str) else None
-
-        dfx_state = self._read_dfx_dump_state(raw_file, raw_overlay)
-        msprobe_eff, msprobe_explicit = self._read_msprobe_dump_enable(path_s)
-
-        if dfx_state == "absent":
-            if msprobe_eff:
-                dump["manual_dump"] = True
-                dump["auto_max_times"] = 0
-                logger.info(
-                    "[runtime_config] seeded dump.manual_dump=true from msprobe "
-                    "dump_enable path=%s",
-                    path_s,
-                )
-        elif dfx_state == "on":
-            # Native dump_kv does not require msprobe_config_path.
-            if path_s:
-                if msprobe_explicit and not msprobe_eff:
-                    logger.debug(
-                        "[runtime_config] dump capability on; msprobe dump_enable=false "
-                        "(idle/live gate — dumper owns collection) path=%s",
-                        path_s,
-                    )
-                elif not msprobe_eff and not msprobe_explicit:
-                    # Missing / unreadable file: create a stub so debugger can bind.
-                    # Seed idle-closed; Dumper opens the window when a dump arms.
-                    self._write_msprobe_dump_enable_file(path_s, False)
-                    logger.info(
-                        "[runtime_config] seeded msprobe dump_enable=false "
-                        "(idle gate; dump capability on) path=%s",
-                        path_s,
-                    )
-        elif dfx_state == "off_explicit":
-            if msprobe_eff and msprobe_explicit:
-                raise ValueError(
-                    "DFX dump off but msprobe dump_enable=true explicitly "
-                    f"(msprobe path={path_s!r})"
-                )
-            if msprobe_eff and not msprobe_explicit:
-                logger.warning(
-                    "[runtime_config] dump off; overriding msprobe default "
-                    "dump_enable=true to false path=%s %s",
-                    path_s,
-                    _process_role_tag(),
-                )
-                if path_s:
-                    self._write_msprobe_dump_enable_file(path_s, False)
-
-        self._validate_dump_mutual_exclusive(dump)
+        validate_dump_mutual_exclusive(dump)
 
     def _write_data_unlocked(self, data: dict[str, Any]) -> None:
         """Atomic write; caller must hold config lock / own the path."""
@@ -973,9 +365,11 @@ class RuntimeConfig:
                     exc,
                 )
                 self._data = merged
+                self._invalidate_hot_path_gates()
                 self._version = 0.0
         else:
             self._data = merged
+            self._invalidate_hot_path_gates()
             # Do NOT delete the default-path JSON here. Non-leader workers used to
             # unlink "stale" files while awaiting leader persist, which raced and
             # removed the file the leader had just written — service ends with no
@@ -1005,11 +399,11 @@ class RuntimeConfig:
         per process. Call from ``DfxProcessor`` so API/EngineCore never persist.
 
         If the JSON already exists and this is an **explicit** ``runtime_config_path``,
-        skip rewrite: disk is the source of truth — except when
-        ``dump.msprobe_config_path`` is **omitted** and a bootstrap seed exists,
-        in which case only that key is backfilled. Default path (no explicit
-        path) materializes the merged effective config (``defaults ← file ←
-        startup``) so the file reflects what the process actually runs.
+        skip rewrite: disk is the source of truth — except when ``dump.dump_dir``
+        is **omitted** and a startup seed exists, in which case only that key is
+        backfilled. Default path (no explicit path) materializes the merged
+        effective config (``defaults ← file ← startup``) so the file reflects
+        what the process actually runs.
         """
         if self._bootstrap_persisted:
             return True
@@ -1030,19 +424,13 @@ class RuntimeConfig:
                     if not isinstance(dump, dict):
                         dump = {}
                         on_disk["dump"] = dump
-                    fallback = self._fallback_msprobe_config_path()
                     backfilled: list[str] = []
-                    if fallback and self._dump_omits_msprobe_config_path(on_disk):
-                        dump["msprobe_config_path"] = fallback
-                        backfilled.append("dump.msprobe_config_path")
                     if self._startup_dump_dir and self._dump_omits_key(on_disk, "dump_dir"):
                         dump["dump_dir"] = self._startup_dump_dir
                         backfilled.append("dump.dump_dir")
                     if backfilled:
                         self._write_data_unlocked(on_disk)
                         mtime = self.config_path.stat().st_mtime
-                        if "dump.msprobe_config_path" in backfilled:
-                            self.dump["msprobe_config_path"] = fallback
                         if "dump.dump_dir" in backfilled:
                             self.dump["dump_dir"] = self._startup_dump_dir
                         self._mtime = mtime
@@ -1117,10 +505,75 @@ class RuntimeConfig:
     def input_filter(self) -> dict[str, Any]:
         return self._data["input_filter"]
 
-    def dump_enabled(self) -> bool:
-        return self._auto_on_from_dump(self.dump) or self._manual_dump_active(
-            self.dump.get("manual_dump", False)
+    def _invalidate_hot_path_gates(self) -> None:
+        """Drop cached idle/active gates after any in-memory config mutation."""
+        self._hot_path_gates = None
+
+    def _hot_path_gates_cached(self) -> dict[str, Any]:
+        """Version-stamped hot-path bools (recomputed when ``_data`` changes)."""
+        cached = self._hot_path_gates
+        if cached is not None:
+            return cached
+        dump = self._data.get("dump") or {}
+        det = self._data.get("detector") or {}
+        report = self._data.get("report") or {}
+        log = self._data.get("log") or {}
+        input_filter = self._data.get("input_filter") or {}
+
+        any_det = False
+        for name in RuntimeConfig.DETECTOR_SECTIONS:
+            sec = det.get(name)
+            if isinstance(sec, dict) and bool(sec.get("enabled", False)):
+                any_det = True
+                break
+
+        dump_on = self._auto_on_from_dump(dump) or self._manual_dump_active(
+            dump.get("manual_dump", False)
         )
+        print_out = bool(log.get("print_output_on_finish", False))
+        print_in = bool(input_filter.get("print_input_token_ids_once", False))
+        block_meta = bool(report.get("block_last_write_wave", False)) or bool(
+            report.get("block_last_writer", False)
+        )
+        slot_meta = bool(report.get("slot_last_write", False))
+        save_sensitive = bool(report.get("save_sensitive_info", False))
+        out_sub = bool((det.get("output_substring") or {}).get("enabled", False))
+        tok_rep = bool((det.get("token_repeat") or {}).get("enabled", False))
+        raw_filters = input_filter.get("filters", [])
+        has_filters = bool(raw_filters)
+
+        manual_raw = dump.get("manual_dump", False)
+        if isinstance(manual_raw, bool):
+            manual_count = 1 if manual_raw else 0
+        else:
+            try:
+                manual_count = max(0, int(manual_raw))
+            except (TypeError, ValueError):
+                manual_count = 0
+
+        needs_io = (
+            print_out
+            or out_sub
+            or tok_rep
+            or (any_det and save_sensitive)
+        )
+        needs_sample = any_det or print_out or block_meta or slot_meta
+        needs_filter = any_det or has_filters
+
+        cached = {
+            "any_detector": any_det,
+            "dump_enabled": dump_on,
+            "needs_cumulative_io": needs_io,
+            "needs_sample_phase_hooks": needs_sample,
+            "needs_filter_chain_apply": needs_filter,
+            "print_input_token_ids_once": print_in,
+            "manual_trigger_count": manual_count,
+        }
+        self._hot_path_gates = cached
+        return cached
+
+    def dump_enabled(self) -> bool:
+        return bool(self._hot_path_gates_cached()["dump_enabled"])
 
     def auto_dump_on(self) -> bool:
         return self._auto_on_from_dump(self.dump)
@@ -1130,7 +583,7 @@ class RuntimeConfig:
 
     def any_detector_enabled(self) -> bool:
         """True if at least one auto anomaly detector is enabled."""
-        return self.detectors_enabled_in(self._data)
+        return bool(self._hot_path_gates_cached()["any_detector"])
 
     def needs_cumulative_io(self) -> bool:
         """True when sampled tokens must be appended to the IO store.
@@ -1138,15 +591,7 @@ class RuntimeConfig:
         Consumers: finish-time output logging, substring/repeat detectors, and
         sensitive reports that persist cumulative ``output_token_ids``.
         """
-        if self.log_print_output_on_finish():
-            return True
-        if bool(self.detector_get("output_substring", "enabled", False)):
-            return True
-        if bool(self.detector_get("token_repeat", "enabled", False)):
-            return True
-        if self.any_detector_enabled() and self.report_save_sensitive_info():
-            return True
-        return False
+        return bool(self._hot_path_gates_cached()["needs_cumulative_io"])
 
     def needs_sample_phase_hooks(self) -> bool:
         """True when post-sample runtime_guard hooks must run (not a pure sample fast-path).
@@ -1154,13 +599,7 @@ class RuntimeConfig:
         Covers detectors, finish-output logging, and KV block/slot write tracking.
         Dump-only / hot-reload-only does not need the sample-phase hook chain.
         """
-        if self.any_detector_enabled():
-            return True
-        if self.log_print_output_on_finish():
-            return True
-        if self.report_block_meta_enabled() or self.report_slot_last_write():
-            return True
-        return False
+        return bool(self._hot_path_gates_cached()["needs_sample_phase_hooks"])
 
     def needs_filter_chain_apply(self) -> bool:
         """True when filter/detector apply cascade may be needed on refresh.
@@ -1168,30 +607,14 @@ class RuntimeConfig:
         Used with ``changed`` to skip per-step ``apply_from_config`` when both
         detectors and input filters are idle.
         """
-        if self.any_detector_enabled():
-            return True
-        return bool(self.input_filter_configs())
+        return bool(self._hot_path_gates_cached()["needs_filter_chain_apply"])
 
-    # Known nested detector sections under ``detector``.
-    DETECTOR_SECTIONS: tuple[str, ...] = (
-        "spec_acceptance",
-        "token_logprob",
-        "output_substring",
-        "token_repeat",
-        "block_kv",
-        "slot_consistency",
-        "position_alignment",
-        "logits_finite",
-    )
-    # Allowed keys under ``dump`` (reject typos such as legacy dump_once).
-    DUMP_KEYS: frozenset[str] = frozenset(_DEFAULTS["dump"])
-    LOG_KEYS: frozenset[str] = frozenset(_DEFAULTS["log"])
-    REPORT_KEYS: frozenset[str] = frozenset(_DEFAULTS["report"])
-    # Allowed keys per detector section (a knob must exist in _DEFAULTS to be
-    # config-settable; rejects typos like ``windw`` silently falling back).
-    DETECTOR_KEYS: dict[str, frozenset[str]] = {
-        name: frozenset(sec) for name, sec in _DEFAULTS["detector"].items() if isinstance(sec, dict)
-    }
+    # Schema key sets live in ``_defaults``; re-exported on the class for callers.
+    DETECTOR_SECTIONS = _DETECTOR_SECTIONS
+    DUMP_KEYS = _DUMP_KEYS
+    LOG_KEYS = _LOG_KEYS
+    REPORT_KEYS = _REPORT_KEYS
+    DETECTOR_KEYS = _DETECTOR_KEYS
 
     @staticmethod
     def detectors_enabled_in(data: dict[str, Any]) -> bool:
@@ -1274,27 +697,11 @@ class RuntimeConfig:
         Only observed after a successful hot-reload; requires
         ``runtime_config_reload_interval > 0``.
         """
-        raw = self.dump.get("manual_dump", False)
-        if isinstance(raw, bool):
-            return 1 if raw else 0
-        try:
-            return max(0, int(raw))
-        except (TypeError, ValueError):
-            return 0
+        return int(self._hot_path_gates_cached()["manual_trigger_count"])
 
     def manual_trigger(self) -> bool:
         """True when manual dump is armed (continuous or remaining count > 0)."""
         return self.manual_trigger_count() > 0
-
-    def dump_msprobe_config_path(self) -> str | None:
-        """Effective msprobe JSON path from ``dump.msprobe_config_path`` (or None)."""
-        raw = self.dump.get("msprobe_config_path")
-        if raw is None:
-            return None
-        if not isinstance(raw, str):
-            return None
-        path = raw.strip()
-        return path or None
 
     def input_filter_configs(self) -> list[dict[str, Any]]:
         """Normalized ``input_filter.filters`` for ``InputFilterManager``."""
@@ -1312,13 +719,14 @@ class RuntimeConfig:
         Requires ``runtime_config_reload_interval > 0``. Cleared after a real
         ``execute_model`` wave that has printable prompts.
         """
-        return bool(self.input_filter.get("print_input_token_ids_once", False))
+        return bool(self._hot_path_gates_cached()["print_input_token_ids_once"])
 
     def consume_print_input_token_ids_once(self) -> bool:
         """If ``print_input_token_ids_once`` is true, clear it and return True."""
         if not self.print_input_token_ids_once():
             return False
         self.input_filter["print_input_token_ids_once"] = False
+        self._invalidate_hot_path_gates()
         if _is_json_writer():
             if self.save({"input_filter": {"print_input_token_ids_once": False}}):
                 logger.info(
@@ -1383,6 +791,7 @@ class RuntimeConfig:
                 new_val = derived["val"]
                 if new_val is not None:
                     self.dump["manual_dump"] = new_val
+                self._invalidate_hot_path_gates()
                 logger.info(
                     "[runtime_config] manual_dump consumed \u2192 %s (was %d) path=%s %s",
                     new_val,
@@ -1393,6 +802,7 @@ class RuntimeConfig:
             else:
                 new_val = False if remaining <= 1 else remaining - 1
                 self.dump["manual_dump"] = new_val
+                self._invalidate_hot_path_gates()
                 logger.warning(
                     "[runtime_config] manual_dump decremented in-memory but failed "
                     "to persist path=%s remaining_was=%d %s",
@@ -1403,45 +813,11 @@ class RuntimeConfig:
         else:
             new_val = False if remaining <= 1 else remaining - 1
             self.dump["manual_dump"] = new_val
+            self._invalidate_hot_path_gates()
             logger.info(
                 "[runtime_config] manual_dump \u2192 %s in-memory (non-writer; was %d) %s",
                 new_val,
                 remaining,
-                _process_role_tag(),
-            )
-        return True
-
-    def disable_dump_unavailable(self, *, reason: str) -> bool:
-        """Force dump off when msprobe dump cannot run.
-
-        Used at startup / reload when debugger init fails. Returns True if
-        the in-memory flags were changed.
-        """
-        if not self.dump_enabled():
-            return False
-        self.dump["auto_max_times"] = 0
-        self.dump["manual_dump"] = False
-        logger.error(
-            "[runtime_config] dump forced off (auto_max_times=0, manual_dump=false): %s %s",
-            reason,
-            _process_role_tag(),
-        )
-        if _is_json_writer():
-            if self.save({"dump": {"auto_max_times": 0, "manual_dump": False}}):
-                logger.info(
-                    "[runtime_config] dump off persisted path=%s %s",
-                    self.config_path,
-                    _process_role_tag(),
-                )
-            else:
-                logger.warning(
-                    "[runtime_config] dump cleared in-memory but failed to persist path=%s %s",
-                    self.config_path,
-                    _process_role_tag(),
-                )
-        else:
-            logger.info(
-                "[runtime_config] dump cleared in-memory (non-writer) %s",
                 _process_role_tag(),
             )
         return True
@@ -1456,6 +832,7 @@ class RuntimeConfig:
         if not bool(sec.get("enabled", False)):
             return False
         sec["enabled"] = False
+        self._invalidate_hot_path_gates()
         logger.error(
             "[runtime_config] detector.%s.enabled forced false: %s %s",
             section,
@@ -1745,6 +1122,28 @@ class RuntimeConfig:
         )
         return True
 
+    def reload_clearly_not_due(self) -> bool:
+        """True when a hot-reload poll can be skipped this step.
+
+        Broadcast keeps a skew budget so clocks cannot split the group; file
+        mode uses the full interval. First broadcast sync must still run
+        (``_initial_broadcast_done``). Reload-off always returns False.
+        """
+        if not self.hot_reload_enabled:
+            return False
+        interval = self._reload_interval
+        if interval <= 0:
+            return False
+        now = time.time()
+        if self.sync_mode == SYNC_BROADCAST:
+            if not self._initial_broadcast_done:
+                return False
+            early_by = interval - _BROADCAST_DUE_SKEW_SEC
+            if early_by <= 0:
+                return False
+            return (now - self._last_reload_ts) < early_by
+        return (now - self._last_reload_ts) < interval
+
     def sync_runtime_config(self) -> bool:
         """Canonical step entry for interval-gated DFX JSON sync.
 
@@ -1758,13 +1157,15 @@ class RuntimeConfig:
         """
         if not self.hot_reload_enabled:
             return False
+        # Cheap reject before group lookup / file I/O.
+        if self.reload_clearly_not_due():
+            return False
         if self.sync_mode == SYNC_BROADCAST:
             group = _runtime_config_sync_group_or_none()
             if group is not None and group.world_size > 1:
                 return self._maybe_reload_broadcast(group)
-            global _dfx_multi_dp_file_fallback_logged
-            if not _dfx_multi_dp_file_fallback_logged:
-                _dfx_multi_dp_file_fallback_logged = True
+            if not _dist_mod._dfx_multi_dp_file_fallback_logged:
+                _dist_mod._dfx_multi_dp_file_fallback_logged = True
                 if _dp_world_size_or_one() > 1:
                     logger.info(
                         "[runtime_config] multi-DP: per-DP broadcast "
@@ -1919,6 +1320,7 @@ class RuntimeConfig:
         if not self.config_path.exists():
             if force:
                 self._data = deepcopy(_DEFAULTS)
+                self._invalidate_hot_path_gates()
                 self._version = 0.0
             return False
 
@@ -1956,9 +1358,7 @@ class RuntimeConfig:
                 return False
             merged = _deep_merge(_DEFAULTS, _normalize_config_sections(loaded))
             # Missing key ≠ explicit null: do not let _DEFAULTS wipe a seeded path.
-            self._apply_msprobe_path_seed(merged, loaded)
             self._apply_startup_dump_dir_seed(merged, loaded)
-            self._apply_dump_msprobe_policy(merged, loaded, None)
             return self._apply_loaded(
                 _normalize_config_sections(merged),
                 version=mtime,
@@ -1987,6 +1387,7 @@ class RuntimeConfig:
         self._validate(merged)
         changes = _leaf_changes(self._data, merged)
         self._data = merged
+        self._invalidate_hot_path_gates()
         self._mtime = version
         self._version = version
         if content_digest is not None:
@@ -2064,6 +1465,7 @@ class RuntimeConfig:
                 self._validate(data)
                 self._write_data_unlocked(data)
                 self._data = data
+                self._invalidate_hot_path_gates()
                 stat = self.config_path.stat()
                 self._mtime = stat.st_mtime
                 self._content_digest = self._digest_path(self.config_path)
@@ -2094,16 +1496,7 @@ class RuntimeConfig:
 
     @staticmethod
     def _int_field(value: Any, field: str, *, min_value: int | None = None) -> int:
-        # C3: reject None/str/NaN and silently-truncated floats (2.7 → 2) with
-        # an error that names the offending field.
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
-            raise ValueError(f"{field} must be a number, got {value!r}")
-        if isinstance(value, float) and not value.is_integer():
-            raise ValueError(f"{field} must be an integer, got {value!r}")
-        iv = int(value)
-        if min_value is not None and iv < min_value:
-            raise ValueError(f"{field} must be >= {min_value}, got {iv}")
-        return iv
+        return int_field(value, field, min_value=min_value)
 
     @staticmethod
     def _float_field(
@@ -2113,285 +1506,8 @@ class RuntimeConfig:
         min_value: float | None = None,
         max_value: float | None = None,
     ) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
-            raise ValueError(f"{field} must be a number, got {value!r}")
-        fv = float(value)
-        if min_value is not None and fv < min_value:
-            raise ValueError(f"{field} must be >= {min_value}, got {fv}")
-        if max_value is not None and fv > max_value:
-            raise ValueError(f"{field} must be <= {max_value}, got {fv}")
-        return fv
+        return float_field(value, field, min_value=min_value, max_value=max_value)
 
     @staticmethod
     def _validate(data: dict[str, Any]) -> None:
-        """Validate / normalize ``data`` in place.
-
-        Detect and dump are orthogonal: dump-only / detect-only / both are valid.
-        Soft warnings for easy-to-misread combos live in ``_warn_interaction_quirks``.
-
-        S10 fix: defensively re-run ``_normalize_config_sections`` at entry so
-        ``_validate`` is safe to call regardless of whether the caller normalized
-        first. Idempotent — if already normalized, this is a no-op. Eliminates
-        the drift between inline normalize-in-validate and the standalone helper.
-        """
-        _normalize_config_sections_into(data)
-        for section in (
-            "dump",
-            "ascend_log",
-            "log",
-            "detector",
-            "input_filter",
-            "report",
-        ):
-            if section not in data or not isinstance(data[section], dict):
-                raise ValueError(f"dfx config missing object section '{section}'")
-        interval = data.get("reload_interval_seconds", 0)
-        if not isinstance(interval, (int, float)) or interval < 0:
-            raise ValueError(f"reload_interval_seconds must be >= 0, got {interval}")
-        sync_mode = str(data.get("sync_mode", SYNC_BROADCAST)).lower()
-        if sync_mode not in (SYNC_BROADCAST, SYNC_FILE):
-            raise ValueError(f"sync_mode must be '{SYNC_BROADCAST}' or '{SYNC_FILE}'")
-        unknown_dump = sorted(set(data["dump"]) - RuntimeConfig.DUMP_KEYS)
-        # Retired one-shot flag (msprobe debugger recreate); ignore in older JSON.
-        if "reload_msprobe" in data["dump"]:
-            data["dump"].pop("reload_msprobe", None)
-            unknown_dump = [k for k in unknown_dump if k != "reload_msprobe"]
-        if unknown_dump:
-            raise ValueError(f"dump has unknown key(s) {unknown_dump}; allowed={sorted(RuntimeConfig.DUMP_KEYS)}")
-        auto_max_times = data["dump"].get("auto_max_times", 0)
-        data["dump"]["auto_max_times"] = RuntimeConfig._int_field(
-            auto_max_times, "dump.auto_max_times", min_value=0
-        )
-        auto_cd = data["dump"].get("auto_cooldown_seconds", 300)
-        data["dump"]["auto_cooldown_seconds"] = RuntimeConfig._int_field(
-            auto_cd, "dump.auto_cooldown_seconds", min_value=0
-        )
-        manual_dump = data["dump"].get("manual_dump")
-        if manual_dump is not None and not isinstance(manual_dump, bool):
-            if isinstance(manual_dump, int) and not isinstance(manual_dump, bool):
-                if manual_dump < 0:
-                    raise ValueError("dump.manual_dump must be >= 0")
-                if manual_dump == 0:
-                    data["dump"]["manual_dump"] = False
-            else:
-                raise ValueError("dump.manual_dump must be bool or non-negative int")
-        dump_dir_raw = data["dump"].get("dump_dir")
-        if dump_dir_raw is not None and not isinstance(dump_dir_raw, str):
-            raise ValueError("dump.dump_dir must be a string path or null")
-        RuntimeConfig._validate_dump_mutual_exclusive(data["dump"])
-        unknown_log = sorted(set(data["log"]) - RuntimeConfig.LOG_KEYS)
-        if unknown_log:
-            raise ValueError(f"log has unknown key(s) {unknown_log}; allowed={sorted(RuntimeConfig.LOG_KEYS)}")
-        unknown_report = sorted(set(data["report"]) - RuntimeConfig.REPORT_KEYS)
-        if unknown_report:
-            raise ValueError(
-                f"report has unknown key(s) {unknown_report}; allowed={sorted(RuntimeConfig.REPORT_KEYS)}"
-            )
-        msprobe_path = data["dump"].get("msprobe_config_path")
-        if msprobe_path is not None and not isinstance(msprobe_path, str):
-            raise ValueError("dump.msprobe_config_path must be str or null")
-        if isinstance(msprobe_path, str) and not msprobe_path.strip():
-            data["dump"]["msprobe_config_path"] = None
-        save_sensitive = data["report"].get("save_sensitive_info")
-        if save_sensitive is not None and not isinstance(save_sensitive, bool):
-            if save_sensitive in (0, 1):
-                data["report"]["save_sensitive_info"] = bool(save_sensitive)
-            else:
-                raise ValueError("report.save_sensitive_info must be bool")
-        for log_key in ("print_sampling_meta", "print_output_on_finish"):
-            log_val = data["log"].get(log_key)
-            if log_val is not None and not isinstance(log_val, bool):
-                if log_val in (0, 1):
-                    data["log"][log_key] = bool(log_val)
-                else:
-                    raise ValueError(f"log.{log_key} must be bool")
-        decode_ids = data["report"].get("decode_token_ids")
-        if decode_ids is not None and not isinstance(decode_ids, bool):
-            if decode_ids in (0, 1):
-                data["report"]["decode_token_ids"] = bool(decode_ids)
-            else:
-                raise ValueError("report.decode_token_ids must be bool")
-        for max_key in ("max_prompt_token_ids", "max_output_token_ids"):
-            max_val = data["report"].get(max_key)
-            if max_val is None:
-                continue
-            if isinstance(max_val, bool) or not isinstance(max_val, (int, float)):
-                raise ValueError(f"report.{max_key} must be an int >= 0")
-            if int(max_val) < 0:
-                raise ValueError(f"report.{max_key} must be >= 0")
-            data["report"][max_key] = int(max_val)
-        for block_key in (
-            "include_block_ids",
-            "include_slot_mapping",
-            "block_last_write_wave",
-            "block_last_writer",
-            "slot_last_write",
-        ):
-            block_val = data["report"].get(block_key)
-            if block_val is not None and not isinstance(block_val, bool):
-                if block_val in (0, 1):
-                    data["report"][block_key] = bool(block_val)
-                else:
-                    raise ValueError(f"report.{block_key} must be bool")
-        print_once = data["input_filter"].get("print_input_token_ids_once")
-        if print_once is not None and not isinstance(print_once, bool):
-            if print_once in (0, 1):
-                data["input_filter"]["print_input_token_ids_once"] = bool(print_once)
-            else:
-                raise ValueError("input_filter.print_input_token_ids_once must be bool")
-        from vllm_ascend.runtime_guard.input_filters import normalize_input_filter_configs
-
-        data["input_filter"]["filters"] = normalize_input_filter_configs(data["input_filter"].get("filters", []))
-        # S10 fix: normalization happens via _normalize_config_sections_into
-        # at the start of _validate. Only type-check here.
-        level = data["ascend_log"].get("level", "INFO")
-        if not isinstance(level, str):
-            raise ValueError("ascend_log.level must be str")
-        debug = data["ascend_log"].get("debug", [])
-        if not isinstance(debug, list):
-            raise ValueError("ascend_log.debug must be a list of module name strings")
-        for item in debug:
-            if not isinstance(item, (str, int, float)):
-                raise ValueError("ascend_log.debug entries must be strings")
-        modules = data["ascend_log"].get("modules", {})
-        if not isinstance(modules, dict):
-            raise ValueError("ascend_log.modules must be an object")
-        for key, val in modules.items():
-            if not isinstance(key, str):
-                raise ValueError("ascend_log.modules keys must be strings")
-            if not isinstance(val, str):
-                raise ValueError("ascend_log.modules values must be strings")
-        detector = data["detector"]
-        known = set(RuntimeConfig.DETECTOR_SECTIONS)
-        for key, value in detector.items():
-            if key == "stop_after_alert":
-                # Shared detect-behavior flag, not a detector section.
-                if not isinstance(value, bool):
-                    if value in (0, 1):
-                        detector["stop_after_alert"] = bool(value)
-                    else:
-                        raise ValueError("detector.stop_after_alert must be bool")
-                continue
-            if key not in known:
-                raise ValueError(
-                    f"detector.{key} is not a known detector section; "
-                    f"expected nested objects among {sorted(known)} "
-                    f"(e.g. detector.spec_acceptance.enabled)"
-                )
-            if not isinstance(value, dict):
-                raise ValueError(f"detector.{key} must be an object")
-            unknown_sub = sorted(set(value) - RuntimeConfig.DETECTOR_KEYS[key])
-            if unknown_sub:
-                raise ValueError(
-                    f"detector.{key} has unknown key(s) {unknown_sub}; "
-                    f"allowed={sorted(RuntimeConfig.DETECTOR_KEYS[key])}"
-                )
-            scope = value.get("exec_scope", "auto")
-            if scope not in ("auto", "leader", "any", "all", "external"):
-                raise ValueError(
-                    f"detector.{key}.exec_scope must be one of "
-                    f"auto/leader/any/all/external; got {scope!r}"
-                )
-        for name in RuntimeConfig.DETECTOR_SECTIONS:
-            sec = detector.setdefault(name, {})
-            if not isinstance(sec, dict):
-                raise ValueError(f"detector.{name} must be an object")
-            enabled = sec.get("enabled")
-            if enabled is not None and not isinstance(enabled, bool):
-                if enabled in (0, 1):
-                    sec["enabled"] = bool(enabled)
-                else:
-                    raise ValueError(f"detector.{name}.enabled must be bool")
-
-        token = detector["token_logprob"]
-        token["window"] = RuntimeConfig._int_field(
-            token.get("window", 64), "detector.token_logprob.window", min_value=1
-        )
-        token["stride"] = RuntimeConfig._int_field(
-            token.get("stride", 32), "detector.token_logprob.stride", min_value=1
-        )
-        if token["window"] < token["stride"]:
-            raise ValueError("detector.token_logprob.window must be >= detector.token_logprob.stride")
-
-        from vllm_ascend.runtime_guard.detector.output_substring import normalize_raw_patterns
-
-        out_sub = detector["output_substring"]
-        out_sub["patterns"] = normalize_raw_patterns(out_sub.get("patterns", []))
-        add_special = out_sub.get("add_special_tokens")
-        if add_special is not None and not isinstance(add_special, bool):
-            if add_special in (0, 1):
-                out_sub["add_special_tokens"] = bool(add_special)
-            else:
-                raise ValueError("detector.output_substring.add_special_tokens must be bool")
-        match_prefix = out_sub.get("match_prefix")
-        if match_prefix is not None and not isinstance(match_prefix, bool):
-            if match_prefix in (0, 1):
-                out_sub["match_prefix"] = bool(match_prefix)
-            else:
-                raise ValueError("detector.output_substring.match_prefix must be bool")
-
-        from vllm_ascend.runtime_guard.detector.token_repeat import normalize_ignore_token_ids
-
-        token_repeat = detector["token_repeat"]
-        token_repeat["window"] = RuntimeConfig._int_field(
-            token_repeat.get("window", 32), "detector.token_repeat.window", min_value=1
-        )
-        token_repeat["repeat_sum_threshold"] = RuntimeConfig._int_field(
-            token_repeat.get("repeat_sum_threshold", 64),
-            "detector.token_repeat.repeat_sum_threshold",
-            min_value=0,
-        )
-        token_repeat["min_tokens"] = RuntimeConfig._int_field(
-            token_repeat.get("min_tokens", token_repeat["window"]),
-            "detector.token_repeat.min_tokens",
-            min_value=0,
-        )
-        token_repeat["consecutive_hits"] = RuntimeConfig._int_field(
-            token_repeat.get("consecutive_hits", 1),
-            "detector.token_repeat.consecutive_hits",
-            min_value=1,
-        )
-        token_repeat["ignore_token_ids"] = normalize_ignore_token_ids(token_repeat.get("ignore_token_ids", []))
-
-        spec = detector["spec_acceptance"]
-        spec["window"] = RuntimeConfig._int_field(
-            spec.get("window", 10), "detector.spec_acceptance.window", min_value=1
-        )
-        for rate_key in ("low_threshold", "high_threshold"):
-            spec[rate_key] = RuntimeConfig._float_field(
-                spec.get(rate_key, _DEFAULTS["detector"]["spec_acceptance"][rate_key]),
-                f"detector.spec_acceptance.{rate_key}",
-                min_value=0.0,
-                max_value=1.0,
-            )
-        for len_key in ("len_low_threshold", "len_high_threshold"):
-            spec[len_key] = RuntimeConfig._float_field(
-                spec.get(len_key, _DEFAULTS["detector"]["spec_acceptance"][len_key]),
-                f"detector.spec_acceptance.{len_key}",
-                min_value=0.0,
-            )
-
-        placement = data.setdefault("detector_placement", dict(_DEFAULTS["detector_placement"]))
-        if not isinstance(placement, dict):
-            raise ValueError("detector_placement must be an object")
-        mode = placement.get("mode", "auto")
-        if mode not in ("auto", "manual"):
-            raise ValueError(f"detector_placement.mode must be 'auto' or 'manual'; got {mode!r}")
-        manual_map = placement.get("manual", {})
-        if not isinstance(manual_map, dict):
-            raise ValueError("detector_placement.manual must be an object")
-        known_types = set(RuntimeConfig.DETECTOR_SECTIONS)
-        for mkey, mval in manual_map.items():
-            if not isinstance(mkey, str):
-                raise ValueError("detector_placement.manual keys must be strings")
-            if mkey not in known_types:
-                raise ValueError(
-                    f"detector_placement.manual has unknown detector {mkey!r}; "
-                    f"expected {sorted(known_types)}"
-                )
-            if isinstance(mval, bool) or not isinstance(mval, int) or mval < 0:
-                raise ValueError(
-                    f"detector_placement.manual.{mkey} must be a non-negative int (tp_rank)"
-                )
-        if not isinstance(placement.get("pin", False), bool):
-            raise ValueError("detector_placement.pin must be bool")
+        validate_runtime_config(data)

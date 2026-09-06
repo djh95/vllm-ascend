@@ -266,13 +266,17 @@ class RuntimeGuardProcessor:
         JSON flag with no dump when the service is idle or a peer DP is busy).
         """
         logger.debug("[runtime_guard sync] enter stage=refresh_config allow_arm=%s", allow_arm)
-        # Always advance the IO append-wave frontier (same-wave dedupe).
-        RequestIoSnapshotManager.get().clear_wave_cache()
         so = scheduler_output if scheduler_output is not None else getattr(self, "_scheduler_output_for_step", None)
         prev_so = getattr(self, "_scheduler_output_for_step", None)
         self._scheduler_output_for_step = so
         try:
-            return self._refresh_config_body(allow_arm=allow_arm, scheduler_output=so)
+            changed = self._refresh_config_body(allow_arm=allow_arm, scheduler_output=so)
+            # Clear IO wave cache only when something may append this step.
+            # Runs *after* sync so a hot-reload that turns IO consumers on
+            # still clears before sample/detect. Idle A (detectors off) skips.
+            if self.runtime_config.needs_cumulative_io():
+                RequestIoSnapshotManager.get().clear_wave_cache()
+            return changed
         finally:
             self._scheduler_output_for_step = prev_so
 
@@ -315,7 +319,7 @@ class RuntimeGuardProcessor:
             InputFilterManager.get().apply_from_config(self.runtime_config)
             self.action_executor.apply_runtime_config()
             # All ranks (incl. early-PP JSON writers) must run detector dep
-            # checks so force-disable can persist when msprobe is missing.
+            # checks so force-disable can persist when optional deps are missing.
             self.detectors.apply_runtime_config()
             self.report_writer.save_sensitive_info = self.runtime_config.report_save_sensitive_info()
             self.report_writer.max_prompt_token_ids = self.runtime_config.report_max_prompt_token_ids()
@@ -412,6 +416,21 @@ class RuntimeGuardProcessor:
         self._scheduler_output_for_step = scheduler_output
         try:
             self.wave_tracker.advance(allow_arm=allow_arm)
+            cfg = self.runtime_config
+            # Idle shell: no filters / one-shots / sample hooks armed.
+            # - reload off (T1): config is static → advance only.
+            # - reload on (T2) + not due: JSON cannot change until next poll →
+            #   skip refresh / consume / print for this step.
+            idle = (
+                not cfg.needs_filter_chain_apply()
+                and not cfg.manual_trigger()
+                and not cfg.print_input_token_ids_once()
+                and not cfg.needs_sample_phase_hooks()
+            )
+            if idle and (
+                not cfg.hot_reload_enabled or cfg.reload_clearly_not_due()
+            ):
+                return
             self.refresh_config(allow_arm=allow_arm, scheduler_output=scheduler_output)
             # When no feature needs prompt cache / finished-IO reap, skip the
             # extra work (reload path still syncs above).
@@ -626,8 +645,8 @@ class RuntimeGuardProcessor:
             6. ``record_sample_waves``
             7. ``check_after_sample`` (sync path only; async via AscendAsync* ``get_output``)
 
-        Runner still owns post-sample dump finalization on v1 (msprobe debugger
-        lifecycle). v2 KV capture uses native ``dump_kv`` actions only.
+        Native KV capture uses ``dump_kv`` actions only (fully decoupled from
+        Ascend/msprobe PrecisionDebugger dump).
         """
         # Idle fast-path: detectors / print_output / block-meta all off →
         # skip soft-fail wrappers and observational hooks entirely.
