@@ -4,7 +4,7 @@ T-label terminology (see tests/perf/runtime_guard/README.md):
 - T0: merge-base 37e382498 worktree (no runtime_guard code)
 - T1: HEAD with default startup (no --additional-config, reload=0, detectors off)
 - T2: HEAD + reload=3 + detectors off
-- T3: HEAD + reload=3 + 6 detectors on
+- T3: HEAD + reload=3 + 5 detectors on
 
 perf_baseline.py    -> T1 (or T0 if run from merge-base worktree)
 perf_ab_quick.py    -> T3 "B" vs T2 "A" x3 cross-rotated
@@ -98,12 +98,15 @@ def warmup(rounds=1):
 def _vllm_pids():
     """Return list of live vllm-related PIDs (parent serve + TP workers).
 
-    Strategy: find the parent "vllm serve" PID, then walk /proc/<pid>/task
+    Strategy: find the parent vllm entrypoint PID, then walk /proc/<pid>/task
     descendants to get TP workers. Skips defunct (state Z) processes.
+
+    Parent pattern matches both ``vllm serve`` (old) and
+    ``python -m vllm.entrypoints.openai.api_server`` (current).
     """
     pids = set()
     # Parent serve PID(s)
-    for pattern in (r"[v]llm serve",):
+    for pattern in (r"[v]llm serve", r"[v]llm\.entrypoints\.openai\.api_server"):
         try:
             out = subprocess.check_output(
                 ["pgrep", "-f", pattern], text=True
