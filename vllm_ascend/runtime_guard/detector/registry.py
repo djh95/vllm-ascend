@@ -46,16 +46,5 @@ class DetectorRegistry:
     def get(self, incident_type: str) -> AnomalyDetector | None:
         return self._by_type.get(incident_type)
 
-    def clear_finished(self, req_id: str) -> None:
-        for det in self._items:
-            det.clear_finished(req_id)
-
     def __iter__(self) -> Iterator[AnomalyDetector]:
         return iter(self._items)
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    @property
-    def items(self) -> list[AnomalyDetector]:
-        return list(self._items)

@@ -48,7 +48,7 @@ Path A candidates (DSV2-Lite compatible) from
 Path A is gated on path B passing first — A is the cross-check, not the
 primary evidence.
 
-## Path B injection matrix (9 scenarios + 2 cross-cutting)
+## Path B injection matrix (5 scenarios + 2 cross-cutting; #6–#10 deferred)
 
 Single env var `RG_INJECT` controls all hooks; absent → 0 overhead in prod.
 
@@ -60,7 +60,11 @@ Injection entry point: `_refresh_config_body` end (per-step, all detectors
 pre-flight). Hooks dispatch to `runner_hooks.py` / `kv_block_meta.py` /
 `detector/manager.py` as needed.
 
-### Detector coverage (7/8)
+### Detector coverage (shipped detectors on this branch)
+
+> **Status: the `RG_INJECT` mechanism is NOT implemented yet** — this file is
+> the design matrix. `inject.py` / `inject_scenarios/` do not exist on the
+> branch; live injection runs are blocked on that work.
 
 | # | Scenario | Injection point | What gets corrupted | Detector | Expected report field |
 |---|----------|------------------|----------------------|----------|----------------------|
@@ -69,11 +73,10 @@ pre-flight). Hooks dispatch to `runner_hooks.py` / `kv_block_meta.py` /
 | 3 | `forbidden_substring` | post-sampler | replace sampled_tokens with `李白` after first decode step | output_substring | `pattern=李白` |
 | 4 | `token_loop` | post-sampler | repeat last sampled token 32 times | token_repeat | `repeat_sum` + `window` |
 | 5 | `spec_all_reject` | spec_acceptance pre-call | `accepted_token_nums=[0]*bs` | spec_acceptance | `rate≈0` + `window=10` |
-| 6 | `kv_wave_regression` | kv_block_meta tracker | write block X wave=10, then wave=5 | block_kv | `wave_regression` |
-| 7 | `kv_same_wave_writer` | kv_block_meta tracker | two reqs same wave same block | block_kv | `same_wave_writer` + `writer_req_ids` |
-| 8 | `slot_mismatch_prefill` | block write path | slot stores token A, KV contains token B | slot_consistency (mode=first) | `last_writer_req_id` |
-| 9 | `slot_mismatch_decode` | decode-pre KV overwrite | active block written with another req's KV | slot_consistency (mode=step) | `step` + `last_writer_req_id` |
-| 10 | `position_shift` | sampler pre-entry position_ids | `position_ids[5:] += 1` | position_alignment | `position` + `expected` |
+
+Deferred backlog (KV-meta follow-up branch): #6 `kv_wave_regression` /
+#7 `kv_same_wave_writer` (`block_kv`), #8 / #9 `slot_mismatch_*`
+(`slot_consistency`), #10 `position_shift` (`position_alignment`).
 
 ### Cross-cutting scenarios (verify stop_after_alert)
 
@@ -90,12 +93,9 @@ pre-flight). Hooks dispatch to `runner_hooks.py` / `kv_block_meta.py` /
 | output_substring | #3 | pending |
 | token_repeat | #4 | pending |
 | spec_acceptance | #5 | pending ⚠️ DSV2-Lite not running MTP currently; either enable `--num-speculative-tokens` + Eagle speculator or fall back to UT-only coverage |
-| block_kv | #6, #7 | pending |
-| slot_consistency | #8, #9 (first + step mode both) | pending |
-| position_alignment | #10 | pending |
-| token_logprob | — | ❌ **design-skipped** — depends on msprobe, force-disabled in no-msprobe branch |
+| token_logprob | — | ❌ **design-skipped** — needs msprobe install; `DetectorManager.apply_runtime_config` force-sets `enabled=false` when msprobe is missing |
 
-**7/8 detectors covered by injection; 1 design-skipped.**
+**4/5 shipped detectors covered by injection; 1 design-skipped.**
 
 ## Injection mechanism design
 
@@ -138,10 +138,9 @@ inject_for_step(self, allow_arm=allow_arm, scheduler_output=scheduler_output)
 
 ## Live run procedure
 
-For each scenario #1-#12:
+For each scenario #1-#5, #11-#12:
 1. Confirm guard server up on cards 6-7 (DeepSeek-V2-Lite, TP=2, port 8017)
-2. Reset runtime_config.json: `stop_after_alert=true`, all 6 detectors `enabled=true`,
-   `slot_consistency.mode` per scenario (`first` for #8, `step` for #9)
+2. Reset runtime_config.json: `stop_after_alert=true`, all 5 shipped detectors `enabled=true`
 3. `curl -X POST .../manual_trigger` to clear any stale state
 4. `RG_INJECT=scenario_name:step_trigger[:param] python tests/perf/runtime_guard/run_inject.py`
 5. Wait for injection log `[INJECT] scenario=X step=N` to appear

@@ -6,7 +6,7 @@
 >
 > **PR-A note:** online KV write-meta (`note_kv_block_writes` / `KvBlockMetaTracker`
 > wave ledger / `block_kv`) is **not** wired. Ignore L6 and tracker growth
-> checks until the KV-meta follow-up. UT expect ≈ **75 passed** on this branch.
+> checks until the KV-meta follow-up. UT expect ≈ **69 passed** on this branch.
 
 ## 0. Pre-flight (every section depends on this)
 
@@ -14,11 +14,11 @@
 docker exec test-mrv2 bash -lc '
   cd /workspace/vllm-ascend &&
   git fetch origin &&
-  test "$(git rev-parse HEAD)" = "$(git rev-parse origin/feat/runtime-guard-no-msprobe)" \
+  test "$(git rev-parse HEAD)" = "$(git rev-parse origin/feat/runtime-guard-config)" \
     || { echo "HEAD != origin; run: git pull --ff-only"; exit 1; }
   python -m pytest tests/ut/runtime_guard/ -q 2>&1 | tail -3
 '
-# Expect: 75 passed (or higher on follow-up branches)
+# Expect: 69 passed (or higher on follow-up branches)
 ```
 
 ```bash
@@ -40,13 +40,12 @@ state containers); Phase C (5-min idle post-load) catches leak-back failure
 | **T0** | merge-base `37e382498` worktree | none | — | — | stop server → worktree vllm serve |
 | **T1** | current HEAD | none (plain vllm serve) | 0 (default) | all off | stop T0 → restart from HEAD |
 | **T2** | current HEAD | runtime_config_path + reload_interval=3 | 3 | all off | hot-toggle via set_detectors(False) |
-| **T3** | current HEAD | same as T2 | 3 | 6 enabled | hot-toggle via set_detectors(True) |
+| **T3** | current HEAD | same as T2 | 3 | 5 enabled | hot-toggle via set_detectors(True) |
 
 ### 1.2 Leak candidates Phase B must catch
 
 | Container | File | Why suspect |
 |---|---|---|
-| `KvBlockMetaTracker._wave` / `._writer` | `kv_block_meta.py` | No per-req clear, no cap, no eviction. Block-id-keyed; grows with each block write. |
 | `WaveTracker._sample_waves` | `wave_tracker.py` | Cleared only via `discard_many` in `_reap_finished_requests`; skipped if `wave_tracker is None` or exception. |
 | `SpecAcceptanceDetector._history` | `detector/spec_acceptance.py` | `defaultdict(deque)` auto-creates on read; stray req_id never reaped. |
 | `TokenLogprobDetector._since_check` / `._ill_window_hits` | `detector/token_logprob.py` | `defaultdict` auto-create; same risk. |

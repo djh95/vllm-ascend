@@ -207,20 +207,3 @@ class KvCacheReader:
                 snapshots[0].path.parent,
             )
         return written
-
-    def dump_request_blocks(
-        self,
-        *,
-        req_id: str,
-        block_ids: list[int],
-        out_dir: Path,
-        dump_all_blocks: bool = False,
-    ) -> list[str]:
-        """Sync snapshot + write (compat path). Prefer snapshot then async write."""
-        snaps = self.snapshot_request_blocks(
-            req_id=req_id,
-            block_ids=block_ids,
-            out_dir=out_dir,
-            dump_all_blocks=dump_all_blocks,
-        )
-        return self.write_snapshots(snaps)
