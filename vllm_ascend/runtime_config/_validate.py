@@ -93,7 +93,7 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         "report",
     ):
         if section not in data or not isinstance(data[section], dict):
-            raise ValueError(f"dfx config missing object section '{section}'")
+            raise ValueError(f"runtime config missing object section '{section}'")
     interval = data.get("reload_interval_seconds", 0)
     if not isinstance(interval, (int, float)) or interval < 0:
         raise ValueError(f"reload_interval_seconds must be >= 0, got {interval}")
@@ -181,7 +181,7 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
             data["input_filter"]["print_input_token_ids_once"] = bool(print_once)
         else:
             raise ValueError("input_filter.print_input_token_ids_once must be bool")
-    from vllm_ascend.runtime_guard.input_filters import normalize_input_filter_configs
+    from vllm_ascend.runtime_config._filters import normalize_input_filter_configs
 
     data["input_filter"]["filters"] = normalize_input_filter_configs(data["input_filter"].get("filters", []))
     level = data["ascend_log"].get("level", "INFO")

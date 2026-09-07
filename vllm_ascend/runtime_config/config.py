@@ -83,10 +83,7 @@ from vllm_ascend.runtime_config._merge import (
     _normalize_config_sections,
 )
 from vllm_ascend.runtime_config._paths import (
-    DEFAULT_CONFIG_FILENAME,
     _reject_unsafe_path,
-    default_config_dir,
-    default_runtime_root,
     resolve_runtime_config_path,
     resolve_runtime_report_dir,
 )
@@ -98,8 +95,7 @@ from vllm_ascend.runtime_config._validate import (
 )
 from vllm_ascend.runtime_config.jsonc_io import loads_jsonc
 
-# Re-export for UT / callers that poke ``config._DEFAULTS`` / path helpers.
-# ``_dfx_multi_dp_file_fallback_logged`` is mutated by sync_runtime_config.
+# ``_rg_multi_dp_file_fallback_logged`` is mutated by sync_runtime_config.
 from vllm_ascend.runtime_config import _dist as _dist_mod
 
 logger = init_logger_ascend(__name__)
@@ -167,7 +163,7 @@ class RuntimeConfig:
 
         # In-memory merge always. ``ensure_file=True`` persists immediately (tests /
         # rare callers). Production AscendConfig uses False; worker leader calls
-        # :meth:`ensure_persisted` once from ``DfxProcessor``.
+        # :meth:`ensure_persisted`` once from ``RuntimeGuardProcessor``.
         self._bootstrap(persist=ensure_file)
         logger.info(
             "[runtime_config] path=%s explicit_path=%s report_dir=%s hot_reload=%s persisted=%s",
@@ -697,7 +693,7 @@ class RuntimeConfig:
 
     def input_filter_configs(self) -> list[dict[str, Any]]:
         """Normalized ``input_filter.filters`` for ``InputFilterManager``."""
-        from vllm_ascend.runtime_guard.input_filters import normalize_input_filter_configs
+        from vllm_ascend.runtime_config._filters import normalize_input_filter_configs
 
         raw = self.input_filter.get("filters", [])
         try:
@@ -941,7 +937,7 @@ class RuntimeConfig:
         """
         raw = (self._data.get("dump") or {}).get("dump_dir")
         if isinstance(raw, str) and raw.strip():
-            return _reject_unsafe_path(Path(raw.strip()), label="dfx_dump_dir")
+            return _reject_unsafe_path(Path(raw.strip()), label="runtime_dump_dir")
         return self.report_dir / "kv_cache"
 
 
@@ -1084,7 +1080,7 @@ class RuntimeConfig:
 
         self._bg_thread = threading.Thread(
             target=_loop,
-            name="dfx-non-worker-reload",
+            name="rg-non-worker-reload",
             daemon=True,
         )
         self._bg_thread.start()
@@ -1118,14 +1114,14 @@ class RuntimeConfig:
         return (now - self._last_reload_ts) < interval
 
     def sync_runtime_config(self) -> bool:
-        """Canonical step entry for interval-gated DFX JSON sync.
+        """Canonical step entry for interval-gated runtime_config JSON sync.
 
         No-op when hot-reload is disabled (``runtime_config_reload_interval<=0``).
 
         Broadcast: collective on the **per-DP** sync group (never full multi-DP
         world). Group leader monitors JSON and broadcasts; every rank in that
         group must call each step. Multi-DP without ``inner_dp_world`` falls
-        back to local file poll. Call from ``DfxProcessor.refresh_config`` /
+        back to local file poll. Call from ``RuntimeGuardProcessor.refresh_config`` /
         ``sync_for_step`` — do not skip early-PP ranks when broadcast is used.
         """
         if not self.hot_reload_enabled:
@@ -1137,8 +1133,8 @@ class RuntimeConfig:
             group = _runtime_config_sync_group_or_none()
             if group is not None and group.world_size > 1:
                 return self._maybe_reload_broadcast(group)
-            if not _dist_mod._dfx_multi_dp_file_fallback_logged:
-                _dist_mod._dfx_multi_dp_file_fallback_logged = True
+            if not _dist_mod._rg_multi_dp_file_fallback_logged:
+                _dist_mod._rg_multi_dp_file_fallback_logged = True
                 if _dp_world_size_or_one() > 1:
                     logger.info(
                         "[runtime_config] multi-DP: per-DP broadcast "
