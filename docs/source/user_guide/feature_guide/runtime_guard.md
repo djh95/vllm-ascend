@@ -85,7 +85,7 @@ runtime/
 | `logits_finite` | before sample | NaN/Inf logits |
 | `token_logprob` | after sample | Logprob window anomalies |
 | `block_kv` | KV write | Block wave / writer inconsistency |
-| `slot_consistency` | KV write | Slot mapping vs block-table consistency |
+| `slot_consistency` | KV write / finish | Per-slot meta token vs prompt+output sequence |
 | `position_alignment` | before sample | Position id mismatch |
 | `spec_acceptance` | after spec | Spec-decode acceptance drift (via `run_sample_phase` → `check_after_spec`; v2 stashes accept stats in `postprocess_sampled`) |
 | `token_logprob` | after sample | Logprob window anomalies (`ensure_logprobs_for_detection` runs at the start of `run_sample_phase`) |
