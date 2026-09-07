@@ -80,3 +80,9 @@ class AscendKVBlockZeroer310(KVBlockZeroer):
             end = start + ratio
             for kv in self._kv_tensors:
                 kv[start:end].zero_()
+        try:
+            from vllm_ascend.runtime_guard.kv_audit import on_invalidate
+
+            on_invalidate(list(block_ids), reason="zero")
+        except Exception:
+            pass

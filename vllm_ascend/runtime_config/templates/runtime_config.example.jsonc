@@ -37,7 +37,11 @@
     "decode_token_ids": true,
     "max_prompt_token_ids": 1000,
     "max_output_token_ids": 1000,
-    "include_block_ids": true
+    "include_block_ids": true,
+    // kv_audit also auto-on with invariant.slot_consistency /
+    // invariant.kv_slot_order or report.block_state.
+    "kv_audit": false,
+    "kv_audit_pad_check": true
   },
 
   "detector": {
@@ -74,8 +78,32 @@
       "add_special_tokens": false,
       "match_prefix": false
     },
+    "finish": {
+      "enabled": false,
+      "on_trigger": ["report"]
+    }
+  },
+
+  "invariant": {
+    "slot_consistency": {
+      "enabled": false,
+      "check_scope": "auto",
+      "on_trigger": ["report"]
+    },
+    "kv_slot_order": {
+      "enabled": false,
+      "check_scope": "auto",
+      "on_trigger": ["report"]
+    },
+    "kv_state": {
+      "enabled": false,
+      "check_scope": "auto",
+      "on_trigger": ["report"]
+    },
     "logits_finite": {
-      "enabled": false
+      "enabled": false,
+      "check_scope": "auto",
+      "on_trigger": ["report"]
     }
   }
 }

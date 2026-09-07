@@ -219,7 +219,7 @@ so prod pays nothing.
 | L3 | `request_state.py:RequestGuardStore.clear_many` | after batch | `[RG_STATE reap_batch] count=%d remaining=%d reaped_ring=%d` | every reap sweep |
 | L4 | `wave_tracker.py:WaveTracker.record_sample_waves` | after stamp | `[RG_WAVE record] req_id=%s wave=%d pending=%d` | hook 7 |
 | L5 | `wave_tracker.py:WaveTracker.discard_many` | after batch | `[RG_WAVE discard] count=%d remaining=%d` | reap |
-| L6 | `kv_block_meta.py:KvBlockMetaTracker.record_writes` | after loop | `[RG_KV write] req_id=%s blocks=%d wave=%d total_blocks_tracked=%d distinct_writers=%d` | hook (note_kv_block_writes) |
+| L6 | `kv_block_meta.py:KvBlockMetaTracker.apply_slot_writes` / `merge_slot_writes` | after batch | `[RG_KV write] blocks=%d sealed=%d partial=%d slots=%d` | hook (note_kv / reshape) |
 | L7 | `processor.py:_reap_finished_requests` | start + end | start: `[RG_REAP enter] live=%d reapable=%d`; end: `[RG_REAP leave] reaped=%d live=%d` | every step (DEBUG) |
 | L8 | `processor.py:sync_for_step` | DEBUG-only snapshot every N=64 steps | `[RG_SYNC snapshot] step=%d store_size=%d wave_pending=%d kv_blocks=%d io_cache=%d action_q=%d` | periodic |
 | L9 | `detector/spec_acceptance.py:SpecAcceptanceDetector._history` defaultdict access | when auto-create | `[RG_SPEC hist-create] req_id=%s history_size=%d` | read-on-missing |
@@ -238,7 +238,7 @@ container sizes. Wire into `manual_trigger.py` as new trigger type
 | Comparison | How | What it surfaces |
 |---|---|---|
 | `store_size` vs sum of all per-req detector dict sizes | After each reap: `len(store) == len(spec_history) == len(token_logprob_buf) == len(token_repeat_states)` | Any detector dict out of sync → leak in that detector |
-| `kv_blocks_tracked` vs `kv_distinct_writers` | Periodic snapshot | Block meta growth without new requests → block-id-level leak |
+| `kv_blocks_tracked` vs sealed/partial counts | Periodic snapshot | Block meta growth without new requests → block-id-level leak |
 | `wave_pending` vs `store_size` | After every reap | Wave not discarded for reaped req → wave_tracker leak |
 | `action_queue_qsize` | Periodic | Heavy action backlog growing → ActionExecutor drain stuck |
 | `reaped_ring_size` | Periodic | Should converge to min(live, 1024) |

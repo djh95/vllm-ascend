@@ -62,6 +62,8 @@ from vllm_ascend.runtime_config._defaults import (
     DETECTOR_KEYS as _DETECTOR_KEYS,
     DETECTOR_SECTIONS as _DETECTOR_SECTIONS,
     DUMP_KEYS as _DUMP_KEYS,
+    INVARIANT_KEYS as _INVARIANT_KEYS,
+    INVARIANT_SECTIONS as _INVARIANT_SECTIONS,
     LOG_KEYS as _LOG_KEYS,
     REPORT_KEYS as _REPORT_KEYS,
     _DEFAULTS,
@@ -83,7 +85,10 @@ from vllm_ascend.runtime_config._merge import (
     _normalize_config_sections,
 )
 from vllm_ascend.runtime_config._paths import (
+    DEFAULT_CONFIG_FILENAME,
     _reject_unsafe_path,
+    default_config_dir,
+    default_runtime_root,
     resolve_runtime_config_path,
     resolve_runtime_report_dir,
 )
@@ -95,7 +100,8 @@ from vllm_ascend.runtime_config._validate import (
 )
 from vllm_ascend.runtime_config.jsonc_io import loads_jsonc
 
-# ``_rg_multi_dp_file_fallback_logged`` is mutated by sync_runtime_config.
+# Re-export for UT / callers that poke ``config._DEFAULTS`` / path helpers.
+# ``_dfx_multi_dp_file_fallback_logged`` is mutated by sync_runtime_config.
 from vllm_ascend.runtime_config import _dist as _dist_mod
 
 logger = init_logger_ascend(__name__)
@@ -163,7 +169,7 @@ class RuntimeConfig:
 
         # In-memory merge always. ``ensure_file=True`` persists immediately (tests /
         # rare callers). Production AscendConfig uses False; worker leader calls
-        # :meth:`ensure_persisted` once from ``RuntimeGuardProcessor``.
+        # :meth:`ensure_persisted` once from ``DfxProcessor``.
         self._bootstrap(persist=ensure_file)
         logger.info(
             "[runtime_config] path=%s explicit_path=%s report_dir=%s hot_reload=%s persisted=%s",
@@ -392,7 +398,7 @@ class RuntimeConfig:
         """Materialize bootstrap merge to disk once (worker leader / single-process).
 
         Safe to call from every worker: non-leaders no-op; leaders act at most once
-        per process. Call from ``RuntimeGuardProcessor`` so API/EngineCore never persist.
+        per process. Call from ``DfxProcessor`` so API/EngineCore never persist.
 
         If the JSON already exists and this is an **explicit** ``runtime_config_path``,
         skip rewrite: disk is the source of truth — except when ``dump.dump_dir``
@@ -512,6 +518,7 @@ class RuntimeConfig:
             return cached
         dump = self._data.get("dump") or {}
         det = self._data.get("detector") or {}
+        inv = self._data.get("invariant") or {}
         report = self._data.get("report") or {}
         log = self._data.get("log") or {}
         input_filter = self._data.get("input_filter") or {}
@@ -523,14 +530,23 @@ class RuntimeConfig:
                 any_det = True
                 break
 
+        any_inv = False
+        for name in RuntimeConfig.INVARIANT_SECTIONS:
+            sec = inv.get(name)
+            if isinstance(sec, dict) and bool(sec.get("enabled", False)):
+                any_inv = True
+                break
+
         dump_on = self._auto_on_from_dump(dump) or self._manual_dump_active(
             dump.get("manual_dump", False)
         )
         print_out = bool(log.get("print_output_on_finish", False))
         print_in = bool(input_filter.get("print_input_token_ids_once", False))
+        block_meta = bool(report.get("block_state", False))
         save_sensitive = bool(report.get("save_sensitive_info", False))
         out_sub = bool((det.get("output_substring") or {}).get("enabled", False))
         tok_rep = bool((det.get("token_repeat") or {}).get("enabled", False))
+        finish_on = bool((det.get("finish") or {}).get("enabled", False))
         raw_filters = input_filter.get("filters", [])
         has_filters = bool(raw_filters)
 
@@ -547,13 +563,18 @@ class RuntimeConfig:
             print_out
             or out_sub
             or tok_rep
+            or finish_on
             or (any_det and save_sensitive)
+            or (any_inv and save_sensitive)
         )
-        needs_sample = any_det or print_out
-        needs_filter = any_det or has_filters
+        # Invariants that run on the sample path (slot_consistency / …) need
+        # note_kv; logits_finite uses a separate pre-sample wrap.
+        needs_sample = any_det or any_inv or print_out or block_meta
+        needs_filter = any_det or any_inv or has_filters
 
         cached = {
             "any_detector": any_det,
+            "any_invariant": any_inv,
             "dump_enabled": dump_on,
             "needs_cumulative_io": needs_io,
             "needs_sample_phase_hooks": needs_sample,
@@ -577,6 +598,10 @@ class RuntimeConfig:
         """True if at least one auto anomaly detector is enabled."""
         return bool(self._hot_path_gates_cached()["any_detector"])
 
+    def any_invariant_enabled(self) -> bool:
+        """True if at least one soft-assert invariant is enabled."""
+        return bool(self._hot_path_gates_cached()["any_invariant"])
+
     def needs_cumulative_io(self) -> bool:
         """True when sampled tokens must be appended to the IO store.
 
@@ -588,7 +613,7 @@ class RuntimeConfig:
     def needs_sample_phase_hooks(self) -> bool:
         """True when post-sample runtime_guard hooks must run (not a pure sample fast-path).
 
-        Covers detectors and finish-output logging.
+        Covers detectors, finish-output logging, and KV block/slot write tracking.
         Dump-only / hot-reload-only does not need the sample-phase hook chain.
         """
         return bool(self._hot_path_gates_cached()["needs_sample_phase_hooks"])
@@ -603,10 +628,12 @@ class RuntimeConfig:
 
     # Schema key sets live in ``_defaults``; re-exported on the class for callers.
     DETECTOR_SECTIONS = _DETECTOR_SECTIONS
+    INVARIANT_SECTIONS = _INVARIANT_SECTIONS
     DUMP_KEYS = _DUMP_KEYS
     LOG_KEYS = _LOG_KEYS
     REPORT_KEYS = _REPORT_KEYS
     DETECTOR_KEYS = _DETECTOR_KEYS
+    INVARIANT_KEYS = _INVARIANT_KEYS
 
     @staticmethod
     def detectors_enabled_in(data: dict[str, Any]) -> bool:
@@ -629,8 +656,16 @@ class RuntimeConfig:
             names.append("output_substring")
         if bool(self.detector_get("token_repeat", "enabled", False)):
             names.append("token_repeat")
-        if bool(self.detector_get("logits_finite", "enabled", False)):
+        if bool(self.invariant_get("slot_consistency", "enabled", False)):
+            names.append("slot_consistency")
+        if bool(self.invariant_get("kv_slot_order", "enabled", False)):
+            names.append("kv_slot_order")
+        if bool(self.invariant_get("kv_state", "enabled", False)):
+            names.append("kv_state")
+        if bool(self.invariant_get("logits_finite", "enabled", False)):
             names.append("logits_finite")
+        if bool(self.detector_get("finish", "enabled", False)):
+            names.append("finish")
         dump_on = self.dump_enabled()
         auto_on = self.auto_dump_on()
         max_times = self.dump_max_times()
@@ -693,7 +728,7 @@ class RuntimeConfig:
 
     def input_filter_configs(self) -> list[dict[str, Any]]:
         """Normalized ``input_filter.filters`` for ``InputFilterManager``."""
-        from vllm_ascend.runtime_config._filters import normalize_input_filter_configs
+        from vllm_ascend.runtime_guard.input_filters import normalize_input_filter_configs
 
         raw = self.input_filter.get("filters", [])
         try:
@@ -928,6 +963,39 @@ class RuntimeConfig:
         report = self._data.get("report") or {}
         return bool(report.get("include_slot_mapping", False))
 
+    def report_block_state(self) -> bool:
+        """Track and report per-block slot meta state."""
+        report = self._data.get("report") or {}
+        return bool(report.get("block_state", False))
+
+    def report_block_meta_enabled(self) -> bool:
+        """True when per-block slot meta state tracking is on."""
+        return self.report_block_state()
+
+    def report_kv_audit(self) -> bool:
+        """Edge hooks: reshape_and_cache / zero / offload H2D → block meta.
+
+        Explicit ``report.kv_audit`` or auto-on when ``report.block_state``
+        or slot meta invariants need the same meta stream.
+        """
+        report = self._data.get("report") or {}
+        if bool(report.get("kv_audit", False)):
+            return True
+        if self.report_block_meta_enabled():
+            return True
+        if bool(self.invariant_get("slot_consistency", "enabled", False)):
+            return True
+        if bool(self.invariant_get("kv_slot_order", "enabled", False)):
+            return True
+        if bool(self.invariant_get("kv_state", "enabled", False)):
+            return True
+        return False
+
+    def report_kv_audit_pad_check(self) -> bool:
+        """When kv_audit is active: verify dummy/pad slot_mapping is all negative."""
+        report = self._data.get("report") or {}
+        return bool(report.get("kv_audit_pad_check", True))
+
     def dump_root(self) -> Path:
         """KV dump landing root; ``<incident_type>/<req_id>/`` under it.
 
@@ -937,7 +1005,7 @@ class RuntimeConfig:
         """
         raw = (self._data.get("dump") or {}).get("dump_dir")
         if isinstance(raw, str) and raw.strip():
-            return _reject_unsafe_path(Path(raw.strip()), label="runtime_dump_dir")
+            return _reject_unsafe_path(Path(raw.strip()), label="dfx_dump_dir")
         return self.report_dir / "kv_cache"
 
 
@@ -963,6 +1031,30 @@ class RuntimeConfig:
     def detector_get(self, section: str, key: str, default: Any = None) -> Any:
         """Read ``detector.<section>.<key>``."""
         return self.detector_section(section).get(key, default)
+
+    @property
+    def invariant(self) -> dict[str, Any]:
+        sec = self._data.get("invariant")
+        return sec if isinstance(sec, dict) else {}
+
+    def invariant_section(self, name: str) -> dict[str, Any]:
+        """Return nested ``invariant.<name>`` object (empty dict if missing)."""
+        sec = self.invariant.get(name)
+        return sec if isinstance(sec, dict) else {}
+
+    def invariant_get(self, section: str, key: str, default: Any = None) -> Any:
+        """Read ``invariant.<section>.<key>``."""
+        return self.invariant_section(section).get(key, default)
+
+    def action_section_for(self, incident_type: str) -> dict[str, Any]:
+        """Config section that owns ``on_trigger`` for this incident type."""
+        # slot_consistency emits incident_type=kv_slot_token (section ≠ type).
+        section = {
+            "kv_slot_token": "slot_consistency",
+        }.get(incident_type, incident_type)
+        if section in self.INVARIANT_SECTIONS:
+            return self.invariant_section(section)
+        return self.detector_section(incident_type)
 
     # ---- detector placement (ExecScope scheduling) --------------------------
 
@@ -1080,7 +1172,7 @@ class RuntimeConfig:
 
         self._bg_thread = threading.Thread(
             target=_loop,
-            name="rg-non-worker-reload",
+            name="dfx-non-worker-reload",
             daemon=True,
         )
         self._bg_thread.start()
@@ -1114,14 +1206,14 @@ class RuntimeConfig:
         return (now - self._last_reload_ts) < interval
 
     def sync_runtime_config(self) -> bool:
-        """Canonical step entry for interval-gated runtime_config JSON sync.
+        """Canonical step entry for interval-gated DFX JSON sync.
 
         No-op when hot-reload is disabled (``runtime_config_reload_interval<=0``).
 
         Broadcast: collective on the **per-DP** sync group (never full multi-DP
         world). Group leader monitors JSON and broadcasts; every rank in that
         group must call each step. Multi-DP without ``inner_dp_world`` falls
-        back to local file poll. Call from ``RuntimeGuardProcessor.refresh_config`` /
+        back to local file poll. Call from ``DfxProcessor.refresh_config`` /
         ``sync_for_step`` — do not skip early-PP ranks when broadcast is used.
         """
         if not self.hot_reload_enabled:
@@ -1133,8 +1225,8 @@ class RuntimeConfig:
             group = _runtime_config_sync_group_or_none()
             if group is not None and group.world_size > 1:
                 return self._maybe_reload_broadcast(group)
-            if not _dist_mod._rg_multi_dp_file_fallback_logged:
-                _dist_mod._rg_multi_dp_file_fallback_logged = True
+            if not _dist_mod._dfx_multi_dp_file_fallback_logged:
+                _dist_mod._dfx_multi_dp_file_fallback_logged = True
                 if _dp_world_size_or_one() > 1:
                     logger.info(
                         "[runtime_config] multi-DP: per-DP broadcast "

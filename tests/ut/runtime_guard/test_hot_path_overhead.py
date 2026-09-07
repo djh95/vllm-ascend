@@ -189,6 +189,12 @@ def test_needs_sample_phase_hooks_and_cumulative_io_flags(tmp_path: Path):
     cfg2._invalidate_hot_path_gates()
     assert cfg2.needs_filter_chain_apply() is True
 
+    cfg3 = _cfg(tmp_path, reload=0.0)
+    cfg3._data["detector"]["finish"]["enabled"] = True
+    cfg3._invalidate_hot_path_gates()
+    assert cfg3.needs_sample_phase_hooks() is True
+    assert cfg3.needs_cumulative_io() is True
+
 
 def test_hot_path_gates_cache_and_early_sync_skip(tmp_path: Path):
     """Gates stay cached until invalidate; sync skips while clearly not due."""

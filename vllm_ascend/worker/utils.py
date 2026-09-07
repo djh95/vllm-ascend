@@ -198,3 +198,9 @@ class AscendKVBlockZeroer(KVBlockZeroer):
             BLOCK_SIZE=blk_size,
             GRID_SIZE=grid,
         )
+        try:
+            from vllm_ascend.runtime_guard.kv_audit import on_invalidate
+
+            on_invalidate(list(block_ids), reason="zero")
+        except Exception:
+            pass

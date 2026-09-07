@@ -23,6 +23,8 @@ from vllm_ascend.runtime_config._defaults import (
     DETECTOR_KEYS,
     DETECTOR_SECTIONS,
     DUMP_KEYS,
+    INVARIANT_KEYS,
+    INVARIANT_SECTIONS,
     LOG_KEYS,
     REPORT_KEYS,
     _DEFAULTS,
@@ -89,11 +91,12 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         "ascend_log",
         "log",
         "detector",
+        "invariant",
         "input_filter",
         "report",
     ):
         if section not in data or not isinstance(data[section], dict):
-            raise ValueError(f"runtime config missing object section '{section}'")
+            raise ValueError(f"dfx config missing object section '{section}'")
     interval = data.get("reload_interval_seconds", 0)
     if not isinstance(interval, (int, float)) or interval < 0:
         raise ValueError(f"reload_interval_seconds must be >= 0, got {interval}")
@@ -168,6 +171,9 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     for block_key in (
         "include_block_ids",
         "include_slot_mapping",
+        "block_state",
+        "kv_audit",
+        "kv_audit_pad_check",
     ):
         block_val = data["report"].get(block_key)
         if block_val is not None and not isinstance(block_val, bool):
@@ -181,7 +187,7 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
             data["input_filter"]["print_input_token_ids_once"] = bool(print_once)
         else:
             raise ValueError("input_filter.print_input_token_ids_once must be bool")
-    from vllm_ascend.runtime_config._filters import normalize_input_filter_configs
+    from vllm_ascend.runtime_guard.input_filters import normalize_input_filter_configs
 
     data["input_filter"]["filters"] = normalize_input_filter_configs(data["input_filter"].get("filters", []))
     level = data["ascend_log"].get("level", "INFO")
@@ -212,10 +218,17 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
                     raise ValueError("detector.stop_after_alert must be bool")
             continue
         if key not in known:
+            if key in INVARIANT_SECTIONS:
+                raise ValueError(
+                    f"detector.{key} moved to invariant.{key}; "
+                    f"remove it from detector and set invariant.{key} instead"
+                )
             raise ValueError(
                 f"detector.{key} is not a known detector section; "
                 f"expected nested objects among {sorted(known)} "
-                f"(e.g. detector.spec_acceptance.enabled)"
+                f"(e.g. detector.spec_acceptance.enabled). "
+                f"Soft-asserts live under invariant.* "
+                f"({', '.join(INVARIANT_SECTIONS)})"
             )
         if not isinstance(value, dict):
             raise ValueError(f"detector.{key} must be an object")
@@ -242,6 +255,37 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
             else:
                 raise ValueError(f"detector.{name}.enabled must be bool")
 
+    inv_root = data["invariant"]
+    known_inv = set(INVARIANT_SECTIONS)
+    for key, value in inv_root.items():
+        if key not in known_inv:
+            raise ValueError(
+                f"invariant.{key} is not a known invariant section; "
+                f"expected {sorted(known_inv)}"
+            )
+        if not isinstance(value, dict):
+            raise ValueError(f"invariant.{key} must be an object")
+        unknown_sub = sorted(set(value) - INVARIANT_KEYS[key])
+        if unknown_sub:
+            raise ValueError(
+                f"invariant.{key} has unknown key(s) {unknown_sub}; "
+                f"allowed={sorted(INVARIANT_KEYS[key])}"
+            )
+        cs = value.get("check_scope", "auto")
+        if cs not in ("auto", "leader", "all"):
+            raise ValueError(
+                f"invariant.{key}.check_scope must be auto/leader/all; got {cs!r}"
+            )
+    for name in INVARIANT_SECTIONS:
+        sec = inv_root.setdefault(name, {})
+        if not isinstance(sec, dict):
+            raise ValueError(f"invariant.{name} must be an object")
+        enabled = sec.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            if enabled in (0, 1):
+                sec["enabled"] = bool(enabled)
+            else:
+                raise ValueError(f"invariant.{name}.enabled must be bool")
     token = detector["token_logprob"]
     token["window"] = int_field(
         token.get("window", 64), "detector.token_logprob.window", min_value=1
@@ -252,7 +296,7 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     if token["window"] < token["stride"]:
         raise ValueError("detector.token_logprob.window must be >= detector.token_logprob.stride")
 
-    from vllm_ascend.runtime_config._filters import normalize_raw_patterns
+    from vllm_ascend.runtime_guard.detector.output_substring import normalize_raw_patterns
 
     out_sub = detector["output_substring"]
     out_sub["patterns"] = normalize_raw_patterns(out_sub.get("patterns", []))
@@ -269,7 +313,7 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         else:
             raise ValueError("detector.output_substring.match_prefix must be bool")
 
-    from vllm_ascend.runtime_config._filters import normalize_ignore_token_ids
+    from vllm_ascend.runtime_guard.detector.token_repeat import normalize_ignore_token_ids
 
     token_repeat = detector["token_repeat"]
     token_repeat["window"] = int_field(
@@ -319,10 +363,16 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     manual_map = placement.get("manual", {})
     if not isinstance(manual_map, dict):
         raise ValueError("detector_placement.manual must be an object")
+    # LPT placement only applies to real detectors (not soft-assert invariants).
     known_types = set(DETECTOR_SECTIONS)
     for mkey, mval in manual_map.items():
         if not isinstance(mkey, str):
             raise ValueError("detector_placement.manual keys must be strings")
+        if mkey in INVARIANT_SECTIONS:
+            raise ValueError(
+                f"detector_placement.manual cannot assign invariant {mkey!r}; "
+                f"use invariant.{mkey}.check_scope (leader|all|auto) instead"
+            )
         if mkey not in known_types:
             raise ValueError(
                 f"detector_placement.manual has unknown detector {mkey!r}; "

@@ -1,12 +1,12 @@
 # Runtime Guard
 
-Runtime Guard is vLLM Ascend's online anomaly detection and incident response layer. It watches decode-time signals (token repetition, garbled output, non-finite logits, speculative acceptance drift, and more), writes structured reports under `runtime/report/`, and optionally captures per-request KV cache blocks via native device-to-host dump (`dump_kv`).
+Runtime Guard is vLLM Ascend's online anomaly detection and incident response layer. It watches decode-time signals (token repetition, garbled output, non-finite logits, KV block integrity, and more), writes structured reports under `runtime/report/`, and optionally captures per-request KV cache blocks via native device-to-host dump (`dump_kv`).
 
 ## When to use
 
 - Intermittent quality bugs: repetition, gibberish, sudden NaN/Inf
+- Suspected KV corruption or block metadata inconsistency
 - Need on-call artifacts (JSON report + optional `.pt` KV slices) without patching the model
-- Suspected KV issues: capture with `dump_kv` (online KV-meta detectors ship in a follow-up)
 
 Default deployment: **detectors off, hot-reload off** — negligible overhead until you enable features in `runtime_config.json`.
 
@@ -59,7 +59,7 @@ See [Additional Configuration](../configuration/additional_config.md#runtime_gua
 ```text
 RuntimeGuardProcessor.bind(runner)
   → sync_for_step()        # config + wave + manual triggers
-  → detector hooks         # before/after sample (and after spec)
+  → detector hooks         # before/after sample, KV writes
   → ActionExecutor         # report | dump_kv | set_log_level (async queue)
 ```
 
@@ -82,15 +82,17 @@ runtime/
 |------|-------|-------------|
 | `token_repeat` | after sample | Stutter / repetition |
 | `output_substring` | after sample | Forbidden or garbage token patterns |
-| `logits_finite` | before sample | NaN/Inf logits |
-| `token_logprob` | after sample | Logprob window anomalies |
+| `logits_finite` | before sample (invariant) | NaN/Inf logits — `check_scope` auto→leader; `emit_finding` |
+| `finish` | request reap | One report per finished request (non-ill) |
+| `slot_consistency` | note_kv / finish (invariant) | Slot token vs seq → `kv_slot_token`; cross-req KV addressing |
+| `kv_slot_order` | note_kv (invariant) | Non-sequential slot offsets → `gap` / `wrong_start` |
+| `kv_state` | note_kv (invariant) | `BLOCK_SEALED_LOAD` + non-zero → `sealed_nonzero_rewrite` (silent if `output_len==0`); `BLOCK_SEALED_FILL` + non-zero → always `sealed_fill_nonzero_rewrite` (skip apply) |
 | `spec_acceptance` | after spec | Spec-decode acceptance drift (via `run_sample_phase` → `check_after_spec`; v2 stashes accept stats in `postprocess_sampled`) |
+| `token_logprob` | after sample | Logprob window anomalies (`ensure_logprobs_for_detection` runs at the start of `run_sample_phase`) |
 
 All detectors default to **disabled**. Enable individually under `detector.<name>.enabled`.
 
-Online KV / position meta detectors are **not** in this release; use `dump_kv` for KV capture (offline compare tooling ships later).
-
-> **Wiring:** v1/v2 `sample_tokens` call `RuntimeGuardProcessor.run_sample_phase` for post-pre-sample hooks (`ensure_logprobs` / `mark_finished` / `check_after_spec` / waves / sync `check_after_sample`). Pre-sample `check_before_sample` stays on the compute_logits wrap (before grammar; `logits_finite` only). Async `check_after_sample` runs in `AscendAsync*` `get_output()`.
+> **Wiring:** v1/v2 `sample_tokens` call `RuntimeGuardProcessor.run_sample_phase` for post-pre-sample hooks (`ensure_logprobs` → `note_kv` / `mark_finished` / `check_after_spec` / waves / sync `check_after_sample`). Pre-sample `check_before_sample` stays on the compute_logits wrap (before grammar). Async `check_after_sample` runs in `AscendAsync*` `get_output()`.
 ## Actions
 
 | Action | Effect |
@@ -117,6 +119,23 @@ Default `on_trigger` is `["report"]`. Per-detector overrides:
 - **dump_kv on hit**: one-time D2H spike proportional to blocks × layers.
 
 Live NPU A/B checklist: `tests/perf/runtime_guard/README.md`.
+
+## Post-incident analysis
+
+After reports and optional KV dumps are captured:
+
+- Package index: `vllm_ascend/runtime_guard/analysis/README.md`
+- Scripts: `python -m vllm_ascend.runtime_guard.analysis.scripts.<name> ...`
+
+Common flow:
+
+1. `summarize_reports` — table of incidents  
+2. `correlate_incident` — link `req_id` to report + kv dirs  
+3. `verify_request_kv` — reconcile report vs `.pt` files  
+4. `request_from_report` (or `prepare_ref_inputs`) + clean-service `dump_kv` — reference capture  
+5. `compare_kv_similarity` (two reports) or `locate_first_divergence` / `compare_per_layer` — compare buggy vs ref KV
+
+Agent skills (Cursor): `.agents/skills/runtime-guard-*` → full bodies under `vllm_ascend/runtime_guard/analysis/skill/`.
 
 ## Related docs
 

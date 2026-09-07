@@ -206,6 +206,16 @@ class SingleDirectionNPUOffloadingHandler:
                 )
             end_event.record(stream)
 
+        if not self.npu_to_cpu:
+            try:
+                from vllm_ascend.runtime_guard.kv_audit import on_block_load
+
+                # dst_blocks are NPU logical ids for H2D loads.
+                ids = dst_blocks.tolist() if hasattr(dst_blocks, "tolist") else list(dst_blocks)
+                on_block_load([int(x) for x in ids], tag="kv_load")
+            except Exception:
+                pass
+
         self._transfer_events[job_id] = end_event
         self._transfers.append(
             Transfer(

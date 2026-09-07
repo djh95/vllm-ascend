@@ -87,11 +87,11 @@ class ActionExecutor:
     ) -> tuple[list[str], dict[str, Any]]:
         if override is not None:
             names = list(override)
-            overrides = self._runtime_config.detector_section(incident_type) or {}
+            overrides = self._runtime_config.action_section_for(incident_type) or {}
             return names, dict(overrides) if isinstance(overrides, dict) else {}
 
         defaults = self._runtime_config.actions_default_on_trigger()
-        det = self._runtime_config.detector_section(incident_type) or {}
+        det = self._runtime_config.action_section_for(incident_type) or {}
         raw = det.get("on_trigger")
         if raw is None:
             names = list(defaults or _DEFAULT_ACTIONS)

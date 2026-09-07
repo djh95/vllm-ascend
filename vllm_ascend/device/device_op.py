@@ -48,6 +48,12 @@ class BaseDeviceAdaptor:
             slot_mapping=slot_mapping.contiguous(),
             cache_mode="Norm",
         )
+        try:
+            from vllm_ascend.runtime_guard.kv_audit import on_write_from_slot_mapping
+
+            on_write_from_slot_mapping(slot_mapping, tag="reshape_and_cache")
+        except Exception:
+            pass
 
     @classmethod
     def npu_fused_infer_attention_score(
@@ -1479,6 +1485,12 @@ class Ascend310PDeviceAdaptor(BaseDeviceAdaptor):
             value_cache=value_cache,
             slot_indices=slot_mapping,
         )
+        try:
+            from vllm_ascend.runtime_guard.kv_audit import on_write_from_slot_mapping
+
+            on_write_from_slot_mapping(slot_mapping, tag="reshape_and_cache")
+        except Exception:
+            pass
 
     @staticmethod
     def index_fill(

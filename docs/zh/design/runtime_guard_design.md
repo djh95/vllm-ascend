@@ -35,6 +35,7 @@ Worker: RuntimeGuardProcessor.bind(runner)
   采样路径：
   check_before_sample (logits_finite)
   check_after_sample  (token_repeat / output_substring / token_logprob / …)
+  note_kv_block_writes (slot_consistency)
          │
   Incident → ActionExecutor.handle()
   ├─ sync_only: set_log_level
@@ -46,8 +47,6 @@ Worker: RuntimeGuardProcessor.bind(runner)
 
 同一 incident 的 `on_trigger` 含 `report` 与 `dump_kv` 时，executor **先 enqueue report、再做 KV D2H**，使写盘与设备拷贝重叠。  
 `dump_kv` 默认只 dump 该请求占用的 **paged block**（`block_ids`），不是整池 KV。
-
-在线 `block_kv` / `slot_consistency` / `position_alignment` 与离线分析脚本未合入本 PR；本 PR 可抓 `dump_kv`，对比工具后续再带。
 
 ## 2. Runtime Config
 
@@ -84,7 +83,8 @@ Worker: RuntimeGuardProcessor.bind(runner)
 | `sync_mode` | 配置同步方式 |
 | `actions.defaults.on_trigger` | 未指定时的默认 action 列表 |
 | `dump` | 自动 dump 配额、`manual_dump` / `manual_trigger` |
-| `detector.*` | 各 detector 开关与阈值；可 per-type 覆盖 `on_trigger` |
+| `detector.*` | 异常 detector 开关与阈值；可 per-type 覆盖 `on_trigger` |
+| `invariant.*` | Soft-assert（logits / slot）；`check_scope`；不参与 LPT |
 | `report` | 报告字段、敏感信息、block 元数据 |
 | `log` | 运维日志开关（不落 report JSON） |
 | `ascend_log` | Ascend 模块日志级别 |
@@ -98,10 +98,12 @@ Worker: RuntimeGuardProcessor.bind(runner)
 - `manual_trigger` **不**经过 filter。
 - `print_input_token_ids_once`：下一次有 prompt 的真实 wave 打印 token ids 并生成 filter 示例，然后清 flag。
 
-## 3. Detector
+## 3. Detector vs Invariant
 
-检测在 **last PP rank** 上按 `detector_placement` 分布到各 TP rank（默认 `auto` LPT；不再固定 TP0-only）。  
-Report / KV dump 写盘 rank：`last PP` + `TP0`（`is_action_leader_rank`）。
+检测仅在 **last PP rank** 运行。Report / KV dump 写盘：`last PP` + action leader（通常 TP0）。  
+Detector 经 LPT/`detector_placement` 分到 TP ranks；Invariant 用 `check_scope`（不跨 rank 传 Incident：谁检查谁写 report）。
+
+### Detector
 
 | incident_type | 钩子阶段 | 说明 |
 |---------------|----------|------|
@@ -109,13 +111,38 @@ Report / KV dump 写盘 rank：`last PP` + `TP0`（`is_action_leader_rank`）。
 | `token_logprob` | after sample | logprob 窗口异常（NaN / 稀有 / 乱码 / 重复） |
 | `output_substring` | after sample | 输出 token 子序列匹配 |
 | `token_repeat` | after sample | 滑动窗口复读分数 |
+| `finish` | request reap | 每个请求结束写一份 report（非 ill，不占 dump 配额） |
+
+### Invariant（`invariant.*`）
+
+| incident_type | 钩子阶段 | 说明 |
+|---------------|----------|------|
 | `logits_finite` | before sample | logits NaN/Inf |
+| `slot_consistency` | note_kv / finish | slot meta token vs 推理序列 → `kv_slot_token` |
+| `kv_slot_order` | note_kv | 块内 slot offset 非连续 → `gap` / `wrong_start` |
+| `kv_state` | note_kv | `BLOCK_SEALED_LOAD` 非 0 续写：degrade+记账，`output_len>0` 才告警；`BLOCK_SEALED_FILL` 非 0：始终告警且跳过记账；load 带 `num_tokens` 尾块为 `SLOT_PARTIAL` |
 
-共享行为：`detector.stop_after_alert`（默认 `true`）— 同一请求首次 alert 后不再重复 detect。
+KV slot meta 状态机（`KvBlockMetaTracker`）：
 
-> 在线 KV / position meta 检测器见后续 PR。
+| 状态 | 含义 |
+|------|------|
+| `UNKNOWN` | 默认 / zero 后 |
+| `SLOT_PARTIAL` | 已有顺序 slot 写入，物理块未写满 |
+| `BLOCK_SEALED_FILL` | 逐 slot 写满 0‥bs-1 |
+| `BLOCK_SEALED_LOAD` | 整块 H2D/PD load（`num_tokens` 整除或未传） |
 
-各 detector 可通过 nested `on_trigger` 覆盖 action，例如：
+- `on_block_load(..., num_tokens=)`：前块 `BLOCK_SEALED_LOAD`；尾块余数非 0 → `SLOT_PARTIAL`
+- v1 CoW：`kv_cache_block_copies` 物理拷后 `on_block_copies` 克隆 state / next_offset / source / 已知 slot token
+- 钩子：reshape scatter；kv_offload H2D（`kv_load`）；Mooncake PD recv（`pd_recv`）；CoW；zero → `invalidate`
+- **不做**「非 load 的整块覆盖」独立 incident：当前没有第二条整块写路径可挂；有了再加 `sealed_block_overwrite` 类告警
+- reshape 路径：按 offset 顺序记账（无 token 时先占位）；`slot_consistency` 在 note_kv 回填 token 并做 **首次** compare-then-fill
+- 请求结束再做一次全前缀 token check；**不**在 finish 清空 ledger
+- 非法跳写 → `invariant.kv_slot_order`；token 不一致 → `invariant.slot_consistency`
+- **待优化清单**（旁路 scatter / AscendStore / reshape finding / PD 内容校验等）：见包内 [`KV_META_TODO.md`](../../../vllm_ascend/runtime_guard/KV_META_TODO.md)
+
+共享：`detector.stop_after_alert`（默认 `true`）— 同一请求首次 alert 后不再重复 detect（含 invariant）。
+
+各 section 可通过 nested `on_trigger` 覆盖 action，例如：
 
 ```json
 "token_repeat": {
@@ -154,7 +181,7 @@ Quota：`dump.auto_max_times > 0` 启用自动 dump 配额；`dump.auto_cooldown
 
 | Runner | bind | 主要钩子 |
 |--------|------|----------|
-| v1 | `model_runner_v1.py` 构造 | `sync_for_step`、`run_sample_phase`（ensure_logprobs / after_sample 等）、pre-sample wrap、async `AscendAsync*` |
+| v1 | `model_runner_v1.py` 构造 | `sync_for_step`、`run_sample_phase`（含 ensure_logprobs / note_kv / after_sample）、pre-sample wrap、async `AscendAsync*` |
 | v2 | `worker/v2/model_runner.py` 构造 | 同上（native `dump_kv`；与 msprobe dump 解耦） |
 
 Idle DP：`worker.execute_dummy_batch` 调 `sync_for_step(allow_arm=False)`，与 busy rank 对齐配置热更。
@@ -166,7 +193,12 @@ v1/v2 在 `compute_logits` 外包一层以插入 `check_before_sample`（`runner
 - **API / EngineCore**：每个 EngineCore 进程各自 `RuntimeGuardProcessor.bind`；配置 writer 为 per-EngineCore leader。
 - **多 DP**：每个 DP replica 独立 JSON（或共享可读路径 + `sync_mode=file`）；不要用跨 idle DP 的 world collective 做热更。
 
-## 8. 相关文档
+## 8. 离线分析
+
+抓现场后的脚本与 Agent skills 位于 `vllm_ascend/runtime_guard/analysis/`。  
+用户向导读 [Runtime Guard Feature Guide](../../source/user_guide/feature_guide/runtime_guard.md#post-incident-analysis)。
+
+## 9. 相关文档
 
 - 运维与排障：[runtime_guard_ops.md](./runtime_guard_ops.md)
 - 用户功能指南：[runtime_guard.md](../../source/user_guide/feature_guide/runtime_guard.md)

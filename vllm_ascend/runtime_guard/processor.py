@@ -23,7 +23,7 @@ Owns construction of detectors / ``ReportWriter`` / actions. Model runners
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
@@ -33,11 +33,24 @@ from vllm_ascend.runtime_guard.incident import Incident
 from vllm_ascend.runtime_guard import inject
 from vllm_ascend.runtime_guard.detector.base import AnomalyDetector
 from vllm_ascend.runtime_guard.detector.manager import DetectorManager
+from vllm_ascend.runtime_guard.invariant import (
+    SlotConsistencyState,
+    check_logits_finite,
+    num_computed_before,
+    rank_local_world,
+    resolve_check_scope,
+    should_run_invariant_check,
+)
+from vllm_ascend.runtime_guard.invariant.slot_consistency import INCIDENT_TYPE_ORDER
 
+INCIDENT_TYPE_STATE = "kv_state"
+from vllm_ascend.runtime_guard.request_state import RequestGuardStore
 from vllm_ascend.runtime_guard.input_filters import InputFilterManager, iter_batch_prompt_token_ids
 from vllm_ascend.runtime_guard.io_snapshot import RequestIoSnapshotManager
 from vllm_ascend.runtime_guard.kv_block_meta import (
+    KvBlockMetaTracker,
     block_ids_for_request,
+    resolve_block_size,
     slot_mapping_for_request,
 )
 from vllm_ascend.runtime_guard.manual_trigger import (
@@ -47,7 +60,6 @@ from vllm_ascend.runtime_guard.manual_trigger import (
 )
 from vllm_ascend.runtime_guard.rank_gate import dump_rank_tag, is_action_leader_rank
 from vllm_ascend.runtime_guard.report import ReportWriter
-from vllm_ascend.runtime_guard.request_state import RequestGuardStore
 from vllm_ascend.runtime_guard.tokenizer import load_model_tokenizer
 from vllm_ascend.runtime_guard.util import decode_token_ids
 from vllm_ascend.runtime_guard.action.executor import ActionExecutor
@@ -165,6 +177,7 @@ class RuntimeGuardProcessor:
         # WaveTracker.pending is the drain signal (replaces the dead store FIFO).
         RequestGuardStore.get().set_drain_probe(self.wave_tracker.pending)
         self.quota = DumpQuota(runtime_config)
+        self._sync_kv_audit()
         # Plan A report routing: the leader keeps the legacy report dir; every
         # other detection-eligible rank writes into its own rank-tagged
         # subdir, so per-rank reports/dumps never interleave. Analysis tools
@@ -198,6 +211,8 @@ class RuntimeGuardProcessor:
             detection_gate=self.action_executor.can_run_detection,
             detection_skip_reason=self.action_executor.anomaly_check_skip_reason,
         )
+        self._slot_consistency = SlotConsistencyState()
+        RequestGuardStore.get().register_on_clear(self._slot_consistency.clear_finished)
 
     def _rebind_runner(self, runner: Any) -> None:
         """Point nested components at a new runner (same process, rare rebuild)."""
@@ -231,7 +246,7 @@ class RuntimeGuardProcessor:
         allow_arm: bool = True,
         scheduler_output: Any | None = None,
     ) -> bool:
-        """All-rank runtime_config sync. Must not be skipped on early PP.
+        """All-rank DFX config sync. Must not be skipped on early PP.
 
         ``allow_arm``: False on idle ``execute_dummy_batch``. Config sync still
         runs. ``dump.manual_trigger`` is **not** consumed on the dummy path — only a real
@@ -309,6 +324,34 @@ class RuntimeGuardProcessor:
         logger.debug("[runtime_guard sync] leave stage=refresh_config changed=%s", changed)
         return changed
 
+    def _sync_kv_audit(self) -> None:
+        """Push report.kv_audit + block_size into the process-local bus.
+
+        When no consumer needs KV meta (``report_kv_audit()`` false), clear the
+        process-local tracker so host memory does not linger after disable.
+        """
+        try:
+            from vllm_ascend.runtime_guard import kv_audit
+
+            cfg = self.runtime_config
+            runner = self.runner
+            bs = int(getattr(runner, "block_size", 0) or 0)
+            if bs <= 0:
+                cache_cfg = getattr(getattr(runner, "vllm_config", None), "cache_config", None)
+                bs = int(getattr(cache_cfg, "block_size", 0) or 0)
+            enabled = bool(cfg.report_kv_audit())
+            kv_audit.configure(
+                enabled=enabled,
+                block_size=bs if bs > 0 else 16,
+                pad_check=bool(cfg.report_kv_audit_pad_check()),
+            )
+            if not enabled:
+                KvBlockMetaTracker.get().clear()
+            if not bool(cfg.invariant_get("slot_consistency", "enabled", False)):
+                self._slot_consistency.clear_all()
+        except Exception:
+            logger.exception("[runtime_guard soft-fail] _sync_kv_audit failed")
+
     def maybe_print_input_token_ids_once(self, *, allow_arm: bool = True) -> bool:
         """If ``input_filter.print_input_token_ids_once``, log prompts once then clear.
 
@@ -360,7 +403,7 @@ class RuntimeGuardProcessor:
         allow_arm: bool = True,
         scheduler_output: Any | None = None,
     ) -> None:
-        """Lockstep runtime_guard sync for one engine wave (real step or idle dummy).
+        """Lockstep DFX sync for one engine wave (real step or idle dummy).
 
         ``refresh_config`` uses the per-DP sync group (or local file poll) and
         must run on every rank of that EngineCore each wave — including idle
@@ -389,6 +432,7 @@ class RuntimeGuardProcessor:
         self._scheduler_output_for_step = scheduler_output
         try:
             self.wave_tracker.advance(allow_arm=allow_arm)
+            self._sync_kv_audit()
             cfg = self.runtime_config
             # Idle shell: no filters / one-shots / sample hooks armed.
             # - reload off (T1): config is static → advance only.
@@ -405,6 +449,7 @@ class RuntimeGuardProcessor:
             ):
                 return
             self.refresh_config(allow_arm=allow_arm, scheduler_output=scheduler_output)
+            self._sync_kv_audit()
             # When no feature needs prompt cache / finished-IO reap, skip the
             # extra work (reload path still syncs above).
             if self.needs_sample_phase_hooks():
@@ -491,14 +536,34 @@ class RuntimeGuardProcessor:
         io_mgr = RequestIoSnapshotManager.get()
         if self.runtime_config.log_print_output_on_finish():
             self._maybe_print_output_on_finish(reapable, io_mgr)
+        # Finish detector runs before clear so IO / block meta are still present.
+        self._soft_fail(
+            "check_on_finish",
+            lambda: self._emit_finish_reports(reapable),
+        )
+        self._soft_fail(
+            "slot_consistency_finish",
+            lambda: self._run_slot_consistency_finish(reapable),
+        )
         store.clear_many(reapable, detectors=self.detectors)
         if wave_tracker is not None:
             wave_tracker.discard_many(reapable)
 
+    def _emit_finish_reports(self, req_ids: list[str]) -> None:
+        """Write one finish report per reapable request when ``detector.finish`` is on."""
+        alerts = self.detectors.check_on_finish(req_ids)
+        if not alerts:
+            return
+        for alert in alerts:
+            self._handle_alert(
+                alert,
+                detector=self.detectors.get(alert.incident_type),
+            )
+
     def _maybe_print_output_on_finish(self, finished_req_ids: Any, io_mgr: RequestIoSnapshotManager) -> None:
         """Log output_token_ids + text for finished reqs (TP0 only).
 
-        Content comes from runtime_guard cumulative IO accumulated while
+        Content comes from DFX cumulative IO accumulated while
         ``log.print_output_on_finish`` was true on sample steps (no historical
         backfill). Mid-request hot-enable may print a partial sequence or
         ``output_token_count=0`` / empty text if nothing was appended after
@@ -544,7 +609,7 @@ class RuntimeGuardProcessor:
         return self.detectors.any_enabled_for_spec()
 
     def needs_sample_phase_hooks(self) -> bool:
-        """True when sample-phase runtime_guard hooks must run (else pure ``sample_fn``).
+        """True when sample-phase DFX hooks must run (else pure ``sample_fn``).
 
         Missing ``runtime_config`` (bare test doubles) defaults to True so
         soft-fail / wiring tests still exercise the hook chain.
@@ -587,7 +652,7 @@ class RuntimeGuardProcessor:
         self.wave_tracker.record_sample_waves(req_ids)
 
 
-    # ---- single sink for post-pre-sample runtime_guard hooks ---------------
+    # ---- single sink for the 7 post-pre-sample DFX hooks ---------------
 
     def run_sample_phase(
         self,
@@ -600,7 +665,7 @@ class RuntimeGuardProcessor:
         routed_experts_fn: Callable[["SamplePhaseResult"], Any] | None = None,
         accepted_token_nums_fn: Callable[["SamplePhaseResult"], Any] | None = None,
     ) -> tuple["SamplePhaseResult", Any]:
-        """Single sink for post-pre-sample runtime_guard hooks.
+        """Single sink for the 7 post-pre-sample DFX hooks (Option α refactor).
 
         Replaces 7 inline ``self.runtime_guard.*`` calls scattered across
         ``NPUModelRunner.sample_tokens`` with one orchestration call so
@@ -613,17 +678,18 @@ class RuntimeGuardProcessor:
         Hook sequence (``S1`` golden path):
             2. ``ensure_logprobs_for_detection`` (moved out of ``_sample``)
             -> ``sample_fn()`` returns :class:`SamplePhaseResult`
-            3. ``mark_finished``
+            3. ``note_kv_block_writes``
+            4. ``mark_finished``
             -> ``async_state_update_fn`` (only if ``need_accepted_tokens``)
-            4. ``check_after_spec`` (spec only; ``accepted_token_nums_fn`` for branch)
+            5. ``check_after_spec`` (spec only; ``accepted_token_nums_fn`` for branch)
             -> ``routed_experts_fn`` (async path: BEFORE wave stamp; sync: AFTER check_after_sample)
-            5. ``record_sample_waves``
-            6. ``check_after_sample`` (sync path only; async via AscendAsync* ``get_output``)
+            6. ``record_sample_waves``
+            7. ``check_after_sample`` (sync path only; async via AscendAsync* ``get_output``)
 
         Native KV capture uses ``dump_kv`` actions only (fully decoupled from
         Ascend/msprobe PrecisionDebugger dump).
         """
-        # Idle fast-path: detectors / print_output all off →
+        # Idle fast-path: detectors / print_output / block-meta all off →
         # skip soft-fail wrappers and observational hooks entirely.
         if not self.needs_sample_phase_hooks():
             result = sample_fn()
@@ -638,12 +704,20 @@ class RuntimeGuardProcessor:
         self._soft_fail("ensure_logprobs_for_detection", self.ensure_logprobs_for_detection)
         # Runner's sample work (sample + draft + bookkeeping + output + profiling + eplb)
         result = sample_fn()
-        # Hook 3: mark_finished
+        # Hook 3: note_kv_block_writes
+        self._soft_fail(
+            "note_kv_block_writes",
+            lambda: self.note_kv_block_writes(
+                result.scheduler_output,
+                input_batch=result.input_batch,
+            ),
+        )
+        # Hook 5: mark_finished
         self._soft_fail("mark_finished", lambda: self.mark_finished(result.finished_req_ids))
-        # Async state update callback (between mark_finished and check_after_spec)
+        # Async state update callback (between hook 5 and hook 6)
         if need_accepted_tokens and async_state_update_fn is not None:
             async_state_update_fn(result)
-        # Hook 4: check_after_spec (spec only)
+        # Hook 6: check_after_spec (spec only)
         if speculative_config is not None and self.should_check_after_spec():
             if accepted_token_nums_fn is not None:
                 accepted_token_nums = accepted_token_nums_fn(result)
@@ -656,16 +730,16 @@ class RuntimeGuardProcessor:
                     accepted_token_nums=accepted_token_nums,
                 ),
             )
-        # Async path: routed_experts computed BEFORE wave stamp
+        # Async path: routed_experts computed BEFORE hook 7
         routed_experts_result = None
         if use_async and routed_experts_fn is not None:
             routed_experts_result = routed_experts_fn(result)
-        # Hook 5: record_sample_waves (always)
+        # Hook 7: record_sample_waves (always)
         self._soft_fail(
             "record_sample_waves",
             lambda: self.record_sample_waves(result.req_ids_output_copy),
         )
-        # Hook 6: check_after_sample (sync path only)
+        # Hook 8: check_after_sample (sync path only)
         if not use_async:
             self._soft_fail(
                 "check_after_sample",
@@ -675,7 +749,7 @@ class RuntimeGuardProcessor:
                     req_ids=result.req_ids_output_copy,
                 ),
             )
-        # Sync path: routed_experts computed AFTER check_after_sample
+        # Sync path: routed_experts computed AFTER hook 7
         if not use_async and routed_experts_fn is not None:
             routed_experts_result = routed_experts_fn(result)
         return result, routed_experts_result
@@ -685,25 +759,63 @@ class RuntimeGuardProcessor:
         *,
         scheduler_output: Any,
         logits: Any,
+        positions: Any = None,
+        total_scheduled_tokens: int = 0,
         logits_indices: Any = None,
         input_batch: Any = None,
-        **_unused: Any,
     ) -> None:
-        """Pre-sample hook: ``logits_finite`` (and future pre-sample detectors)."""
-        del scheduler_output, _unused
+        """Pre-sample soft-assert: logits finite."""
         self._last_input_batch = input_batch
         if inject.ENABLED:
             inject.inject_before_sample(logits)
 
         def _run() -> None:
-            for alert in self.detectors.check_before_sample(
-                logits=logits,
-                logits_indices=logits_indices,
-                input_batch=input_batch,
-            ):
-                self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
+            if not self.action_executor.can_run_detection():
+                return
+            cfg = self.runtime_config
+            local_world = rank_local_world(self.runner)
+            logits_on = bool(cfg.invariant_get("logits_finite", "enabled", False))
+            if not logits_on:
+                return
+            stop = bool(cfg.stop_after_alert())
+            skip = RequestGuardStore.get().stopped_req_ids() if stop else None
+            scope = resolve_check_scope(
+                "logits_finite",
+                cfg.invariant_get("logits_finite", "check_scope", "auto"),
+                rank_local_world=local_world,
+            )
+            if should_run_invariant_check(self.runner, check_scope=scope):
+                findings = check_logits_finite(
+                    runner=self.runner,
+                    logits=logits,
+                    logits_indices=logits_indices,
+                    input_batch=input_batch,
+                )
+                for alert in findings:
+                    if skip is not None and alert.req_id and alert.req_id in skip:
+                        continue
+                    self.emit_finding(alert)
 
         self._soft_fail("check_before_sample", _run)
+
+    def emit_finding(
+        self,
+        alert: Incident,
+        *,
+        write_report: bool = True,
+        arm_wave: int | None = None,
+        action_override: list[str] | None = None,
+    ) -> None:
+        """Write report / run on_trigger for a soft-assert finding (not a detector)."""
+        if bool(self.runtime_config.stop_after_alert()) and alert.req_id:
+            RequestGuardStore.get().get_or_create(alert.req_id).stopped_after_alert = True
+        self._handle_alert(
+            alert,
+            detector=None,
+            write_report=write_report,
+            arm_wave=arm_wave,
+            action_override=action_override,
+        )
 
     def check_after_sample(
         self,
@@ -787,7 +899,7 @@ class RuntimeGuardProcessor:
             if changed and hasattr(input_batch, "_make_sampling_metadata"):
                 input_batch.sampling_metadata = input_batch._make_sampling_metadata()
                 logger.info_once(
-                    "[runtime_guard: token_logprob] forcing request top-k logprobs=%d for detection",
+                    "[Anomaly token_logprob] forcing request top-k logprobs=%d for detection",
                     topk,
                 )
             return
@@ -812,7 +924,7 @@ class RuntimeGuardProcessor:
                 changed = True
         if changed:
             logger.info_once(
-                "[runtime_guard: token_logprob] forcing request top-k logprobs=%d for detection (v2)",
+                "[Anomaly token_logprob] forcing request top-k logprobs=%d for detection (v2)",
                 topk,
             )
 
@@ -827,7 +939,7 @@ class RuntimeGuardProcessor:
     ) -> None:
         if not write_report and action_override is None:
             return
-        if alert.block_ids is None or not alert.block_ids:
+        if alert.req_id and (alert.block_ids is None or not alert.block_ids):
             alert.block_ids = block_ids_for_request(
                 self.runner,
                 alert.req_id,
@@ -842,25 +954,31 @@ class RuntimeGuardProcessor:
             detector.on_alert_armed(alert)
         detail = alert.to_report_detail()
         include_ids = self.runtime_config.report_save_sensitive_info()
-        io_mgr = RequestIoSnapshotManager.get()
-        snap = io_mgr.snapshot(
-            self.runner,
-            alert.req_id,
-            alert.req_idx,
-            include_token_ids=include_ids,
-            scheduler_output=getattr(self, "_scheduler_output_for_step", None),
-        )
-        detail = io_mgr.merge_into_detail(detail, snap)
-        detail = self._enrich_detail_with_block_meta(
-            detail,
-            alert.req_id,
-            alert.req_idx,
-        )
-        if self.runtime_config.log_print_sampling_meta():
-            try:
-                self.save_sample_param(alert.req_id)
-            except Exception as exc:
-                logger.warning("[runtime_guard] save_sample_param failed req_id=%s: %s", alert.req_id, exc)
+        if alert.req_id:
+            io_mgr = RequestIoSnapshotManager.get()
+            snap = io_mgr.snapshot(
+                self.runner,
+                alert.req_id,
+                alert.req_idx,
+                include_token_ids=include_ids,
+                scheduler_output=getattr(self, "_scheduler_output_for_step", None),
+            )
+            detail = io_mgr.merge_into_detail(detail, snap)
+            detail = self._enrich_detail_with_block_meta(
+                detail,
+                alert.req_id,
+                alert.req_idx,
+                incident_type=alert.incident_type,
+            )
+            if self.runtime_config.log_print_sampling_meta():
+                try:
+                    self.save_sample_param(alert.req_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[runtime_guard] save_sample_param failed req_id=%s: %s",
+                        alert.req_id,
+                        exc,
+                    )
         self.action_executor.handle(
             alert,
             detail=detail,
@@ -929,20 +1047,318 @@ class RuntimeGuardProcessor:
             write_report=write_report,
         )
 
+    def _run_slot_consistency_finish(self, req_ids: list[str]) -> None:
+        """Full-prefix slot check at finish (before meta clear on reap)."""
+        if not bool(self.runtime_config.invariant_get("slot_consistency", "enabled", False)):
+            return
+        if not self.action_executor.can_run_detection():
+            return
+        runner = self.runner
+        scope = resolve_check_scope(
+            "slot_consistency",
+            self.runtime_config.invariant_get("slot_consistency", "check_scope", "auto"),
+            rank_local_world=rank_local_world(runner),
+        )
+        if not should_run_invariant_check(runner, check_scope=scope):
+            return
+        block_size = resolve_block_size(runner)
+        skip = (
+            RequestGuardStore.get().stopped_req_ids()
+            if self.runtime_config.stop_after_alert()
+            else None
+        )
+        io_mgr = RequestIoSnapshotManager.get()
+        for req_id in req_ids:
+            if not req_id or (skip is not None and str(req_id) in skip):
+                continue
+            snap = io_mgr.snapshot(runner, str(req_id), None, include_token_ids=True, use_cache=False)
+            seq = list(snap.prompt_token_ids or []) + list(snap.output_token_ids or [])
+            all_ids = block_ids_for_request(runner, str(req_id), None)
+            if not all_ids or not seq:
+                continue
+            for alert in self._slot_consistency.check_request(
+                runner=runner,
+                req_id=str(req_id),
+                req_idx=None,
+                seq=seq,
+                block_ids=all_ids,
+                block_size=block_size,
+                phase="finish",
+            ):
+                self.emit_finding(alert)
+
+    def note_kv_block_writes(
+        self,
+        scheduler_output: Any | None = None,
+        *,
+        input_batch: Any = None,
+    ) -> None:
+        """Record block / slot write meta after a real forward wrote KV.
+
+        No-op when ``report.block_state``, ``invariant.slot_consistency``,
+        ``invariant.kv_slot_order``, and ``invariant.kv_state`` are all off.
+        Slot tokens are stored only when ``slot_consistency`` is on;
+        ``block_state`` / order / state alone advance the ledger with
+        ``token_id=None``.
+        """
+        need_block_state = self.runtime_config.report_block_meta_enabled()
+        need_slot_det = bool(self.runtime_config.invariant_get("slot_consistency", "enabled", False))
+        need_slot_order = bool(self.runtime_config.invariant_get("kv_slot_order", "enabled", False))
+        need_kv_state = bool(self.runtime_config.invariant_get("kv_state", "enabled", False))
+        if not need_block_state and not need_slot_det and not need_slot_order and not need_kv_state:
+            return
+        runner = self.runner
+        so = scheduler_output if scheduler_output is not None else getattr(self, "_scheduler_output_for_step", None)
+        if runner is None or so is None:
+            return
+        num_scheduled = getattr(so, "num_scheduled_tokens", None)
+        if not isinstance(num_scheduled, dict) or not num_scheduled:
+            return
+        block_size = resolve_block_size(runner)
+        tracker = KvBlockMetaTracker.get()
+        if input_batch is None:
+            input_batch = getattr(runner, "input_batch", None)
+        req_id_to_index = getattr(input_batch, "req_id_to_index", None) if input_batch else None
+        req_ids = list(getattr(input_batch, "req_ids", None) or [])
+        req_id_to_idx_local = {rid: i for i, rid in enumerate(req_ids) if rid}
+        rl_world = rank_local_world(runner)
+        order_scope = None
+        if need_slot_order and self.action_executor.can_run_detection():
+            order_scope = resolve_check_scope(
+                "kv_slot_order",
+                self.runtime_config.invariant_get("kv_slot_order", "check_scope", "auto"),
+                rank_local_world=rl_world,
+            )
+        state_scope = None
+        if need_kv_state and self.action_executor.can_run_detection():
+            state_scope = resolve_check_scope(
+                "kv_state",
+                self.runtime_config.invariant_get("kv_state", "check_scope", "auto"),
+                rank_local_world=rl_world,
+            )
+        for req_id, n_sched in num_scheduled.items():
+            if not req_id:
+                continue
+            try:
+                scheduled = int(n_sched)
+            except (TypeError, ValueError):
+                continue
+            if scheduled <= 0:
+                continue
+            req_idx = None
+            if isinstance(req_id_to_index, dict) and req_id in req_id_to_index:
+                req_idx = int(req_id_to_index[req_id])
+            elif req_id in req_id_to_idx_local:
+                req_idx = req_id_to_idx_local[req_id]
+            all_ids = block_ids_for_request(
+                runner,
+                str(req_id),
+                req_idx,
+                input_batch=input_batch,
+            )
+            if not all_ids:
+                continue
+            computed_before = num_computed_before(
+                runner,
+                str(req_id),
+                req_idx,
+                scheduled,
+                input_batch,
+            )
+            if computed_before is None:
+                logger.debug(
+                    "[runtime_guard note_kv] skip req_id=%s: num_computed_before unknown",
+                    req_id,
+                )
+                continue
+            seq: list[int] = []
+            output_len = 0
+            entries_with_tokens: list[tuple[int, int | None]] | None = None
+            if need_slot_det or need_kv_state:
+                snap = RequestIoSnapshotManager.get().snapshot(
+                    runner,
+                    str(req_id),
+                    req_idx,
+                    include_token_ids=True,
+                )
+                seq = list(snap.prompt_token_ids or []) + list(snap.output_token_ids or [])
+                try:
+                    output_len = int(getattr(snap, "output_token_count", 0) or 0)
+                except (TypeError, ValueError):
+                    output_len = 0
+                if output_len <= 0:
+                    output_len = len(snap.output_token_ids or [])
+            if need_slot_det:
+                entries = self._slot_write_entries(
+                    all_ids,
+                    block_size=block_size,
+                    computed_before=computed_before,
+                    scheduled=scheduled,
+                    seq=seq,
+                )
+            else:
+                entries = self._slot_write_entries(
+                    all_ids,
+                    block_size=block_size,
+                    computed_before=computed_before,
+                    scheduled=scheduled,
+                    seq=[],
+                )
+                if need_kv_state and seq:
+                    entries_with_tokens = self._slot_write_entries(
+                        all_ids,
+                        block_size=block_size,
+                        computed_before=computed_before,
+                        scheduled=scheduled,
+                        seq=seq,
+                    )
+            if entries and (
+                need_block_state or need_slot_det or need_slot_order or need_kv_state
+            ):
+                # Prefill / PD first continuation often has output_len==0 while
+                # writing into a load-sealed partial tail block — degrade+account
+                # without kv_state alert. Once outputs exist, nonzero sealed
+                # rewrite alerts.
+                alert_sealed_nonzero = True
+                if need_kv_state:
+                    alert_sealed_nonzero = output_len > 0
+                findings = tracker.merge_slot_writes(
+                    entries,
+                    block_size=block_size,
+                    alert_sealed_nonzero=alert_sealed_nonzero,
+                )
+                skip = (
+                    RequestGuardStore.get().stopped_req_ids()
+                    if self.runtime_config.stop_after_alert()
+                    else None
+                )
+                stopped = skip is not None and str(req_id) in skip
+                if (
+                    need_kv_state
+                    and state_scope is not None
+                    and not stopped
+                    and should_run_invariant_check(runner, check_scope=state_scope)
+                ):
+                    tok_by_slot: dict[int, int | None] = {}
+                    if need_slot_det:
+                        tok_by_slot = {int(s): t for s, t in entries}
+                    elif entries_with_tokens:
+                        tok_by_slot = {int(s): t for s, t in entries_with_tokens}
+                    for violation in findings.state:
+                        detail: dict[str, Any] = {
+                            "violation": violation.violation,
+                            "block_id": violation.block_id,
+                            "offsets": list(violation.offsets),
+                        }
+                        if violation.prev_source is not None:
+                            detail["prev_source"] = violation.prev_source
+                        if getattr(violation, "prev_state_name", None) is not None:
+                            detail["prev_state_name"] = violation.prev_state_name
+                        if tok_by_slot:
+                            tids = [
+                                tok_by_slot.get(int(violation.block_id) * block_size + int(off))
+                                for off in violation.offsets
+                            ]
+                            if any(t is not None for t in tids):
+                                detail["token_ids"] = list(tids)
+                        elif violation.token_ids is not None:
+                            detail["token_ids"] = list(violation.token_ids)
+                        self.emit_finding(
+                            Incident(
+                                incident_type=INCIDENT_TYPE_STATE,
+                                req_id=str(req_id),
+                                req_idx=req_idx,
+                                detail=detail,
+                            )
+                        )
+                if (
+                    need_slot_order
+                    and order_scope is not None
+                    and not stopped
+                    and should_run_invariant_check(runner, check_scope=order_scope)
+                ):
+                    for violation in findings.order:
+                        self.emit_finding(
+                            Incident(
+                                incident_type=INCIDENT_TYPE_ORDER,
+                                req_id=str(req_id),
+                                req_idx=req_idx,
+                                detail={
+                                    "block_id": violation.block_id,
+                                    "violation": violation.violation,
+                                    "expected_offset": violation.expected_offset,
+                                    "offsets": list(violation.offsets),
+                                },
+                            )
+                        )
+            if need_slot_det and self.action_executor.can_run_detection():
+                scope = resolve_check_scope(
+                    "slot_consistency",
+                    self.runtime_config.invariant_get(
+                        "slot_consistency", "check_scope", "auto"
+                    ),
+                    rank_local_world=rl_world,
+                )
+                if should_run_invariant_check(runner, check_scope=scope):
+                    skip = (
+                        RequestGuardStore.get().stopped_req_ids()
+                        if self.runtime_config.stop_after_alert()
+                        else None
+                    )
+                    if skip is None or str(req_id) not in skip:
+                        for alert in self._slot_consistency.check_request(
+                            runner=runner,
+                            req_id=str(req_id),
+                            req_idx=req_idx,
+                            seq=seq or [],
+                            block_ids=all_ids,
+                            block_size=block_size,
+                            computed_before=computed_before,
+                            scheduled=scheduled,
+                            phase="first",
+                        ):
+                            self.emit_finding(alert)
+
+    def _slot_write_entries(
+        self,
+        all_ids: list[int],
+        *,
+        block_size: int,
+        computed_before: int,
+        scheduled: int,
+        seq: list[int],
+    ) -> list[tuple[int, int | None]]:
+        """Build ``(slot, token_id)`` pairs for this step's KV writes."""
+        entries: list[tuple[int, int | None]] = []
+        for pos in range(max(0, computed_before), max(0, computed_before) + scheduled):
+            bi = pos // block_size
+            if bi >= len(all_ids):
+                break
+            slot = int(all_ids[bi]) * block_size + (pos % block_size)
+            token = seq[pos] if pos < len(seq) else None
+            entries.append((slot, token))
+        return entries
+
     def _enrich_detail_with_block_meta(
         self,
         detail: dict[str, Any],
         req_id: str,
         req_idx: int | None = None,
+        *,
+        incident_type: str | None = None,
     ) -> dict[str, Any]:
-        """Attach ``block_ids`` / ``slot_mapping`` per report.* flags."""
+        """Attach ``block_ids`` / ``blocks`` / ``slot_mapping`` per report.* flags."""
         include_ids = self.runtime_config.report_include_block_ids()
         include_slots = self.runtime_config.report_include_slot_mapping()
-        if not include_ids and not include_slots:
+        include_block_state = self.runtime_config.report_block_state()
+        if not include_ids and not include_slots and not include_block_state:
             return detail
         out = dict(detail)
-        if include_ids:
-            out["block_ids"] = block_ids_for_request(self.runner, req_id, req_idx)
+        ids = block_ids_for_request(self.runner, req_id, req_idx)
+        if include_ids or include_block_state:
+            out["block_ids"] = ids
+        if include_block_state:
+            out["blocks"] = KvBlockMetaTracker.get().blocks_detail(ids)
         if include_slots:
             got = slot_mapping_for_request(
                 self.runner,
@@ -974,7 +1390,7 @@ class RuntimeGuardProcessor:
             tok = load_model_tokenizer(runner)
         except Exception as exc:
             self._report_tokenizer_failed = True
-            logger.warning("[runtime_guard] tokenizer load failed error=%s", exc)
+            logger.warning("[DFX] tokenizer load failed error=%s", exc)
             return None
         if tok is None:
             # runner / model_config missing; retry on next call.

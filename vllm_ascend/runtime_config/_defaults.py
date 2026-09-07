@@ -48,9 +48,9 @@ _DEFAULTS: dict[str, Any] = {
     },
     "ascend_log": {
         "level": "INFO",
-        # Relative module paths under vllm_ascend forced to DEBUG, e.g. ["runtime_guard"].
+        # Relative module paths under vllm_ascend forced to DEBUG, e.g. ["dfx"].
         "debug": [],
-        # Per-logger overrides, e.g. {"vllm.worker": "WARNING", "runtime_guard": "DEBUG"}.
+        # Per-logger overrides, e.g. {"vllm.worker": "WARNING", "dfx": "DEBUG"}.
         "modules": {},
     },
     # Ops logging switches (not persisted into anomaly report JSON files).
@@ -75,6 +75,16 @@ _DEFAULTS: dict[str, Any] = {
         "include_block_ids": True,
         # D2H this wave's real paged-attention slot_mapping slice (default off).
         "include_slot_mapping": False,
+        # Track/report per-block slot meta state (see blocks[]). Does not
+        # store per-slot token ids — only state / next_offset / source.
+        "block_state": False,
+        # Edge audit: hook reshape_and_cache / zero / offload H2D into
+        # KvBlockMetaTracker. Also auto-on when slot_consistency /
+        # kv_slot_order or report.block_state is enabled.
+        "kv_audit": False,
+        # When kv_audit (explicit or auto): log error if dummy/pad slot_mapping
+        # still has >=0 ids.
+        "kv_audit_pad_check": True,
     },
     # Per-detector nested sections. Each has ``enabled`` (default false).
     "actions": {
@@ -133,10 +143,41 @@ _DEFAULTS: dict[str, Any] = {
             # Token ids skipped for the content window (e.g. punctuation fillers).
             "ignore_token_ids": [],
         },
-        # Pre-sample logits NaN/Inf on sampling rows (no msprobe; ill_type=nan).
-        "logits_finite": {
+        # Lifecycle: write one report when a request is reaped (finished +
+        # sample-wave drained). Non-ill; does not consume dump quota.
+        "finish": {
             "enabled": False,
             "exec_scope": "auto",
+            "on_trigger": ["report"],
+        },
+    },
+    # Soft-assert invariants (not LPT detectors). See runtime_guard.invariant.
+    # check_scope: auto|leader|all — who runs check (and thus who writes report;
+    # no cross-rank Incident shipping). auto → leader, except slot_consistency /
+    # kv_slot_order under CP/DP → all.
+    "invariant": {
+        # Slot meta token vs inference sequence (incident_type=kv_slot_token).
+        "slot_consistency": {
+            "enabled": False,
+            "check_scope": "auto",
+            "on_trigger": ["report"],
+        },
+        # Sequential slot-offset order within a block (incident_type=kv_slot_order).
+        "kv_slot_order": {
+            "enabled": False,
+            "check_scope": "auto",
+            "on_trigger": ["report"],
+        },
+        # BLOCK_SEALED + non-zero-offset slot rewrite (incident_type=kv_state).
+        "kv_state": {
+            "enabled": False,
+            "check_scope": "auto",
+            "on_trigger": ["report"],
+        },
+        "logits_finite": {
+            "enabled": False,
+            "check_scope": "auto",
+            "on_trigger": ["report"],
         },
     },
     # Detector→rank placement (ExecScope scheduling; detector/placement.py).
@@ -164,20 +205,30 @@ _DEFAULTS: dict[str, Any] = {
 }
 
 
-# Known nested detector sections under ``detector``.
+# Known nested detector sections under ``detector`` (anomaly detectors only).
 DETECTOR_SECTIONS: tuple[str, ...] = (
     "spec_acceptance",
     "token_logprob",
     "output_substring",
     "token_repeat",
+    "finish",
+)
+# Soft-assert sections under ``invariant`` (single source of truth).
+INVARIANT_SECTIONS: tuple[str, ...] = (
+    "slot_consistency",
+    "kv_slot_order",
+    "kv_state",
     "logits_finite",
 )
 # Allowed keys under ``dump`` / ``log`` / ``report``.
 DUMP_KEYS: frozenset[str] = frozenset(_DEFAULTS["dump"])
 LOG_KEYS: frozenset[str] = frozenset(_DEFAULTS["log"])
 REPORT_KEYS: frozenset[str] = frozenset(_DEFAULTS["report"])
-# Allowed keys per detector section.
+# Allowed keys per detector / invariant section.
 DETECTOR_KEYS: dict[str, frozenset[str]] = {
     name: frozenset(sec) for name, sec in _DEFAULTS["detector"].items() if isinstance(sec, dict)
+}
+INVARIANT_KEYS: dict[str, frozenset[str]] = {
+    name: frozenset(sec) for name, sec in _DEFAULTS["invariant"].items() if isinstance(sec, dict)
 }
 

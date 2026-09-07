@@ -17,7 +17,8 @@ Startup keys (`runtime_config_path`, `runtime_config_reload_interval`, overlay d
 | `ascend_log` | object | see below | Ascend logger level overrides |
 | `log` | object | see below | Ops logging switches (not stored in report JSON) |
 | `report` | object | see below | Report content and truncation |
-| `detector` | object | see below | Detector sections + shared flags |
+| `detector` | object | see below | Anomaly detector sections + shared flags |
+| `invariant` | object | see below | Soft-assert invariants (`check_scope`, not LPT) |
 | `input_filter` | object | see below | Detect-time input filters |
 
 ## actions
@@ -49,6 +50,9 @@ Manual dump / manual trigger skip auto quota, cooldown, and input filters. Requi
 | `max_output_token_ids` | int | `1000` | Truncate persisted output ids |
 | `include_block_ids` | bool | `true` | Include GPU block ids in report detail |
 | `include_slot_mapping` | bool | `false` | Include slot_mapping slice in report |
+| `block_state` | bool | `false` | Track/report per-block state (`UNKNOWN` / `SLOT_PARTIAL` / `BLOCK_SEALED_FILL` / `BLOCK_SEALED_LOAD`) in `blocks[]`. Does **not** store per-slot tokens |
+| `kv_audit` | bool | `false` | Edge hooks for KV block load / zero meta. Also **auto-on** when `invariant.slot_consistency` / `invariant.kv_slot_order` or `report.block_state` is enabled |
+| `kv_audit_pad_check` | bool | `true` | When kv_audit is active: log if dummy/pad `slot_mapping` still has `>=0` ids |
 
 ## log
 
@@ -121,15 +125,48 @@ Each nested detector section supports:
 | `consecutive_hits` | int | `1` | Required consecutive over-threshold steps |
 | `ignore_token_ids` | list[int] | `[]` | Token ids excluded from window scoring |
 
-### logits_finite
+## invariant
+
+Soft-assert checks (not detectors / not LPT-placed). Path:
+``runtime_guard.invariant.check_*`` → ``Processor.emit_finding`` → report.
+Configure under ``invariant.*`` only (``detector.<name>`` for these keys is rejected).
+
+Shared keys per section:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Alert on NaN/Inf logits before sampling |
+| `enabled` | bool | `false` | Run the check when true |
+| `check_scope` | str | `auto` | Who runs check (and thus who writes report): `auto` / `leader` / `all`. `auto` → leader; `slot_consistency` / `kv_slot_order` under CP/DP → all |
+| `on_trigger` | list | `["report"]` | Actions on finding |
 
-> Online KV meta detectors (`block_kv` / `slot_consistency` / `position_alignment`)
-> and offline compare scripts are deferred to a follow-up PR. This release still
-> supports native `dump_kv` capture for later offline use.
+### slot_consistency
+
+Compares slot meta token ids against the inference sequence. Emits `kv_slot_token` on mismatch. First prefix check runs once per request at the first note_kv step; a full-prefix finish check runs at reap.
+
+### kv_slot_order
+
+Detects non-sequential slot offsets within a block (`gap` / `wrong_start`). Runs on note_kv when the ledger is updated. Independent of `slot_consistency` (token compare).
+
+### kv_state
+
+`BLOCK_SEALED_LOAD` (whole-block H2D/PD) then a non-zero-offset slot batch → degrade + account. Alert (`sealed_nonzero_rewrite`) only when `output_len > 0`; `output_len == 0` silent fallback. Prefer `on_block_load(num_tokens=)` so the last block is `SLOT_PARTIAL`.
+
+`BLOCK_SEALED_FILL` (sequential slots filled) then non-zero-offset rewrite → always alert (`sealed_fill_nonzero_rewrite`) and **skip** applying that batch. Offset-0 after either seal → silent degrade then apply (block reuse).
+
+Report `detail`: `violation`, `block_id`, `offsets`, optional `prev_source` / `prev_state_name` / `token_ids`. v1 CoW copies clone ledger state + known slot tokens via `on_block_copies`. There is **no** separate incident for whole-block overwrite outside load/CoW until another overwrite path is hooked.
+
+### logits_finite
+
+No extra keys beyond `enabled` / `check_scope` / `on_trigger`.
+
+### finish
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | When a request finishes (reaped), write one report |
+| `on_trigger` | list | `["report"]` | Actions on finish (default report only; no dump quota) |
+
+Finish is a lifecycle sensor under ``detector.finish`` (`is_ill=false`, does not consume dump quota). Enable cumulative IO via this flag so finish reports can include token counts / ids when `report.save_sensitive_info` is on.
 
 ### manual_trigger
 
