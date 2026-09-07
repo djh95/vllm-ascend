@@ -107,7 +107,7 @@ class LogitsFiniteDetector(ConfigBackedDetector):
                 return []
             bad_rows = (~row_finite).nonzero(as_tuple=False).flatten()
         except Exception as exc:
-            logger.warning("[Anomaly logits_finite] check failed: %s", exc)
+            logger.warning("[runtime_guard: logits_finite] check failed: %s", exc)
             return []
         if input_batch is None:
             input_batch = getattr(runner, "input_batch", None)

@@ -230,7 +230,7 @@ class DetectorManager:
         return any(self._plan.runs_here(det.incident_type, self._tp_rank) for det in self._registry)
 
     def apply_runtime_config(self) -> None:
-        """All-rank hook after DFX JSON sync — refresh deps that may force flags off.
+        """All-rank hook after runtime_config JSON sync — refresh deps that may force flags off.
 
         ``token_logprob`` needs msprobe; if missing, force ``enabled=false`` and
         persist on the JSON writer. Must run on every rank (including early PP
@@ -264,7 +264,7 @@ class DetectorManager:
             reason = self._detection_skip_reason()
         if reason and int(getattr(self._runner, "tp_rank", 0)) == 0:
             logger.info_once(
-                "[Anomaly detect short] skip gate (%s): %s (any_detector=%s dump.enabled=%s)",
+                "[runtime_guard: detect short] skip gate (%s): %s (any_detector=%s dump.enabled=%s)",
                 stage,
                 reason,
                 self._runtime_config.any_detector_enabled(),

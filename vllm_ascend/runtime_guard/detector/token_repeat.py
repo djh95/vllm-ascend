@@ -141,7 +141,7 @@ class TokenRepeatDetector(ConfigBackedDetector):
         try:
             ignore = normalize_ignore_token_ids(getter("ignore_token_ids", []))
         except ValueError as exc:
-            logger.error("[Anomaly token_repeat] invalid ignore_token_ids: %s; keeping previous", exc)
+            logger.error("[runtime_guard: token_repeat] invalid ignore_token_ids: %s; keeping previous", exc)
             return
         self._ignore_token_ids = frozenset(ignore)
 
@@ -260,7 +260,7 @@ class TokenRepeatDetector(ConfigBackedDetector):
         }
         if log_leader:
             logger.error(
-                "[Anomaly token_repeat] req=%s repeat_sum=%s threshold=%s window=%s content_seen=%s consecutive=%s",
+                "[runtime_guard: token_repeat] req=%s repeat_sum=%s threshold=%s window=%s content_seen=%s consecutive=%s",
                 req_id,
                 state.repeat_sum,
                 thresh,

@@ -68,7 +68,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
                 return int(raw)
             except (TypeError, ValueError):
                 logger.error(
-                    "[Anomaly token_logprob] invalid %s=%r; keeping previous %d",
+                    "[runtime_guard: token_logprob] invalid %s=%r; keeping previous %d",
                     key,
                     raw,
                     default,
@@ -150,19 +150,19 @@ class TokenLogprobDetector(ConfigBackedDetector):
         if not self._precheck():
             if log_leader:
                 logger.info_once(
-                    "[Anomaly token_logprob short] skip: detector.token_logprob.enabled=false "
+                    "[runtime_guard: token_logprob short] skip: detector.token_logprob.enabled=false "
                     "in live DFX config (edit JSON + runtime_config_reload_interval>0, or set "
                     "true before start; look for '[runtime_guard runtime_config] updated')"
                 )
             return []
         if sampled_token_ids is None:
             if log_leader:
-                logger.info_once("[Anomaly token_logprob short] skip: sampled_token_ids is None")
+                logger.info_once("[runtime_guard: token_logprob short] skip: sampled_token_ids is None")
             return []
         if logprobs_lists is None:
             if log_leader:
                 logger.info_once(
-                    "[Anomaly token_logprob short] skip: no logprobs (enable check should force topk=%d before sample)",
+                    "[runtime_guard: token_logprob short] skip: no logprobs (enable check should force topk=%d before sample)",
                     self._topk,
                 )
             return []
@@ -176,7 +176,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
         detector = self._get_ill_detector()
         if detector is None:
             if log_leader:
-                logger.info_once("[Anomaly token_logprob short] skip: ILLDetector unavailable")
+                logger.info_once("[runtime_guard: token_logprob short] skip: ILLDetector unavailable")
             return []
 
         model_config = self._model_config_for_detector()
@@ -195,7 +195,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
             if topk_rows is None:
                 if log_leader:
                     logger.debug(
-                        "[Anomaly token_logprob short] req_id=%s skip: extract topk failed num_tokens=%d",
+                        "[runtime_guard: token_logprob short] req_id=%s skip: extract topk failed num_tokens=%d",
                         req_id,
                         len(token_ids),
                     )
@@ -245,7 +245,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
             if log_leader:
                 # Filling/stride progress every step stalls TP0 → peer hang.
                 logger.debug(
-                    "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=%d stride=%d new=%d alert=False reason=%s",
+                    "[runtime_guard: token_logprob short] req_id=%s buf=%d/%d since=%d stride=%d new=%d alert=False reason=%s",
                     req_id,
                     buf_len,
                     self._window,
@@ -265,7 +265,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
             result = detector.detector(topk_dicts, tokens, model_config)
         except Exception as e:
             logger.error(
-                "[Anomaly token_logprob] detector failed req_id=%s error=%s",
+                "[runtime_guard: token_logprob] detector failed req_id=%s error=%s",
                 req_id,
                 e,
             )
@@ -279,7 +279,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
         if alert is None:
             if log_leader:
                 logger.debug(
-                    "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=0 stride=%d "
+                    "[runtime_guard: token_logprob short] req_id=%s buf=%d/%d since=0 stride=%d "
                     "new=%d alert=False reason=not_ill",
                     req_id,
                     buf_len,
@@ -292,7 +292,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
         thresh = self._ill_window_thresh.get(alert.ill_type)
         if thresh is None:
             logger.warning(
-                "[Anomaly token_logprob] unknown ill_type=%d req_id=%s",
+                "[runtime_guard: token_logprob] unknown ill_type=%d req_id=%s",
                 alert.ill_type,
                 req_id,
             )
@@ -304,7 +304,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
         if log_leader:
             log_fn = logger.info if should_alert else logger.debug
             log_fn(
-                "[Anomaly token_logprob short] req_id=%s buf=%d/%d since=0 stride=%d "
+                "[runtime_guard: token_logprob short] req_id=%s buf=%d/%d since=0 stride=%d "
                 "new=%d ill_type=%d hits=%d/%d alert=%s",
                 req_id,
                 buf_len,
@@ -344,7 +344,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
         if not ctx:
             return
         logger.info(
-            "[Anomaly token_logprob] req_id=%s ill_type=%s hits=%s/%s "
+            "[runtime_guard: token_logprob] req_id=%s ill_type=%s hits=%s/%s "
             "window_len=%d prompt_token_count=%d output_token_count=%d",
             alert.req_id,
             ctx.get("ill_type"),
@@ -380,7 +380,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
             detector.multi_window_thresh = 0
             self._ill_detector = detector
             logger.info_once(
-                "[Anomaly token_logprob] ILLDetector ready "
+                "[runtime_guard: token_logprob] ILLDetector ready "
                 "outer_window=%d outer_stride=%d ill_window=stride=%d topk=%d",
                 self._window,
                 self._stride,
@@ -390,7 +390,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
             return self._ill_detector
         except Exception as e:
             self._ill_detector_init_failed = True
-            logger.error("[Anomaly token_logprob] failed to init ILLDetector: %s", e)
+            logger.error("[runtime_guard: token_logprob] failed to init ILLDetector: %s", e)
             return None
 
     def _model_config_for_detector(self) -> dict[str, str]:
@@ -429,7 +429,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
                     # An equal-length guess pairs tokens with wrong logprobs
                     # (false ILL reports) — skip this step loudly instead.
                     logger.warning_once(
-                        "[Anomaly token_logprob] multi-token logprobs without "
+                        "[runtime_guard: token_logprob] multi-token logprobs without "
                         "cu_num_generated_tokens; cannot split rows per request, "
                         "skipping check this step"
                     )
@@ -449,7 +449,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
             return rows
         except Exception as e:
             logger.error(
-                "[Anomaly token_logprob] extract logprobs failed req_idx=%d error=%s",
+                "[runtime_guard: token_logprob] extract logprobs failed req_idx=%d error=%s",
                 req_idx,
                 e,
             )

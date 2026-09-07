@@ -78,7 +78,7 @@ def _runtime_config_sync_group_or_none():
     return _inner_dp_world_or_none()
 
 
-_dfx_multi_dp_file_fallback_logged = False
+_rg_multi_dp_file_fallback_logged = False
 
 
 def _is_distributed_worker_process() -> bool:

@@ -93,7 +93,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         if not self._precheck():
             runner = self._runner
             if int(getattr(runner, "tp_rank", 0) if runner is not None else 0) == 0:
-                logger.info_once("[Anomaly spec short] skip: detector.spec_acceptance.enabled=false in live DFX config")
+                logger.info_once("[runtime_guard: spec short] skip: detector.spec_acceptance.enabled=false in live runtime config")
             return []
         runner = self._runner
         if runner is None:
@@ -102,7 +102,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         # (``need_accepted_tokens``). Plain MTP / Eagle also produce accept stats.
         if getattr(runner, "speculative_config", None) is None:
             if int(getattr(runner, "tp_rank", 0)) == 0:
-                logger.info_once("[Anomaly spec short] skip: speculative_config is None")
+                logger.info_once("[runtime_guard: spec short] skip: speculative_config is None")
             return []
         input_batch = getattr(runner, "input_batch", None)
         if input_batch is None or not getattr(input_batch, "req_ids", None):
@@ -180,7 +180,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         if draft_len <= 0:
             if log_leader:
                 logger.info_once(
-                    "[Anomaly spec short] req_id=%s skip: draft_len=0 sampled_len=%d",
+                    "[runtime_guard: spec short] req_id=%s skip: draft_len=0 sampled_len=%d",
                     req_id,
                     len(sampled_norm),
                 )
@@ -213,7 +213,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         # (report + on_alert_armed still emit INFO on action).
         if log_leader:
             short_msg = (
-                "[Anomaly spec short] req_id=%s draft_len=%d "
+                "[runtime_guard: spec short] req_id=%s draft_len=%d "
                 "accepted_count=%d accepted_draft_count=%d "
                 "accept_rate=%.4f accept_len=%.4f window=%d/%d accepted=%d drafted=%d "
                 "prompt_tokens=%d output_tokens=%d "
@@ -314,7 +314,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         sampled_ids = ctx.get("sampled_ids") or []
         accepted_token_num = int(ctx.get("accepted_token_num") or 0)
         logger.info(
-            "[Anomaly spec] req_id=%s sampled_len=%d accepted_len=%d "
+            "[runtime_guard: spec] req_id=%s sampled_len=%d accepted_len=%d "
             "window_sampled_steps=%d window_accepted_steps=%d "
             "prompt_token_count=%d output_token_count=%d",
             alert.req_id,

@@ -1387,18 +1387,12 @@ def init_ascend_config(vllm_config):
     raw_runtime_path = (
         additional_config.get("runtime_config_path")
         or additional_config.get("runtime-config")
-        or additional_config.get("dfx_config_path")
-        or additional_config.get("dfx-config")
     )
     if raw_runtime_path is not None and not isinstance(raw_runtime_path, str):
         raise ValueError(
             f"additional_config.runtime_config_path must be a string, got {type(raw_runtime_path).__name__}."
         )
-    raw_reload = (
-        additional_config.get("runtime_config_reload_interval")
-        if additional_config.get("runtime_config_reload_interval") is not None
-        else additional_config.get("dfx_config_reload_interval", 0)
-    )
+    raw_reload = additional_config.get("runtime_config_reload_interval")
     if raw_reload is None:
         raw_reload = 0
     try:
@@ -1412,15 +1406,12 @@ def init_ascend_config(vllm_config):
         raise ValueError(
             f"additional_config.runtime_config_reload_interval must be >= 0, got {runtime_config_reload_interval}."
         )
-    raw_runtime_overlay = additional_config.get("runtime_config") or additional_config.get("dfx_config")
+    raw_runtime_overlay = additional_config.get("runtime_config")
     if raw_runtime_overlay is not None and not isinstance(raw_runtime_overlay, dict):
         raise ValueError(
             f"additional_config.runtime_config must be a dict, got {type(raw_runtime_overlay).__name__}."
         )
-    raw_runtime_dump_dir = (
-        additional_config.get("runtime_dump_dir")
-        or additional_config.get("dfx_dump_dir")
-    )
+    raw_runtime_dump_dir = additional_config.get("runtime_dump_dir")
     if raw_runtime_dump_dir is not None and not isinstance(raw_runtime_dump_dir, str):
         raise ValueError(
             f"additional_config.runtime_dump_dir must be a string, got {type(raw_runtime_dump_dir).__name__}."
@@ -1429,7 +1420,7 @@ def init_ascend_config(vllm_config):
 
     runtime_cfg = RuntimeConfig(
         raw_runtime_path,
-        report_dir=additional_config.get("runtime_report_dir") or additional_config.get("dfx_report_dir"),
+        report_dir=additional_config.get("runtime_report_dir"),
         reload_interval_seconds=runtime_config_reload_interval,
         ensure_file=False,
         dump_dir=raw_runtime_dump_dir,
@@ -1460,13 +1451,6 @@ def init_ascend_config(vllm_config):
         "runtime_config_reload_interval",
         "runtime_report_dir",
         "runtime_dump_dir",
-        "dfx_config",
-        "dfx_config_path",
-        "dfx-config",
-        "dfx_config_reload_interval",
-        "dfx_report_dir",
-        "dfx_dump_dir",
-        "dfx_config_isolate_by_dp",
         # pure-derived fields (derive_and_validate computes them; user input would residualize)
         # NOTE: enable_shared_expert_dp/enable_sparse_sfa_c8/enable_sparse_li_c8/
         # c8_enable_reshape_optim are NOT here — they are user-input fields that

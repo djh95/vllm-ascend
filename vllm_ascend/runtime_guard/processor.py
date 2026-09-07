@@ -23,7 +23,7 @@ Owns construction of detectors / ``ReportWriter`` / actions. Model runners
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
@@ -779,7 +779,7 @@ class RuntimeGuardProcessor:
             if changed and hasattr(input_batch, "_make_sampling_metadata"):
                 input_batch.sampling_metadata = input_batch._make_sampling_metadata()
                 logger.info_once(
-                    "[Anomaly token_logprob] forcing request top-k logprobs=%d for detection",
+                    "[runtime_guard: token_logprob] forcing request top-k logprobs=%d for detection",
                     topk,
                 )
             return
@@ -804,7 +804,7 @@ class RuntimeGuardProcessor:
                 changed = True
         if changed:
             logger.info_once(
-                "[Anomaly token_logprob] forcing request top-k logprobs=%d for detection (v2)",
+                "[runtime_guard: token_logprob] forcing request top-k logprobs=%d for detection (v2)",
                 topk,
             )
 
@@ -847,7 +847,6 @@ class RuntimeGuardProcessor:
             detail,
             alert.req_id,
             alert.req_idx,
-            incident_type=alert.incident_type,
         )
         if self.runtime_config.log_print_sampling_meta():
             try:
@@ -927,11 +926,8 @@ class RuntimeGuardProcessor:
         detail: dict[str, Any],
         req_id: str,
         req_idx: int | None = None,
-        *,
-        incident_type: str | None = None,
     ) -> dict[str, Any]:
         """Attach ``block_ids`` / ``slot_mapping`` per report.* flags."""
-        del incident_type
         include_ids = self.runtime_config.report_include_block_ids()
         include_slots = self.runtime_config.report_include_slot_mapping()
         if not include_ids and not include_slots:
@@ -970,7 +966,7 @@ class RuntimeGuardProcessor:
             tok = load_model_tokenizer(runner)
         except Exception as exc:
             self._report_tokenizer_failed = True
-            logger.warning("[DFX] tokenizer load failed error=%s", exc)
+            logger.warning("[runtime_guard] tokenizer load failed error=%s", exc)
             return None
         if tok is None:
             # runner / model_config missing; retry on next call.

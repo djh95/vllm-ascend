@@ -134,7 +134,7 @@ class OutputSubstringDetector(ConfigBackedDetector):
         try:
             self._raw_patterns = normalize_raw_patterns(raw)
         except ValueError as exc:
-            logger.error("[Anomaly output_substring] invalid patterns: %s; keeping previous", exc)
+            logger.error("[runtime_guard: output_substring] invalid patterns: %s; keeping previous", exc)
         self._add_special_tokens = bool(getter("add_special_tokens", self._add_special_tokens))
         self._match_prefix = bool(getter("match_prefix", self._match_prefix))
         # Rebuild / re-log when enable flips on or patterns / encode knobs change.
@@ -153,14 +153,14 @@ class OutputSubstringDetector(ConfigBackedDetector):
             try:
                 tok = self._tokenizer_provider()
             except Exception as exc:
-                logger.warning("[Anomaly output_substring] tokenizer_provider failed error=%s", exc)
+                logger.warning("[runtime_guard: output_substring] tokenizer_provider failed error=%s", exc)
                 self._tokenizer_failed = True
                 return None
         if tok is None:
             try:
                 tok = load_model_tokenizer(self._runner)
             except Exception as exc:
-                logger.warning("[Anomaly output_substring] tokenizer load failed error=%s", exc)
+                logger.warning("[runtime_guard: output_substring] tokenizer load failed error=%s", exc)
                 self._tokenizer_failed = True
                 return None
             if tok is None:
@@ -184,7 +184,7 @@ class OutputSubstringDetector(ConfigBackedDetector):
         tokenizer = self._get_tokenizer()
         if tokenizer is None:
             logger.info_once(
-                "[Anomaly output_substring] patterns pending: tokenizer not ready yet "
+                "[runtime_guard: output_substring] patterns pending: tokenizer not ready yet "
                 "(will retry on next refresh/check)"
             )
             self._compile_fp = None  # retry when tokenizer appears
@@ -203,7 +203,7 @@ class OutputSubstringDetector(ConfigBackedDetector):
                     source = "token_ids"
             except Exception as exc:
                 logger.warning(
-                    "[Anomaly output_substring] skip pattern[%d] encode/decode failed error=%s raw=%r",
+                    "[runtime_guard: output_substring] skip pattern[%d] encode/decode failed error=%s raw=%r",
                     index,
                     exc,
                     raw,
@@ -211,7 +211,7 @@ class OutputSubstringDetector(ConfigBackedDetector):
                 continue
             if not token_ids:
                 logger.warning(
-                    "[Anomaly output_substring] skip pattern[%d] empty token_ids after encode raw=%r",
+                    "[runtime_guard: output_substring] skip pattern[%d] empty token_ids after encode raw=%r",
                     index,
                     raw,
                 )
@@ -225,7 +225,7 @@ class OutputSubstringDetector(ConfigBackedDetector):
             )
             compiled.append(pat)
             logger.info(
-                "[Anomaly output_substring] pattern[%d] source=%s text=%r token_ids=%s",
+                "[runtime_guard: output_substring] pattern[%d] source=%s text=%r token_ids=%s",
                 pat.index,
                 pat.source,
                 pat.text,
@@ -233,7 +233,7 @@ class OutputSubstringDetector(ConfigBackedDetector):
             )
         self._compiled = compiled
         if not compiled:
-            logger.warning("[Anomaly output_substring] no usable patterns after encode/decode")
+            logger.warning("[runtime_guard: output_substring] no usable patterns after encode/decode")
 
     def check_all(
         self,
@@ -319,7 +319,7 @@ class OutputSubstringDetector(ConfigBackedDetector):
             "output_token_count": output_token_count,
         }
         logger.info(
-            "[Anomaly output_substring] hit req_id=%s pattern[%d] source=%s mode=%s "
+            "[runtime_guard: output_substring] hit req_id=%s pattern[%d] source=%s mode=%s "
             "text=%r token_ids=%s output_token_count=%d",
             req_id,
             pat.index,

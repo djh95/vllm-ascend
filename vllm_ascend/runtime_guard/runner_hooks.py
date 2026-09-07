@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model-runner glue helpers that belong to DFX, not Ascend business logic."""
+"""Model-runner glue helpers that belong to runtime_guard, not Ascend business logic."""
 
 from __future__ import annotations
 
@@ -35,18 +35,18 @@ def need_pre_sample_hook(guard: Any) -> bool:
 
 
 def check_before_sample_from_batch(
-    dfx: Any,
+    guard: Any,
     logits: Any,
     input_batch: Any,
     *,
     scheduler_output: Any = None,
 ) -> None:
     """Pack batch fields and call :meth:`RuntimeGuardProcessor.check_before_sample`."""
-    runner = getattr(dfx, "runner", None)
+    runner = getattr(guard, "runner", None)
     logits_indices = getattr(input_batch, "logits_indices", None)
     if logits_indices is None:
         logits_indices = getattr(runner, "logits_indices", None)
-    dfx.check_before_sample(
+    guard.check_before_sample(
         scheduler_output=scheduler_output,
         logits=logits,
         logits_indices=logits_indices,
@@ -56,7 +56,7 @@ def check_before_sample_from_batch(
 
 @contextmanager
 def wrap_compute_logits_for_pre_sample(runner: Any, input_batch: Any):
-    """Temporarily wrap ``model.compute_logits`` so DFX runs before grammar.
+    """Temporarily wrap ``model.compute_logits`` so runtime_guard runs before grammar.
 
     Parent ``GPUModelRunner.sample`` does ``compute_logits`` then grammar then
     sampler with no mid-hook. Wrapping the bound method inserts
@@ -73,7 +73,7 @@ def wrap_compute_logits_for_pre_sample(runner: Any, input_batch: Any):
     # (assigning a bound method back leaves a stale instance attribute).
     had_instance_attr = "compute_logits" in getattr(model, "__dict__", {})
     orig = model.compute_logits
-    dfx = runner.runtime_guard
+    guard = runner.runtime_guard
     scheduler_output = getattr(runner, "_rg_scheduler_output", None)
     fired = False
 
@@ -83,7 +83,7 @@ def wrap_compute_logits_for_pre_sample(runner: Any, input_batch: Any):
         if not fired:
             fired = True
             check_before_sample_from_batch(
-                dfx,
+                guard,
                 logits,
                 input_batch,
                 scheduler_output=scheduler_output,

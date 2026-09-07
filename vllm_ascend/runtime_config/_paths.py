@@ -62,7 +62,7 @@ def resolve_runtime_config_path(configured_path: str | None = None) -> Path:
 
     Priority:
     1. Explicit ``runtime_config_path`` / ``runtime-config`` from additional_config
-    2. Default ``<cwd>/dfx/config/runtime_config.json``
+    2. Default ``<cwd>/runtime/config/runtime_config.json``
     """
     if configured_path:
         return _reject_unsafe_path(Path(configured_path), label="runtime_config_path")
@@ -71,6 +71,6 @@ def resolve_runtime_config_path(configured_path: str | None = None) -> Path:
 
 def resolve_runtime_report_dir(config_path: Path, configured_report_dir: str | None = None) -> Path:
     if configured_report_dir:
-        return _reject_unsafe_path(Path(configured_report_dir), label="dfx_report_dir")
+        return _reject_unsafe_path(Path(configured_report_dir), label="runtime_report_dir")
     runtime_root = config_path.parent.parent if config_path.parent.name == "config" else config_path.parent
-    return _reject_unsafe_path(runtime_root / "report", label="dfx_report_dir")
+    return _reject_unsafe_path(runtime_root / "report", label="runtime_report_dir")
