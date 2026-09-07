@@ -97,3 +97,10 @@ def copy_blocks(
     batch_sizes = torch.from_numpy(sz_all)
 
     torch.ops._C_ascend.swap_blocks_batch(batch_src, batch_dst, batch_sizes, params.direction)
+    if params.direction == DIRECTION_H2D:
+        try:
+            from vllm_ascend.runtime_guard.kv_audit import on_block_load
+
+            on_block_load(list(dst_block_ids), tag="kv_load")
+        except Exception:
+            pass

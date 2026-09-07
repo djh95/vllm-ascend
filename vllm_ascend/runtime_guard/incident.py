@@ -28,7 +28,9 @@ class Incident:
     """One runtime finding handed to the action executor."""
 
     incident_type: str
-    req_id: str
+    # May be unset when a finding cannot be attributed to a request
+    # (e.g. logits_finite unresolved row → request map).
+    req_id: str | None
     is_ill: bool = True
     ill_type: int = ILL_TYPE_NONE
     req_idx: int | None = None

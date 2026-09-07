@@ -18,8 +18,8 @@
 
 Concrete detectors are private references held by ``DetectorManager``; callers
 (``RuntimeGuardProcessor`` / model runners) only use the stage hooks, never the detector
-instances. The internal ``DetectorRegistry`` keeps iteration / clear-finished
-without exposing its public surface to the outside.
+instances. Soft-assert invariants (logits / slot) live
+outside this manager — see ``runtime_guard.invariant`` + ``Processor.emit_finding``.
 """
 
 from __future__ import annotations
@@ -29,13 +29,10 @@ from typing import TYPE_CHECKING, Any
 
 from vllm_ascend.runtime_guard.incident import Incident
 from vllm_ascend.runtime_guard.detector.base import AnomalyDetector
-from vllm_ascend.runtime_guard.detector.block_kv import BlockKvDetector
-from vllm_ascend.runtime_guard.detector.logits_finite import LogitsFiniteDetector
+from vllm_ascend.runtime_guard.detector.finish import FinishDetector
 from vllm_ascend.runtime_guard.detector.output_substring import OutputSubstringDetector
 from vllm_ascend.runtime_guard.detector.placement import DetectorSpec, ExecScope, PlacementPlan, plan_placement
-from vllm_ascend.runtime_guard.detector.position_alignment import PositionAlignmentDetector
 from vllm_ascend.runtime_guard.detector.registry import DetectorRegistry
-from vllm_ascend.runtime_guard.detector.slot_consistency import SlotConsistencyDetector
 from vllm_ascend.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
 from vllm_ascend.runtime_guard.detector.token_logprob import TokenLogprobDetector
 from vllm_ascend.runtime_guard.detector.token_repeat import TokenRepeatDetector
@@ -54,10 +51,8 @@ class DetectorManager:
     """Owns detectors and exposes stage hooks only.
 
     Callers (``RuntimeGuardProcessor`` / runners) use ``check_after_spec`` /
-    ``check_before_sample`` / ``check_after_sample`` / ``check_kv_block_writes`` /
-    ``clear_finished`` (reap path) only.
-    Concrete detectors stay private (``_spec_det`` & co.); ``get`` exists solely
-    for alert routing in ``RuntimeGuardProcessor._handle_alert``.
+    ``check_after_sample`` / ``check_on_finish`` / ``clear_finished`` (reap
+    path) only. Pre-sample / KV invariants are owned by the processor.
     """
 
     def __init__(
@@ -71,11 +66,8 @@ class DetectorManager:
     ) -> None:
         self._runner = runner
         self._runtime_config = runtime_config
-        # Anomaly detection gate (rank / dump / detector-on), owned by the
-        # caller (``RuntimeGuardProcessor`` → ``Dumper``). None = always run.
         self._detection_gate = detection_gate
         self._detection_skip_reason = detection_skip_reason
-        # Private concrete references (constructed once; no registry get+assert).
         self._spec_det = SpecAcceptanceDetector(
             runtime_config=runtime_config,
             runner=runner,
@@ -93,38 +85,20 @@ class DetectorManager:
             runtime_config=runtime_config,
             runner=runner,
         )
-        self._block_kv_det = BlockKvDetector(
+        self._finish_det = FinishDetector(
             runtime_config=runtime_config,
             runner=runner,
         )
-        self._slot_consistency_det = SlotConsistencyDetector(
-            runtime_config=runtime_config,
-            runner=runner,
-        )
-        self._position_det = PositionAlignmentDetector(
-            runtime_config=runtime_config,
-            runner=runner,
-        )
-        self._logits_finite_det = LogitsFiniteDetector(
-            runtime_config=runtime_config,
-            runner=runner,
-        )
-        # Internal ordered registry: iterate for clear_finished; not public.
         self._registry = DetectorRegistry()
         for det in (
             self._spec_det,
             self._token_det,
             self._output_substring_det,
             self._token_repeat_det,
-            self._block_kv_det,
-            self._slot_consistency_det,
-            self._position_det,
-            self._logits_finite_det,
+            self._finish_det,
         ):
             self._registry.register(det)
-        # stop_after_alert flags live on RequestGuardStore (RequestGuardState).
 
-        # Per-rank placement: which detectors this process actually runs.
         self._tp_rank = runner_tp_rank(runner)
         self._plan = PlacementPlan()
         self._replan(initial=True)
@@ -140,13 +114,7 @@ class DetectorManager:
         return self._registry.get(incident_type)
 
     def clear_finished(self, req_id: str) -> None:
-        """Drop per-request detector state when a request finishes.
-
-        Shared fields (IO / filter / waves) are cleared by
-        :meth:`RequestGuardStore.clear`. This also clears ``stopped_after_alert``
-        so direct callers / tests can re-detect without popping the whole state.
-        Prefer Store.clear from ``RuntimeGuardProcessor._reap_finished_requests``.
-        """
+        """Drop per-request detector state when a request finishes."""
         state = RequestGuardStore.get().get_state(req_id)
         if state is not None:
             state.stopped_after_alert = False
@@ -154,11 +122,6 @@ class DetectorManager:
             det.clear_finished(req_id)
 
     def token_logprob_topk_if_enabled(self) -> int | None:
-        """Return token-logprob top-k when that detector is enabled; else None.
-
-        With hot-reload off, skip per-sample ``refresh_from_config`` when the
-        detector is already known disabled (default service path).
-        """
         if self._runtime_config is not None and self._runtime_config.hot_reload_enabled:
             self._token_det.refresh_from_config()
         elif not self._token_det.enabled:
@@ -168,13 +131,9 @@ class DetectorManager:
         topk = int(self._token_det.topk)
         return topk if topk > 0 else None
 
-    # ---- placement ---------------------------------------------------------
-
     @staticmethod
     def _topology(runner: Any) -> tuple[int, bool]:
-        """(tp_size, rank_local_world) for the planner."""
-        vllm_config = getattr(runner, "vllm_config", None)
-        pc = getattr(vllm_config, "parallel_config", None)
+        pc = getattr(getattr(runner, "vllm_config", None), "parallel_config", None)
         if pc is not None:
             tp = int(getattr(pc, "tensor_parallel_size", 1) or 1)
             cp = int(getattr(pc, "prefill_context_parallel_size", 1) or 1)
@@ -213,7 +172,6 @@ class DetectorManager:
         return specs
 
     def _replan(self, *, initial: bool = False) -> None:
-        """(Re)compute which detectors run on this rank; log moves."""
         if self._runtime_config is None:
             self._plan = plan_placement([], tp_size=1, rank_local_world=False)
             return
@@ -249,41 +207,20 @@ class DetectorManager:
         )
 
     def _here(self, det: AnomalyDetector) -> bool:
-        """Whether this rank runs ``det`` per the placement plan."""
         return self._plan.runs_here(det.incident_type, self._tp_rank)
 
     def _any_here(self) -> bool:
         return any(self._plan.runs_here(det.incident_type, self._tp_rank) for det in self._registry)
 
     def apply_runtime_config(self) -> None:
-        """All-rank hook after DFX JSON sync — refresh deps that may force flags off.
-
-        ``token_logprob`` needs msprobe; if missing, force ``enabled=false`` and
-        persist on the JSON writer. Must run on every rank (including early PP
-        writers that never sample), not only on the detect / sample path.
-        Also refresh the newer native detectors so hot-reload flips take effect.
-        """
         self._token_det.refresh_from_config()
-        self._block_kv_det.refresh_from_config()
-        self._slot_consistency_det.refresh_from_config()
-        self._position_det.refresh_from_config()
-        self._logits_finite_det.refresh_from_config()
-        # Spec / substring / repeat also pull knobs from JSON on enable flips.
         self._spec_det.refresh_from_config()
         self._output_substring_det.refresh_from_config()
         self._token_repeat_det.refresh_from_config()
-        # Enable flips may rebalance rank assignment (auto mode).
+        self._finish_det.refresh_from_config()
         self._replan()
 
-    # ---- detection gating -------------------------------------------------
-
     def _gated(self, stage: str) -> bool:
-        """True when anomaly detection is gated off this step; logs skip reason once.
-
-        ``stage`` is a short tag (``after_spec`` / ``after_sample`` / ``kv_block``)
-        for the once-per-process skip log. Gate is rank-only (last PP); callers
-        never re-implement it per hook.
-        """
         if self._detection_gate is None:
             return False
         if bool(self._detection_gate()):
@@ -301,8 +238,6 @@ class DetectorManager:
             )
         return True
 
-    # ---- stage hooks ------------------------------------------------------
-
     def _stop_after_alert(self) -> bool:
         return bool(self._runtime_config.stop_after_alert())
 
@@ -312,7 +247,6 @@ class DetectorManager:
         return bool(self._spec_det.enabled)
 
     def _mark_alerted(self, alerts: list[Incident]) -> None:
-        """Stop detecting requests that just produced an anomaly."""
         store = RequestGuardStore.get()
         for alert in alerts:
             if alert.req_id:
@@ -323,13 +257,6 @@ class DetectorManager:
         sampled_tokens: Any,
         accepted_token_nums: Any,
     ) -> list[Incident]:
-        """Run spec-acceptance detect only (no cumulative IO append).
-
-        Accepted tokens are recorded once in :meth:`check_after_sample` from
-        the engine's validated sampled ids. Appending here as well doubled
-        MTP/Eagle output in reports (same-wave dedupe fails under async
-        scheduling when ``clear_wave_cache`` runs before ``get_output``).
-        """
         if self._gated("after_spec"):
             return []
         if not self._here(self._spec_det):
@@ -349,22 +276,6 @@ class DetectorManager:
         """Append sample tokens to IO buffer; run post-sample detectors.
 
         Order: ``token_logprob`` → ``output_substring`` → ``token_repeat``.
-
-        ``sampled_token_ids`` is the sole path that appends to cumulative IO
-        (including MTP/Eagle accepted tokens). Append runs only when
-        ``RuntimeConfig.needs_cumulative_io`` (print_output / IO detectors /
-        sensitive reports). When detect is gated off but IO is still needed,
-        TP0 appends so finish logs stay complete. Detection then skips
-        ``stop_after_alert`` reqs by id — never by row-subsetting — so
-        ``req_idx`` stays aligned with ``input_batch`` (filters / dump).
-
-        ``OutputSubstringDetector`` and ``TokenRepeatDetector`` are called with
-        ``sampled_token_ids=None`` so they read the shared cumulative IO buffer
-        instead of re-appending (avoids double count).
-
-        With ``detector.stop_after_alert`` (default true) a request keeps being
-        checked on every step until it produces an anomaly; afterwards it is
-        skipped entirely so the same anomaly does not write endless reports.
         """
         resolved_ids = req_ids
         if resolved_ids is None:
@@ -375,23 +286,17 @@ class DetectorManager:
         if self._runtime_config is not None:
             need_io = bool(self._runtime_config.needs_cumulative_io())
 
-        # Append only when a consumer needs cumulative IO (print_output /
-        # substring/repeat / sensitive reports). When detect is gated off,
-        # TP0 still appends if need_io so finish logs stay complete.
         if self._gated("after_sample"):
             if need_io and int(getattr(self._runner, "tp_rank", 0)) == 0:
                 RequestIoSnapshotManager.get().append_batch(resolved_ids, sampled_token_ids)
             return []
 
-        # IO authority stays on TP0 (reports / finish logs); other ranks
-        # append only when a detector assigned here reads cumulative IO.
         io_owner = int(getattr(self._runner, "tp_rank", 0)) == 0
         if need_io and (io_owner or self._any_here()):
             RequestIoSnapshotManager.get().append_batch(resolved_ids, sampled_token_ids)
 
         skip = RequestGuardStore.get().stopped_req_ids() if self._stop_after_alert() else None
         if skip is not None and resolved_ids and all(rid in skip for rid in resolved_ids if rid):
-            # Entire batch already alerted: IO updated; no further detect / reports.
             return []
 
         alerts: list[Incident] = []
@@ -404,8 +309,6 @@ class DetectorManager:
                     skip_req_ids=skip,
                 )
             )
-        # Substring + token_repeat share cumulative IO (already appended); pass
-        # None to avoid a second append_batch inside each detector.check_all.
         if self._here(self._output_substring_det):
             alerts.extend(
                 self._output_substring_det.check_all(
@@ -426,122 +329,11 @@ class DetectorManager:
             self._mark_alerted(alerts)
         return alerts
 
-    def check_before_sample(
-        self,
-        *,
-        scheduler_output: Any,
-        logits: Any,
-        positions: Any = None,
-        total_scheduled_tokens: int = 0,
-        logits_indices: Any = None,
-        input_batch: Any = None,
-    ) -> list[Incident]:
-        """Run pre-sample detectors (logits finite, then position alignment).
-
-        With ``stop_after_alert``, a req that alerts in logits is marked before
-        position runs in the same call, so the same step does not double-report.
-        """
-        logits_here = self._here(self._logits_finite_det)
-        position_here = self._here(self._position_det)
-        if not logits_here and not position_here:
+    def check_on_finish(self, req_ids: list[str] | None) -> list[Incident]:
+        if not req_ids:
             return []
-        if self._gated("before_sample"):
+        if self._gated("finish"):
             return []
-        stop = self._stop_after_alert()
-        skip = RequestGuardStore.get().stopped_req_ids() if stop else None
-        alerts: list[Incident] = []
-        logits_alerts: list[Incident] = []
-        if logits_here:
-            for alert in self._logits_finite_det.check_all(
-                logits=logits,
-                logits_indices=logits_indices,
-                input_batch=input_batch,
-            ):
-                if skip is not None and alert.req_id in skip:
-                    continue
-                logits_alerts.append(alert)
-                alerts.append(alert)
-        if stop and logits_alerts:
-            self._mark_alerted(logits_alerts)
-            skip = RequestGuardStore.get().stopped_req_ids()
-        if position_here:
-            for alert in self._position_det.check_all(
-                scheduler_output=scheduler_output,
-                positions=positions,
-                total_scheduled=total_scheduled_tokens,
-                input_batch=input_batch,
-            ):
-                if skip is not None and alert.req_id in skip:
-                    continue
-                alerts.append(alert)
-        if stop:
-            # Position-only hits (logits already marked above).
-            self._mark_alerted(alerts)
-        return alerts
-
-    def check_kv_block_writes(
-        self,
-        req_id: str,
-        block_ids: list[int],
-        wave: int,
-    ) -> list[Incident]:
-        """Run block KV integrity checks before ``record_writes``.
-
-        Ignores dump-busy gate so same-step pending dump (armed by
-        logits/position) does not skip KV checks.
-        """
-        if self._gated("kv_block"):
+        if not self._here(self._finish_det):
             return []
-        if not self._here(self._block_kv_det):
-            return []
-        skip = RequestGuardStore.get().stopped_req_ids() if self._stop_after_alert() else None
-        if skip is not None and req_id in skip:
-            return []
-        alerts = self._block_kv_det.check_writes(req_id, block_ids, wave)
-        if skip is not None:
-            self._mark_alerted(alerts)
-        return alerts
-
-    def slot_consistency_enabled(self) -> bool:
-        """Cheap gate for the note loop (avoids snapshot cost when disabled).
-
-        Also placement-gated: a rank the detector is not assigned to skips
-        slot snapshot/record work entirely.
-        """
-        if not self._here(self._slot_consistency_det):
-            return False
-        if self._runtime_config is not None and self._runtime_config.hot_reload_enabled:
-            self._slot_consistency_det.refresh_from_config()
-        return bool(self._slot_consistency_det.enabled)
-
-    def check_slot_consistency(
-        self,
-        *,
-        req_id: str,
-        req_idx: int | None,
-        seq: list[int],
-        block_ids: list[int],
-        block_size: int,
-        computed_before: int,
-        scheduled: int,
-    ) -> list[Incident]:
-        """Run slot-token consistency checks after this step's slot record."""
-        if self._gated("kv_block"):
-            return []
-        if not self._here(self._slot_consistency_det):
-            return []
-        skip = RequestGuardStore.get().stopped_req_ids() if self._stop_after_alert() else None
-        if skip is not None and req_id in skip:
-            return []
-        alerts = self._slot_consistency_det.check_slots(
-            req_id=req_id,
-            req_idx=req_idx,
-            seq=seq,
-            block_ids=block_ids,
-            block_size=block_size,
-            computed_before=computed_before,
-            scheduled=scheduled,
-        )
-        if skip is not None:
-            self._mark_alerted(alerts)
-        return alerts
+        return self._finish_det.check_finished(req_ids)

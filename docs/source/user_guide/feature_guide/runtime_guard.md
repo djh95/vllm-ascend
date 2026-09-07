@@ -82,11 +82,11 @@ runtime/
 |------|-------|-------------|
 | `token_repeat` | after sample | Stutter / repetition |
 | `output_substring` | after sample | Forbidden or garbage token patterns |
-| `logits_finite` | before sample | NaN/Inf logits |
-| `token_logprob` | after sample | Logprob window anomalies |
-| `block_kv` | KV write | Block wave / writer inconsistency |
-| `slot_consistency` | KV write / finish | Per-slot meta token vs prompt+output sequence |
-| `position_alignment` | before sample | Position id mismatch |
+| `logits_finite` | before sample (invariant) | NaN/Inf logits — `check_scope` auto→leader; `emit_finding` |
+| `finish` | request reap | One report per finished request (non-ill) |
+| `slot_consistency` | note_kv / finish (invariant) | Slot token vs seq → `kv_slot_token`; cross-req KV addressing |
+| `kv_slot_order` | note_kv (invariant) | Non-sequential slot offsets → `gap` / `wrong_start` |
+| `kv_state` | note_kv (invariant) | `BLOCK_SEALED_LOAD` + non-zero → `sealed_nonzero_rewrite` (silent if `output_len==0`); `BLOCK_SEALED_FILL` + non-zero → always `sealed_fill_nonzero_rewrite` (skip apply) |
 | `spec_acceptance` | after spec | Spec-decode acceptance drift (via `run_sample_phase` → `check_after_spec`; v2 stashes accept stats in `postprocess_sampled`) |
 | `token_logprob` | after sample | Logprob window anomalies (`ensure_logprobs_for_detection` runs at the start of `run_sample_phase`) |
 

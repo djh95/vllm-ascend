@@ -1,5 +1,6 @@
 #
 # Copyright (c) 2025 Huawei Technologies Co., Ltd. All Rights Reserved.
+# This file is a part of the vllm-ascend project.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,12 +16,10 @@
 
 from vllm_ascend.runtime_guard.incident import Incident
 from vllm_ascend.runtime_guard.detector.base import AnomalyDetector
-from vllm_ascend.runtime_guard.detector.block_kv import BlockKvDetector
 from vllm_ascend.runtime_guard.detector.config_backed import ConfigBackedDetector
-from vllm_ascend.runtime_guard.detector.logits_finite import LogitsFiniteDetector
+from vllm_ascend.runtime_guard.detector.finish import FinishDetector
 from vllm_ascend.runtime_guard.detector.manager import DetectorManager
 from vllm_ascend.runtime_guard.detector.output_substring import OutputSubstringDetector
-from vllm_ascend.runtime_guard.detector.position_alignment import PositionAlignmentDetector
 from vllm_ascend.runtime_guard.detector.registry import DetectorRegistry
 from vllm_ascend.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
 from vllm_ascend.runtime_guard.detector.token_logprob import TokenLogprobDetector
@@ -29,13 +28,11 @@ from vllm_ascend.runtime_guard.detector.token_repeat import TokenRepeatDetector
 __all__ = [
     "Incident",
     "AnomalyDetector",
-    "BlockKvDetector",
     "ConfigBackedDetector",
     "DetectorManager",
     "DetectorRegistry",
-    "LogitsFiniteDetector",
+    "FinishDetector",
     "OutputSubstringDetector",
-    "PositionAlignmentDetector",
     "SpecAcceptanceDetector",
     "TokenLogprobDetector",
     "TokenRepeatDetector",

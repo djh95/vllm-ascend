@@ -27,10 +27,7 @@ def need_pre_sample_hook(guard: Any) -> bool:
     cfg = getattr(guard, "runtime_config", None)
     if cfg is None:
         return False
-    if not (
-        bool(cfg.detector_get("logits_finite", "enabled", False))
-        or bool(cfg.detector_get("position_alignment", "enabled", False))
-    ):
+    if not bool(cfg.invariant_get("logits_finite", "enabled", False)):
         return False
     executor = getattr(guard, "action_executor", None)
     can = getattr(executor, "can_run_detection", None)

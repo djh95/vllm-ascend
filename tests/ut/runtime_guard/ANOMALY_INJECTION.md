@@ -8,11 +8,11 @@
 ## Why this exists
 
 Live B5–B14 covered "detector enabled + real workload sees real anomaly" for
-output_substring / token_repeat / block_kv / spec_acceptance / slot_consistency
-(prefill path) / position_alignment / logits_finite. But:
+output_substring / token_repeat / slot_consistency (prefill path) /
+logits_finite. But:
 
 - **slot_consistency injection path NOT live-verified** — only the happy
-  "first check ok checked=1243" path was hit. The mismatch-detection path
+  "first check ok" path was hit. The mismatch-detection path
   (when KV actually disagrees with the slot's recorded token) is untested.
 - **stop_after_alert cross-step skip behavior NOT live-verified** — every
   prior detector alert was followed by server shutdown, so "subsequent steps
@@ -52,20 +52,21 @@ Injection entry point: `_refresh_config_body` end (per-step, all detectors
 pre-flight). Hooks dispatch to `runner_hooks.py` / `kv_block_meta.py` /
 `detector/manager.py` as needed.
 
-### Detector coverage (7/8)
+### Detector / invariant coverage
 
-| # | Scenario | Injection point | What gets corrupted | Detector | Expected report field |
-|---|----------|------------------|----------------------|----------|----------------------|
+| # | Scenario | Injection point | What gets corrupted | Check | Expected report field |
+|---|----------|------------------|----------------------|-------|----------------------|
 | 1 | `nan_logits` | runner post-logits | `logits[0,5]=NaN` | logits_finite | `kind=nan` + row |
 | 2 | `inf_logits` | runner post-logits | `logits[0,3]=Inf` | logits_finite | `kind=inf` + row |
 | 3 | `forbidden_substring` | post-sampler | replace sampled_tokens with `李白` after first decode step | output_substring | `pattern=李白` |
 | 4 | `token_loop` | post-sampler | repeat last sampled token 32 times | token_repeat | `repeat_sum` + `window` |
 | 5 | `spec_all_reject` | spec_acceptance pre-call | `accepted_token_nums=[0]*bs` | spec_acceptance | `rate≈0` + `window=10` |
-| 6 | `kv_wave_regression` | kv_block_meta tracker | write block X wave=10, then wave=5 | block_kv | `wave_regression` |
-| 7 | `kv_same_wave_writer` | kv_block_meta tracker | two reqs same wave same block | block_kv | `same_wave_writer` + `writer_req_ids` |
-| 8 | `slot_mismatch_prefill` | block write path | slot stores token A, KV contains token B | slot_consistency (mode=first) | `last_writer_req_id` |
-| 9 | `slot_mismatch_decode` | decode-pre KV overwrite | active block written with another req's KV | slot_consistency (mode=step) | `step` + `last_writer_req_id` |
-| 10 | `position_shift` | sampler pre-entry position_ids | `position_ids[5:] += 1` | position_alignment | `position` + `expected` |
+| 6 | `kv_slot_order_gap` | note_kv / reshape path | skip an offset in a contiguous write batch | `kv_slot_order` | `incident_type=kv_slot_order`, `violation=gap` |
+| 7 | `kv_slot_order_jump` | note_kv | write starting past `next_offset` | `kv_slot_order` | `incident_type=kv_slot_order`, `violation=wrong_start` |
+| 8 | `slot_mismatch_first` | stamp wrong token into slot meta before first check | slot token ≠ seq | slot_consistency (phase=first) | `incident_type=kv_slot_token`, `mismatches` |
+| 9 | `slot_mismatch_finish` | corrupt slot meta before reap | slot token ≠ seq at finish | slot_consistency (phase=finish) | `incident_type=kv_slot_token` |
+| 10 | `position_shift` | sampler pre-entry position_ids | `position_ids[5:] += 1` | (removed) | was position_alignment |
+| 11 | `slot_token_swap` | wrong block mapping | map req to other req slots | slot_consistency | `kv_slot_token` mismatches |
 
 ### Cross-cutting scenarios (verify stop_after_alert)
 
@@ -76,18 +77,19 @@ pre-flight). Hooks dispatch to `runner_hooks.py` / `kv_block_meta.py` /
 
 ### Coverage summary
 
-| Detector | Scenario | Status |
+| Check | Scenario | Status |
 |----------|----------|--------|
 | logits_finite | #1, #2 | pending |
 | output_substring | #3 | pending |
 | token_repeat | #4 | pending |
 | spec_acceptance | #5 | pending ⚠️ DSV2-Lite not running MTP currently; either enable `--num-speculative-tokens` + Eagle speculator or fall back to UT-only coverage |
-| block_kv | #6, #7 | pending |
-| slot_consistency | #8, #9 (first + step mode both) | pending |
-| position_alignment | #10 | pending |
+| slot_consistency (`kv_slot_token`) | #8, #9, #11 | pending |
+| kv_slot_order | #6, #7 | pending |
 | token_logprob | — | ❌ **design-skipped** — depends on msprobe, force-disabled in no-msprobe branch |
 
-**7/8 detectors covered by injection; 1 design-skipped.**
+**Note:** legacy `block_kv` / wave·writer injection scenarios are removed; KV
+cross-req detection is owned by the slot meta state machine
+(`UNKNOWN` / `SLOT_PARTIAL` / `BLOCK_SEALED`).
 
 ## Injection mechanism design
 
@@ -105,8 +107,7 @@ vllm_ascend/runtime_guard/
     ├── __init__.py
     ├── logits.py                      # #1, #2
     ├── sampler.py                     # #3, #4, #5
-    ├── kv_meta.py                     # #6, #7, #8, #9
-    └── position.py                    # #10
+    └── kv_meta.py                     # #6–#9, #11
 
 tests/ut/runtime_guard/
 ├── test_inject_scenarios.py          # NEW: synthetic UT for each scenario (no NPU needed)
@@ -132,16 +133,18 @@ inject_for_step(self, allow_arm=allow_arm, scheduler_output=scheduler_output)
 
 For each scenario #1-#12:
 1. Confirm guard server up on cards 6-7 (DeepSeek-V2-Lite, TP=2, port 8017)
-2. Reset runtime_config.json: `stop_after_alert=true`, all 6 detectors `enabled=true`,
-   `slot_consistency.mode` per scenario (`first` for #8, `step` for #9)
+2. Reset runtime_config.json: `stop_after_alert=true`, relevant checks `enabled=true`
+   (`invariant.kv_slot_order` for #6–#7; `invariant.slot_consistency` for #8–#9/#11;
+   no `mode` key — token checks are `phase=first` once + `phase=finish` at reap)
 3. `curl -X POST .../manual_trigger` to clear any stale state
 4. `RG_INJECT=scenario_name:step_trigger[:param] python tests/perf/runtime_guard/run_inject.py`
 5. Wait for injection log `[INJECT] scenario=X step=N` to appear
-6. Check `runtime_report_dir/<incident_type>/` for matching detector report
+6. Check `runtime_report_dir/<incident_type>/` for matching report
+   (`kv_slot_token` / `kv_slot_order` for slot scenarios)
 7. Cross-reference detector log line with `[INJECT]` line — both must appear in the same step window
 
 ## Pass criteria
 
-- #1-#10: detector report file exists with expected `kind` / `pattern` / `wave_regression` / `last_writer_req_id` field
+- #1-#10: report file exists with expected `kind` / `pattern` / `violation` / `mismatches` field
 - #11: log shows `[runtime_guard clear] on_clear hook` for the alerted req_id; subsequent step's detector `_precheck` log shows the req_id in `stopped_req_ids()`
 - #12: multiple reports exist for the same req_id across steps (proves stop_after_alert=false toggles off the skip)

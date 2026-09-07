@@ -476,6 +476,7 @@ class KVCacheRecvingThread(threading.Thread):
         tp_num_need_pulls: int,
         remote_port_send_num: dict[int, RemotePortInfo] | None = None,
         all_task_done: bool = False,
+        num_external_tokens: int = 0,
     ):
         """Add a new request to the queue for processing."""
         if remote_port_send_num is None:
@@ -494,6 +495,7 @@ class KVCacheRecvingThread(threading.Thread):
                 "tp_num_need_pulls": tp_num_need_pulls,
                 "remote_port_send_num": remote_port_send_num,
                 "all_task_done": all_task_done,
+                "num_external_tokens": num_external_tokens,
             }
         )
 
@@ -595,6 +597,7 @@ class KVCacheRecvingThread(threading.Thread):
         remote_handshake_port = req_meta["remote_handshake_port"]
         remote_port_send_num = req_meta["remote_port_send_num"]
         all_task_done = req_meta["all_task_done"]
+        transfer_ok = False
 
         try:
             logger.debug("Starting to transfer KV cache for request %s.", remote_request_id)
@@ -603,6 +606,7 @@ class KVCacheRecvingThread(threading.Thread):
             else:
                 self._transfer_kv_cache_all_groups(req_meta)
             logger.debug("Finished transferring KV cache for request %s.", remote_request_id)
+            transfer_ok = True
         except Exception:
             logger.exception("Failed to transfer KV cache for request %s.", remote_request_id)
         finally:
@@ -610,6 +614,20 @@ class KVCacheRecvingThread(threading.Thread):
             if self._mark_request_task_done(request_id, all_task_done):
                 if len(req_meta["local_block_ids"]) > 0:
                     self.task_tracker.update_done_task_count(request_id)
+                    if transfer_ok:
+                        try:
+                            from vllm_ascend.runtime_guard.kv_audit import on_pd_recv_load
+
+                            on_pd_recv_load(
+                                req_meta.get("local_block_ids"),
+                                num_tokens=req_meta.get("num_external_tokens"),
+                                tag="pd_recv",
+                            )
+                        except Exception:
+                            logger.exception(
+                                "[kv_audit soft-fail] pd_recv load request_id=%s",
+                                request_id,
+                            )
                 with self.proc_not_transfer_request_lock:
                     self.proc_not_transfer_request.pop(remote_request_id, None)
             self.request_queue.task_done()
@@ -1880,6 +1898,7 @@ class MooncakeConnectorWorker:
                         offset=i,
                         tp_num_need_pulls=pulls_per_stage,
                         all_task_done=(i == num_pulls - 1),
+                        num_external_tokens=meta.num_external_tokens,
                     )
             else:  # TODO: support prefill context parallel and pipeline parallel open at the same time
                 chosen_rank_list = self._get_remote_rank(remote_req_id, prefill_tp_size)
@@ -1904,6 +1923,7 @@ class MooncakeConnectorWorker:
                         offset=i,
                         tp_num_need_pulls=tp_num_need_pulls,
                         all_task_done=(i == tp_num_need_pulls * self._prefill_pp_size - 1),
+                        num_external_tokens=meta.num_external_tokens,
                     )
 
         for req_id in metadata.reqs_in_batch:

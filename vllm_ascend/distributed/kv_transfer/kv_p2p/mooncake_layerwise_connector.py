@@ -1555,6 +1555,21 @@ class MooncakeLayerwiseConnectorWorker:
         for req_id in failed_recving:
             if meta := self._recving_metadata.get(req_id):
                 self._invalid_block_ids.update(block_id for group in meta.local_block_ids for block_id in group)
+        for req_id in done_recving:
+            meta = self._recving_metadata.get(req_id)
+            if meta is None:
+                continue
+            try:
+                from vllm_ascend.runtime_guard.kv_audit import on_pd_recv_load
+
+                nt = int(getattr(meta, "prompt_len", 0) or 0)
+                on_pd_recv_load(
+                    meta.local_block_ids,
+                    num_tokens=nt if nt > 0 else None,
+                    tag="pd_recv",
+                )
+            except Exception:
+                logger.exception("[kv_audit soft-fail] pd_recv load request_id=%s", req_id)
         for req_id in done_recving.union(failed_recving):
             org_req_id = req_id[:-9]
             self.request_map.pop(org_req_id, None)

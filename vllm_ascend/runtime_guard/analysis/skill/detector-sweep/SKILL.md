@@ -20,11 +20,11 @@ description: >-
 
 | Key in config | Class | Catches |
 |---|---|---|
-| `logits_finite` | `LogitsFiniteDetector` | **NaN / Inf in logits** — the numerical-instability catcher |
+| `logits_finite` | plain check | **NaN / Inf in logits** → `emit_finding` / report (not a detector) |
 | `token_logprob` | `TokenLogprobDetector` | Rare/ill-conditioned token probabilities; also has `ill_nan_window_thresh` for NaN-in-logprob detection |
 | `token_repeat` | `TokenRepeatDetector` | Output-side repetition (loops, n-gram stuck) |
-| `block_kv` | `BlockKvDetector` | Per-block KV cache sanity — KV corruption |
-| `position_alignment` | `PositionAlignmentDetector` | Position-id / slot-mapping / block-table off-by-one |
+| `slot_consistency` | plain check | Slot meta token vs seq → `kv_slot_token` |
+| `kv_slot_order` | plain check | Non-sequential slot offsets → `kv_slot_order` |
 | `spec_acceptance` | `SpecAcceptanceDetector` | Speculative-decode acceptance rate anomaly (only if spec decode on) |
 | `output_substring` | `OutputSubstringDetector` | Specific pattern in output (leak, echo, prompt injection) |
 
@@ -38,11 +38,11 @@ Each detector targets a different bug class. If only one is enabled and it misse
 1. Edit `{RG_CFG}` (hot-reloadable), e.g.:
    `docker exec {CONTAINER} bash -c 'vi {RG_CFG}'`
    Set ALL of these `enabled: true`:
-   - `detector.logits_finite.enabled` ← NaN catcher
+   - `invariant.logits_finite.enabled` ← NaN catcher
    - `detector.token_logprob.enabled` (also set `ill_nan_window_thresh: 1`)
    - `detector.token_repeat.enabled`
-   - `detector.block_kv.enabled`
-   - `detector.position_alignment.enabled`
+   - `invariant.slot_consistency.enabled`
+   - `invariant.kv_slot_order.enabled`
    - `detector.spec_acceptance.enabled` (only if spec decode on)
    - `detector.output_substring.enabled` (only if you have a target pattern)
    Also set `detector.stop_after_alert: false` so detectors keep running after first hit (catch multiple anomalies per run — the first hit is most likely root cause, later ones are downstream symptoms).
@@ -93,8 +93,8 @@ Sweep 跑了 ≥ 5 次真命中 (去 FP 后) 看命中模式:
 | `logits_finite` | Numerical instability → NaN/Inf in forward pass | Arm `dump_kv` + ref compare; if KV clean, bug is post-KV (logits/sampling) |
 | `token_logprob` (NaN flag) | NaN in logprob computation (post-softmax) | Same — closer to sampling head if KV matches ref |
 | `token_repeat` | Output degeneration (could be KV corruption or sampling bug) | `dump_kv` + `locate_first_divergence` (buggy vs ref) |
-| `block_kv` | KV cache corruption — **smoking gun for KV bug** | Go straight to `dump_kv` + per-layer compare vs ref |
-| `position_alignment` | Position-id / slot-mapping / block-table off-by-one | Inspect report coordinates + request `block_ids` in dump_kv; check P→D boundary |
+| `slot_consistency` | Wrong-block / cross-req KV at slot (token mismatch) | Inspect mismatches + `dump_kv`; offline verify |
+| `kv_slot_order` | Non-contiguous / jumped slot writes in a block | Inspect `violation` + offsets; often addressing / reuse bugs |
 | `spec_acceptance` | Spec decode mis-acceptance | Inspect draft/proposal scoring path |
 | `output_substring` | Specific leak/echo pattern | Narrow down which token position the pattern starts |
 
@@ -108,12 +108,15 @@ Sweep 跑了 ≥ 5 次真命中 (去 FP 后) 看命中模式:
 3. If `logits_finite` hits → arm `dump_kv`, verify, then ref-compare; if KV diverges, first bad layer from `locate_first_divergence`; if KV matches, bug is closer to logits/sampling
 4. If only `token_logprob` hits → bug is in logprob computation or sampling, not in forward KV write
 
-## Block timing / order (no dedicated detector yet)
+## Block / slot meta state machine
 
-If you suspect a race condition (block written by P after D already read it, double-written, or out-of-order block reuse):
-- Use `block_kv` — it catches the consequence of ordering bugs (stale or corrupted KV)
-- Capture `dump_kv` on hit; inspect report `block_ids` / wave metadata and compare buggy vs ref with `runtime-guard-ref-kv-dump`
-- Future work: a custom detector that records block write timestamps and flags out-of-order writes — would need a new `BlockOrderDetector` in `vllm_ascend/runtime_guard/detector/`
+`slot_consistency` / `kv_slot_order` share `KvBlockMetaTracker` states
+`UNKNOWN` → `SLOT_PARTIAL` → `BLOCK_SEALED_FILL` / `BLOCK_SEALED_LOAD`:
+- reshape / slot scatter → sequential writes; order anomalies → `kv_slot_order`
+- note_kv stamps tokens / first check + finish → `kv_slot_token` when `slot_consistency` on
+- H2D / PD recv → `on_block_load` (optional `num_tokens` → last block `SLOT_PARTIAL`); CoW → `on_block_copies`; zero → `invalidate`
+- Hooks today: reshape scatter; kv_offload H2D (`kv_load`); Mooncake recv (`pd_recv`); v1 CoW. No separate whole-block-overwrite incident until another overwrite path exists.
+- Capture `dump_kv` on hit; compare buggy vs ref with `runtime-guard-ref-kv-dump`
 
 ## Notes
 - Hot-reload requires `reload_interval_seconds > 0` (or `runtime_config_reload_interval > 0`); if 0, restart D / worker

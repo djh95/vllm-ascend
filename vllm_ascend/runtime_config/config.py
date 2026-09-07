@@ -62,6 +62,8 @@ from vllm_ascend.runtime_config._defaults import (
     DETECTOR_KEYS as _DETECTOR_KEYS,
     DETECTOR_SECTIONS as _DETECTOR_SECTIONS,
     DUMP_KEYS as _DUMP_KEYS,
+    INVARIANT_KEYS as _INVARIANT_KEYS,
+    INVARIANT_SECTIONS as _INVARIANT_SECTIONS,
     LOG_KEYS as _LOG_KEYS,
     REPORT_KEYS as _REPORT_KEYS,
     _DEFAULTS,
@@ -516,6 +518,7 @@ class RuntimeConfig:
             return cached
         dump = self._data.get("dump") or {}
         det = self._data.get("detector") or {}
+        inv = self._data.get("invariant") or {}
         report = self._data.get("report") or {}
         log = self._data.get("log") or {}
         input_filter = self._data.get("input_filter") or {}
@@ -527,18 +530,23 @@ class RuntimeConfig:
                 any_det = True
                 break
 
+        any_inv = False
+        for name in RuntimeConfig.INVARIANT_SECTIONS:
+            sec = inv.get(name)
+            if isinstance(sec, dict) and bool(sec.get("enabled", False)):
+                any_inv = True
+                break
+
         dump_on = self._auto_on_from_dump(dump) or self._manual_dump_active(
             dump.get("manual_dump", False)
         )
         print_out = bool(log.get("print_output_on_finish", False))
         print_in = bool(input_filter.get("print_input_token_ids_once", False))
-        block_meta = bool(report.get("block_last_write_wave", False)) or bool(
-            report.get("block_last_writer", False)
-        )
-        slot_meta = bool(report.get("slot_last_write", False))
+        block_meta = bool(report.get("block_state", False))
         save_sensitive = bool(report.get("save_sensitive_info", False))
         out_sub = bool((det.get("output_substring") or {}).get("enabled", False))
         tok_rep = bool((det.get("token_repeat") or {}).get("enabled", False))
+        finish_on = bool((det.get("finish") or {}).get("enabled", False))
         raw_filters = input_filter.get("filters", [])
         has_filters = bool(raw_filters)
 
@@ -555,13 +563,18 @@ class RuntimeConfig:
             print_out
             or out_sub
             or tok_rep
+            or finish_on
             or (any_det and save_sensitive)
+            or (any_inv and save_sensitive)
         )
-        needs_sample = any_det or print_out or block_meta or slot_meta
-        needs_filter = any_det or has_filters
+        # Invariants that run on the sample path (slot_consistency / …) need
+        # note_kv; logits_finite uses a separate pre-sample wrap.
+        needs_sample = any_det or any_inv or print_out or block_meta
+        needs_filter = any_det or any_inv or has_filters
 
         cached = {
             "any_detector": any_det,
+            "any_invariant": any_inv,
             "dump_enabled": dump_on,
             "needs_cumulative_io": needs_io,
             "needs_sample_phase_hooks": needs_sample,
@@ -584,6 +597,10 @@ class RuntimeConfig:
     def any_detector_enabled(self) -> bool:
         """True if at least one auto anomaly detector is enabled."""
         return bool(self._hot_path_gates_cached()["any_detector"])
+
+    def any_invariant_enabled(self) -> bool:
+        """True if at least one soft-assert invariant is enabled."""
+        return bool(self._hot_path_gates_cached()["any_invariant"])
 
     def needs_cumulative_io(self) -> bool:
         """True when sampled tokens must be appended to the IO store.
@@ -611,10 +628,12 @@ class RuntimeConfig:
 
     # Schema key sets live in ``_defaults``; re-exported on the class for callers.
     DETECTOR_SECTIONS = _DETECTOR_SECTIONS
+    INVARIANT_SECTIONS = _INVARIANT_SECTIONS
     DUMP_KEYS = _DUMP_KEYS
     LOG_KEYS = _LOG_KEYS
     REPORT_KEYS = _REPORT_KEYS
     DETECTOR_KEYS = _DETECTOR_KEYS
+    INVARIANT_KEYS = _INVARIANT_KEYS
 
     @staticmethod
     def detectors_enabled_in(data: dict[str, Any]) -> bool:
@@ -637,12 +656,16 @@ class RuntimeConfig:
             names.append("output_substring")
         if bool(self.detector_get("token_repeat", "enabled", False)):
             names.append("token_repeat")
-        if bool(self.detector_get("block_kv", "enabled", False)):
-            names.append("block_kv")
-        if bool(self.detector_get("position_alignment", "enabled", False)):
-            names.append("position")
-        if bool(self.detector_get("logits_finite", "enabled", False)):
+        if bool(self.invariant_get("slot_consistency", "enabled", False)):
+            names.append("slot_consistency")
+        if bool(self.invariant_get("kv_slot_order", "enabled", False)):
+            names.append("kv_slot_order")
+        if bool(self.invariant_get("kv_state", "enabled", False)):
+            names.append("kv_state")
+        if bool(self.invariant_get("logits_finite", "enabled", False)):
             names.append("logits_finite")
+        if bool(self.detector_get("finish", "enabled", False)):
+            names.append("finish")
         dump_on = self.dump_enabled()
         auto_on = self.auto_dump_on()
         max_times = self.dump_max_times()
@@ -940,24 +963,38 @@ class RuntimeConfig:
         report = self._data.get("report") or {}
         return bool(report.get("include_slot_mapping", False))
 
-    def report_block_last_write_wave(self) -> bool:
-        """Track and report each block's last KV-write wave."""
+    def report_block_state(self) -> bool:
+        """Track and report per-block slot meta state."""
         report = self._data.get("report") or {}
-        return bool(report.get("block_last_write_wave", False))
-
-    def report_block_last_writer(self) -> bool:
-        """Track and report each block's last writer ``req_id``."""
-        report = self._data.get("report") or {}
-        return bool(report.get("block_last_writer", False))
+        return bool(report.get("block_state", False))
 
     def report_block_meta_enabled(self) -> bool:
-        """True when any per-block write metadata tracking is on."""
-        return self.report_block_last_write_wave() or self.report_block_last_writer()
+        """True when per-block slot meta state tracking is on."""
+        return self.report_block_state()
 
-    def report_slot_last_write(self) -> bool:
-        """Track and report per-slot last write (writer / wave / ts / token id)."""
+    def report_kv_audit(self) -> bool:
+        """Edge hooks: reshape_and_cache / zero / offload H2D → block meta.
+
+        Explicit ``report.kv_audit`` or auto-on when ``report.block_state``
+        or slot meta invariants need the same meta stream.
+        """
         report = self._data.get("report") or {}
-        return bool(report.get("slot_last_write", False))
+        if bool(report.get("kv_audit", False)):
+            return True
+        if self.report_block_meta_enabled():
+            return True
+        if bool(self.invariant_get("slot_consistency", "enabled", False)):
+            return True
+        if bool(self.invariant_get("kv_slot_order", "enabled", False)):
+            return True
+        if bool(self.invariant_get("kv_state", "enabled", False)):
+            return True
+        return False
+
+    def report_kv_audit_pad_check(self) -> bool:
+        """When kv_audit is active: verify dummy/pad slot_mapping is all negative."""
+        report = self._data.get("report") or {}
+        return bool(report.get("kv_audit_pad_check", True))
 
     def dump_root(self) -> Path:
         """KV dump landing root; ``<incident_type>/<req_id>/`` under it.
@@ -994,6 +1031,30 @@ class RuntimeConfig:
     def detector_get(self, section: str, key: str, default: Any = None) -> Any:
         """Read ``detector.<section>.<key>``."""
         return self.detector_section(section).get(key, default)
+
+    @property
+    def invariant(self) -> dict[str, Any]:
+        sec = self._data.get("invariant")
+        return sec if isinstance(sec, dict) else {}
+
+    def invariant_section(self, name: str) -> dict[str, Any]:
+        """Return nested ``invariant.<name>`` object (empty dict if missing)."""
+        sec = self.invariant.get(name)
+        return sec if isinstance(sec, dict) else {}
+
+    def invariant_get(self, section: str, key: str, default: Any = None) -> Any:
+        """Read ``invariant.<section>.<key>``."""
+        return self.invariant_section(section).get(key, default)
+
+    def action_section_for(self, incident_type: str) -> dict[str, Any]:
+        """Config section that owns ``on_trigger`` for this incident type."""
+        # slot_consistency emits incident_type=kv_slot_token (section ≠ type).
+        section = {
+            "kv_slot_token": "slot_consistency",
+        }.get(incident_type, incident_type)
+        if section in self.INVARIANT_SECTIONS:
+            return self.invariant_section(section)
+        return self.detector_section(incident_type)
 
     # ---- detector placement (ExecScope scheduling) --------------------------
 

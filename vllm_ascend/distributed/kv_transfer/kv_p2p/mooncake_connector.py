@@ -575,6 +575,7 @@ class KVCacheRecvingThread(threading.Thread):
         remote_block_size=None,
         remote_port_send_num: dict[int, RemotePortInfo] | None = None,
         num_computed_tokens: int = 0,
+        num_external_tokens: int = 0,
         all_task_done: bool = False,
         shard_idx: int = 0,
         local_block_ids_replicate_k: BlockIds | None = None,
@@ -595,6 +596,7 @@ class KVCacheRecvingThread(threading.Thread):
             "remote_host": remote_host,
             "remote_handshake_port": remote_handshake_port,
             "num_computed_tokens": num_computed_tokens,
+            "num_external_tokens": num_external_tokens,
             "remote_port_send_num": remote_port_send_num,
             "all_task_done": all_task_done,
             "shard_idx": shard_idx,
@@ -755,6 +757,20 @@ class KVCacheRecvingThread(threading.Thread):
                             remote_request_id,
                             e,
                         )
+                    if not transfer_failed and not self._is_failed_recv_request(request_id):
+                        try:
+                            from vllm_ascend.runtime_guard.kv_audit import on_pd_recv_load
+
+                            on_pd_recv_load(
+                                req_meta.get("local_block_ids"),
+                                num_tokens=req_meta.get("num_external_tokens"),
+                                tag="pd_recv",
+                            )
+                        except Exception:
+                            logger.exception(
+                                "[kv_audit soft-fail] pd_recv load request_id=%s",
+                                request_id,
+                            )
                 self.task_tracker.update_done_task_count(request_id)
                 with self.proc_not_transfer_request_lock:
                     self.proc_not_transfer_request.pop(remote_request_id, None)
@@ -3732,6 +3748,7 @@ class MooncakeConnectorWorker:
                         remote_handshake_port=remote_handshake_port,
                         remote_port_send_num=remote_port_send_num,
                         num_computed_tokens=meta.num_computed_tokens,
+                        num_external_tokens=meta.num_external_tokens,
                         all_task_done=(
                             pcp_dcp_rank == len(remote_handshake_port_list) - 1
                             and remote_tp_offset == len(remote_ports) - 1

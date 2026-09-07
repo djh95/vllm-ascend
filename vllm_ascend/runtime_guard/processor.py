@@ -32,8 +32,18 @@ from vllm.distributed.parallel_state import get_pp_group
 from vllm_ascend.runtime_guard.incident import Incident
 from vllm_ascend.runtime_guard.detector.base import AnomalyDetector
 from vllm_ascend.runtime_guard.detector.manager import DetectorManager
-from vllm_ascend.runtime_guard.detector.position_alignment import num_computed_before
+from vllm_ascend.runtime_guard.invariant import (
+    SlotConsistencyState,
+    check_logits_finite,
+    num_computed_before,
+    rank_local_world,
+    resolve_check_scope,
+    should_run_invariant_check,
+)
+from vllm_ascend.runtime_guard.invariant.slot_consistency import INCIDENT_TYPE_ORDER
 
+INCIDENT_TYPE_STATE = "kv_state"
+from vllm_ascend.runtime_guard.request_state import RequestGuardStore
 from vllm_ascend.runtime_guard.input_filters import InputFilterManager, iter_batch_prompt_token_ids
 from vllm_ascend.runtime_guard.io_snapshot import RequestIoSnapshotManager
 from vllm_ascend.runtime_guard.kv_block_meta import (
@@ -41,8 +51,6 @@ from vllm_ascend.runtime_guard.kv_block_meta import (
     block_ids_for_request,
     resolve_block_size,
     slot_mapping_for_request,
-    slots_for_block_ids,
-    touched_block_ids,
 )
 from vllm_ascend.runtime_guard.manual_trigger import (
     ManualTriggerManager,
@@ -51,7 +59,6 @@ from vllm_ascend.runtime_guard.manual_trigger import (
 )
 from vllm_ascend.runtime_guard.rank_gate import dump_rank_tag, is_action_leader_rank
 from vllm_ascend.runtime_guard.report import ReportWriter
-from vllm_ascend.runtime_guard.request_state import RequestGuardStore
 from vllm_ascend.runtime_guard.tokenizer import load_model_tokenizer
 from vllm_ascend.runtime_guard.util import decode_token_ids
 from vllm_ascend.runtime_guard.action.executor import ActionExecutor
@@ -66,29 +73,6 @@ if TYPE_CHECKING:
     from vllm_ascend.runtime_config.config import RuntimeConfig
 
 logger = init_logger_ascend(__name__)
-
-
-def _block_kv_violated_block_ids(detail: dict[str, Any]) -> list[int]:
-    """Block ids that actually appear in ``block_kv`` ``violations`` (errored only)."""
-    raw = detail.get("violations")
-    if not isinstance(raw, list):
-        return []
-    out: list[int] = []
-    seen: set[int] = set()
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        if "block_id" not in row or not row.get("violation"):
-            continue
-        try:
-            bid = int(row["block_id"])
-        except (TypeError, ValueError):
-            continue
-        if bid in seen:
-            continue
-        seen.add(bid)
-        out.append(bid)
-    return out
 
 
 @dataclass
@@ -192,6 +176,7 @@ class RuntimeGuardProcessor:
         # WaveTracker.pending is the drain signal (replaces the dead store FIFO).
         RequestGuardStore.get().set_drain_probe(self.wave_tracker.pending)
         self.quota = DumpQuota(runtime_config)
+        self._sync_kv_audit()
         # Plan A report routing: the leader keeps the legacy report dir; every
         # other detection-eligible rank writes into its own rank-tagged
         # subdir, so per-rank reports/dumps never interleave. Analysis tools
@@ -225,6 +210,8 @@ class RuntimeGuardProcessor:
             detection_gate=self.action_executor.can_run_detection,
             detection_skip_reason=self.action_executor.anomaly_check_skip_reason,
         )
+        self._slot_consistency = SlotConsistencyState()
+        RequestGuardStore.get().register_on_clear(self._slot_consistency.clear_finished)
 
     def _rebind_runner(self, runner: Any) -> None:
         """Point nested components at a new runner (same process, rare rebuild)."""
@@ -336,6 +323,34 @@ class RuntimeGuardProcessor:
         logger.debug("[runtime_guard sync] leave stage=refresh_config changed=%s", changed)
         return changed
 
+    def _sync_kv_audit(self) -> None:
+        """Push report.kv_audit + block_size into the process-local bus.
+
+        When no consumer needs KV meta (``report_kv_audit()`` false), clear the
+        process-local tracker so host memory does not linger after disable.
+        """
+        try:
+            from vllm_ascend.runtime_guard import kv_audit
+
+            cfg = self.runtime_config
+            runner = self.runner
+            bs = int(getattr(runner, "block_size", 0) or 0)
+            if bs <= 0:
+                cache_cfg = getattr(getattr(runner, "vllm_config", None), "cache_config", None)
+                bs = int(getattr(cache_cfg, "block_size", 0) or 0)
+            enabled = bool(cfg.report_kv_audit())
+            kv_audit.configure(
+                enabled=enabled,
+                block_size=bs if bs > 0 else 16,
+                pad_check=bool(cfg.report_kv_audit_pad_check()),
+            )
+            if not enabled:
+                KvBlockMetaTracker.get().clear()
+            if not bool(cfg.invariant_get("slot_consistency", "enabled", False)):
+                self._slot_consistency.clear_all()
+        except Exception:
+            logger.exception("[runtime_guard soft-fail] _sync_kv_audit failed")
+
     def maybe_print_input_token_ids_once(self, *, allow_arm: bool = True) -> bool:
         """If ``input_filter.print_input_token_ids_once``, log prompts once then clear.
 
@@ -416,6 +431,7 @@ class RuntimeGuardProcessor:
         self._scheduler_output_for_step = scheduler_output
         try:
             self.wave_tracker.advance(allow_arm=allow_arm)
+            self._sync_kv_audit()
             cfg = self.runtime_config
             # Idle shell: no filters / one-shots / sample hooks armed.
             # - reload off (T1): config is static → advance only.
@@ -432,6 +448,7 @@ class RuntimeGuardProcessor:
             ):
                 return
             self.refresh_config(allow_arm=allow_arm, scheduler_output=scheduler_output)
+            self._sync_kv_audit()
             # When no feature needs prompt cache / finished-IO reap, skip the
             # extra work (reload path still syncs above).
             if self.needs_sample_phase_hooks():
@@ -518,9 +535,29 @@ class RuntimeGuardProcessor:
         io_mgr = RequestIoSnapshotManager.get()
         if self.runtime_config.log_print_output_on_finish():
             self._maybe_print_output_on_finish(reapable, io_mgr)
+        # Finish detector runs before clear so IO / block meta are still present.
+        self._soft_fail(
+            "check_on_finish",
+            lambda: self._emit_finish_reports(reapable),
+        )
+        self._soft_fail(
+            "slot_consistency_finish",
+            lambda: self._run_slot_consistency_finish(reapable),
+        )
         store.clear_many(reapable, detectors=self.detectors)
         if wave_tracker is not None:
             wave_tracker.discard_many(reapable)
+
+    def _emit_finish_reports(self, req_ids: list[str]) -> None:
+        """Write one finish report per reapable request when ``detector.finish`` is on."""
+        alerts = self.detectors.check_on_finish(req_ids)
+        if not alerts:
+            return
+        for alert in alerts:
+            self._handle_alert(
+                alert,
+                detector=self.detectors.get(alert.incident_type),
+            )
 
     def _maybe_print_output_on_finish(self, finished_req_ids: Any, io_mgr: RequestIoSnapshotManager) -> None:
         """Log output_token_ids + text for finished reqs (TP0 only).
@@ -723,21 +760,56 @@ class RuntimeGuardProcessor:
         logits_indices: Any = None,
         input_batch: Any = None,
     ) -> None:
-        """Pre-sample hook: logits finite + position alignment."""
+        """Pre-sample soft-assert: logits finite."""
         self._last_input_batch = input_batch
 
         def _run() -> None:
-            for alert in self.detectors.check_before_sample(
-                scheduler_output=scheduler_output,
-                logits=logits,
-                positions=positions,
-                total_scheduled_tokens=total_scheduled_tokens,
-                logits_indices=logits_indices,
-                input_batch=input_batch,
-            ):
-                self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
+            if not self.action_executor.can_run_detection():
+                return
+            cfg = self.runtime_config
+            local_world = rank_local_world(self.runner)
+            logits_on = bool(cfg.invariant_get("logits_finite", "enabled", False))
+            if not logits_on:
+                return
+            stop = bool(cfg.stop_after_alert())
+            skip = RequestGuardStore.get().stopped_req_ids() if stop else None
+            scope = resolve_check_scope(
+                "logits_finite",
+                cfg.invariant_get("logits_finite", "check_scope", "auto"),
+                rank_local_world=local_world,
+            )
+            if should_run_invariant_check(self.runner, check_scope=scope):
+                findings = check_logits_finite(
+                    runner=self.runner,
+                    logits=logits,
+                    logits_indices=logits_indices,
+                    input_batch=input_batch,
+                )
+                for alert in findings:
+                    if skip is not None and alert.req_id and alert.req_id in skip:
+                        continue
+                    self.emit_finding(alert)
 
         self._soft_fail("check_before_sample", _run)
+
+    def emit_finding(
+        self,
+        alert: Incident,
+        *,
+        write_report: bool = True,
+        arm_wave: int | None = None,
+        action_override: list[str] | None = None,
+    ) -> None:
+        """Write report / run on_trigger for a soft-assert finding (not a detector)."""
+        if bool(self.runtime_config.stop_after_alert()) and alert.req_id:
+            RequestGuardStore.get().get_or_create(alert.req_id).stopped_after_alert = True
+        self._handle_alert(
+            alert,
+            detector=None,
+            write_report=write_report,
+            arm_wave=arm_wave,
+            action_override=action_override,
+        )
 
     def check_after_sample(
         self,
@@ -859,7 +931,7 @@ class RuntimeGuardProcessor:
     ) -> None:
         if not write_report and action_override is None:
             return
-        if alert.block_ids is None or not alert.block_ids:
+        if alert.req_id and (alert.block_ids is None or not alert.block_ids):
             alert.block_ids = block_ids_for_request(
                 self.runner,
                 alert.req_id,
@@ -874,26 +946,31 @@ class RuntimeGuardProcessor:
             detector.on_alert_armed(alert)
         detail = alert.to_report_detail()
         include_ids = self.runtime_config.report_save_sensitive_info()
-        io_mgr = RequestIoSnapshotManager.get()
-        snap = io_mgr.snapshot(
-            self.runner,
-            alert.req_id,
-            alert.req_idx,
-            include_token_ids=include_ids,
-            scheduler_output=getattr(self, "_scheduler_output_for_step", None),
-        )
-        detail = io_mgr.merge_into_detail(detail, snap)
-        detail = self._enrich_detail_with_block_meta(
-            detail,
-            alert.req_id,
-            alert.req_idx,
-            incident_type=alert.incident_type,
-        )
-        if self.runtime_config.log_print_sampling_meta():
-            try:
-                self.save_sample_param(alert.req_id)
-            except Exception as exc:
-                logger.warning("[runtime_guard] save_sample_param failed req_id=%s: %s", alert.req_id, exc)
+        if alert.req_id:
+            io_mgr = RequestIoSnapshotManager.get()
+            snap = io_mgr.snapshot(
+                self.runner,
+                alert.req_id,
+                alert.req_idx,
+                include_token_ids=include_ids,
+                scheduler_output=getattr(self, "_scheduler_output_for_step", None),
+            )
+            detail = io_mgr.merge_into_detail(detail, snap)
+            detail = self._enrich_detail_with_block_meta(
+                detail,
+                alert.req_id,
+                alert.req_idx,
+                incident_type=alert.incident_type,
+            )
+            if self.runtime_config.log_print_sampling_meta():
+                try:
+                    self.save_sample_param(alert.req_id)
+                except Exception as exc:
+                    logger.warning(
+                        "[runtime_guard] save_sample_param failed req_id=%s: %s",
+                        alert.req_id,
+                        exc,
+                    )
         self.action_executor.handle(
             alert,
             detail=detail,
@@ -962,24 +1039,65 @@ class RuntimeGuardProcessor:
             write_report=write_report,
         )
 
+    def _run_slot_consistency_finish(self, req_ids: list[str]) -> None:
+        """Full-prefix slot check at finish (before meta clear on reap)."""
+        if not bool(self.runtime_config.invariant_get("slot_consistency", "enabled", False)):
+            return
+        if not self.action_executor.can_run_detection():
+            return
+        runner = self.runner
+        scope = resolve_check_scope(
+            "slot_consistency",
+            self.runtime_config.invariant_get("slot_consistency", "check_scope", "auto"),
+            rank_local_world=rank_local_world(runner),
+        )
+        if not should_run_invariant_check(runner, check_scope=scope):
+            return
+        block_size = resolve_block_size(runner)
+        skip = (
+            RequestGuardStore.get().stopped_req_ids()
+            if self.runtime_config.stop_after_alert()
+            else None
+        )
+        io_mgr = RequestIoSnapshotManager.get()
+        for req_id in req_ids:
+            if not req_id or (skip is not None and str(req_id) in skip):
+                continue
+            snap = io_mgr.snapshot(runner, str(req_id), None, include_token_ids=True, use_cache=False)
+            seq = list(snap.prompt_token_ids or []) + list(snap.output_token_ids or [])
+            all_ids = block_ids_for_request(runner, str(req_id), None)
+            if not all_ids or not seq:
+                continue
+            for alert in self._slot_consistency.check_request(
+                runner=runner,
+                req_id=str(req_id),
+                req_idx=None,
+                seq=seq,
+                block_ids=all_ids,
+                block_size=block_size,
+                phase="finish",
+            ):
+                self.emit_finding(alert)
+
     def note_kv_block_writes(
         self,
         scheduler_output: Any | None = None,
         *,
         input_batch: Any = None,
     ) -> None:
-        """Record per-block last-write wave/writer after a real forward wrote KV.
+        """Record block / slot write meta after a real forward wrote KV.
 
-        No-op when both ``report.block_last_write_wave`` and
-        ``report.block_last_writer`` are false, ``report.slot_last_write`` is
-        false, and ``detector.block_kv.enabled`` is false. Uses scheduled token
-        counts to mark only the blocks / slots touched this step.
+        No-op when ``report.block_state``, ``invariant.slot_consistency``,
+        ``invariant.kv_slot_order``, and ``invariant.kv_state`` are all off.
+        Slot tokens are stored only when ``slot_consistency`` is on;
+        ``block_state`` / order / state alone advance the ledger with
+        ``token_id=None``.
         """
-        need_meta = self.runtime_config.report_block_meta_enabled()
-        need_slots = self.runtime_config.report_slot_last_write()
-        need_slot_det = self.detectors.slot_consistency_enabled()
-        need_block_det = bool(self.runtime_config.detector_get("block_kv", "enabled", False))
-        if not need_meta and not need_slots and not need_slot_det and not need_block_det:
+        need_block_state = self.runtime_config.report_block_meta_enabled()
+        need_slot_det = bool(self.runtime_config.invariant_get("slot_consistency", "enabled", False))
+        need_slot_order = bool(self.runtime_config.invariant_get("kv_slot_order", "enabled", False))
+        need_kv_state = bool(self.runtime_config.invariant_get("kv_state", "enabled", False))
+        if not need_block_state and not need_slot_det and not need_slot_order and not need_kv_state:
             return
         runner = self.runner
         so = scheduler_output if scheduler_output is not None else getattr(self, "_scheduler_output_for_step", None)
@@ -988,26 +1106,28 @@ class RuntimeGuardProcessor:
         num_scheduled = getattr(so, "num_scheduled_tokens", None)
         if not isinstance(num_scheduled, dict) or not num_scheduled:
             return
-        wave_tracker = getattr(self, "wave_tracker", None)
-        wave = 0
-        if wave_tracker is not None:
-            try:
-                wave = int(wave_tracker.current_wave())
-            except (TypeError, ValueError):
-                wave = 0
-        block_size = int(getattr(runner, "block_size", 0) or 0)
-        if block_size <= 0:
-            cache_cfg = getattr(getattr(runner, "vllm_config", None), "cache_config", None)
-            block_size = int(getattr(cache_cfg, "block_size", 0) or 0)
-        if block_size <= 0:
-            block_size = 16
+        block_size = resolve_block_size(runner)
         tracker = KvBlockMetaTracker.get()
         if input_batch is None:
             input_batch = getattr(runner, "input_batch", None)
         req_id_to_index = getattr(input_batch, "req_id_to_index", None) if input_batch else None
         req_ids = list(getattr(input_batch, "req_ids", None) or [])
-        # S12 fix: build index once → O(1) lookup instead of O(n) .index() per req.
         req_id_to_idx_local = {rid: i for i, rid in enumerate(req_ids) if rid}
+        rl_world = rank_local_world(runner)
+        order_scope = None
+        if need_slot_order and self.action_executor.can_run_detection():
+            order_scope = resolve_check_scope(
+                "kv_slot_order",
+                self.runtime_config.invariant_get("kv_slot_order", "check_scope", "auto"),
+                rank_local_world=rl_world,
+            )
+        state_scope = None
+        if need_kv_state and self.action_executor.can_run_detection():
+            state_scope = resolve_check_scope(
+                "kv_state",
+                self.runtime_config.invariant_get("kv_state", "check_scope", "auto"),
+                rank_local_world=rl_world,
+            )
         for req_id, n_sched in num_scheduled.items():
             if not req_id:
                 continue
@@ -1030,8 +1150,6 @@ class RuntimeGuardProcessor:
             )
             if not all_ids:
                 continue
-            # Wave-before count: at note_kv_block_writes time (after forward,
-            # before next scheduler update) this is still pre-step computed.
             computed_before = num_computed_before(
                 runner,
                 str(req_id),
@@ -1041,25 +1159,14 @@ class RuntimeGuardProcessor:
             )
             if computed_before is None:
                 logger.debug(
-                    "[Anomaly block_kv] skip req_id=%s: num_computed_before unknown (kv_cache_group=0 only)",
+                    "[runtime_guard note_kv] skip req_id=%s: num_computed_before unknown",
                     req_id,
                 )
                 continue
-            touched = touched_block_ids(
-                all_ids,
-                block_size=block_size,
-                num_computed_before=computed_before,
-                num_scheduled=scheduled,
-            )
-            if not touched:
-                continue
-            for alert in self.detectors.check_kv_block_writes(str(req_id), touched, wave):
-                self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
-            tracker.record_writes(str(req_id), touched, wave)
-            # Slot record + consistency share one snapshot (prompt + cumulative
-            # output at note time = every token whose KV exists for this req).
-            seq: list[int] | None = None
-            if need_slots or need_slot_det:
+            seq: list[int] = []
+            output_len = 0
+            entries_with_tokens: list[tuple[int, int | None]] | None = None
+            if need_slot_det or need_kv_state:
                 snap = RequestIoSnapshotManager.get().snapshot(
                     runner,
                     str(req_id),
@@ -1067,44 +1174,153 @@ class RuntimeGuardProcessor:
                     include_token_ids=True,
                 )
                 seq = list(snap.prompt_token_ids or []) + list(snap.output_token_ids or [])
-            if need_slots:
-                self._record_slot_writes(
-                    str(req_id),
+                try:
+                    output_len = int(getattr(snap, "output_token_count", 0) or 0)
+                except (TypeError, ValueError):
+                    output_len = 0
+                if output_len <= 0:
+                    output_len = len(snap.output_token_ids or [])
+            if need_slot_det:
+                entries = self._slot_write_entries(
                     all_ids,
                     block_size=block_size,
                     computed_before=computed_before,
                     scheduled=scheduled,
-                    seq=seq or [],
+                    seq=seq,
                 )
-            if need_slot_det:
-                for alert in self.detectors.check_slot_consistency(
-                    req_id=str(req_id),
-                    req_idx=req_idx,
-                    seq=seq or [],
-                    block_ids=all_ids,
+            else:
+                entries = self._slot_write_entries(
+                    all_ids,
                     block_size=block_size,
                     computed_before=computed_before,
                     scheduled=scheduled,
+                    seq=[],
+                )
+                if need_kv_state and seq:
+                    entries_with_tokens = self._slot_write_entries(
+                        all_ids,
+                        block_size=block_size,
+                        computed_before=computed_before,
+                        scheduled=scheduled,
+                        seq=seq,
+                    )
+            if entries and (
+                need_block_state or need_slot_det or need_slot_order or need_kv_state
+            ):
+                # Prefill / PD first continuation often has output_len==0 while
+                # writing into a load-sealed partial tail block — degrade+account
+                # without kv_state alert. Once outputs exist, nonzero sealed
+                # rewrite alerts.
+                alert_sealed_nonzero = True
+                if need_kv_state:
+                    alert_sealed_nonzero = output_len > 0
+                findings = tracker.merge_slot_writes(
+                    entries,
+                    block_size=block_size,
+                    alert_sealed_nonzero=alert_sealed_nonzero,
+                )
+                skip = (
+                    RequestGuardStore.get().stopped_req_ids()
+                    if self.runtime_config.stop_after_alert()
+                    else None
+                )
+                stopped = skip is not None and str(req_id) in skip
+                if (
+                    need_kv_state
+                    and state_scope is not None
+                    and not stopped
+                    and should_run_invariant_check(runner, check_scope=state_scope)
                 ):
-                    self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
+                    tok_by_slot: dict[int, int | None] = {}
+                    if need_slot_det:
+                        tok_by_slot = {int(s): t for s, t in entries}
+                    elif entries_with_tokens:
+                        tok_by_slot = {int(s): t for s, t in entries_with_tokens}
+                    for violation in findings.state:
+                        detail: dict[str, Any] = {
+                            "violation": violation.violation,
+                            "block_id": violation.block_id,
+                            "offsets": list(violation.offsets),
+                        }
+                        if violation.prev_source is not None:
+                            detail["prev_source"] = violation.prev_source
+                        if getattr(violation, "prev_state_name", None) is not None:
+                            detail["prev_state_name"] = violation.prev_state_name
+                        if tok_by_slot:
+                            tids = [
+                                tok_by_slot.get(int(violation.block_id) * block_size + int(off))
+                                for off in violation.offsets
+                            ]
+                            if any(t is not None for t in tids):
+                                detail["token_ids"] = list(tids)
+                        elif violation.token_ids is not None:
+                            detail["token_ids"] = list(violation.token_ids)
+                        self.emit_finding(
+                            Incident(
+                                incident_type=INCIDENT_TYPE_STATE,
+                                req_id=str(req_id),
+                                req_idx=req_idx,
+                                detail=detail,
+                            )
+                        )
+                if (
+                    need_slot_order
+                    and order_scope is not None
+                    and not stopped
+                    and should_run_invariant_check(runner, check_scope=order_scope)
+                ):
+                    for violation in findings.order:
+                        self.emit_finding(
+                            Incident(
+                                incident_type=INCIDENT_TYPE_ORDER,
+                                req_id=str(req_id),
+                                req_idx=req_idx,
+                                detail={
+                                    "block_id": violation.block_id,
+                                    "violation": violation.violation,
+                                    "expected_offset": violation.expected_offset,
+                                    "offsets": list(violation.offsets),
+                                },
+                            )
+                        )
+            if need_slot_det and self.action_executor.can_run_detection():
+                scope = resolve_check_scope(
+                    "slot_consistency",
+                    self.runtime_config.invariant_get(
+                        "slot_consistency", "check_scope", "auto"
+                    ),
+                    rank_local_world=rl_world,
+                )
+                if should_run_invariant_check(runner, check_scope=scope):
+                    skip = (
+                        RequestGuardStore.get().stopped_req_ids()
+                        if self.runtime_config.stop_after_alert()
+                        else None
+                    )
+                    if skip is None or str(req_id) not in skip:
+                        for alert in self._slot_consistency.check_request(
+                            runner=runner,
+                            req_id=str(req_id),
+                            req_idx=req_idx,
+                            seq=seq or [],
+                            block_ids=all_ids,
+                            block_size=block_size,
+                            computed_before=computed_before,
+                            scheduled=scheduled,
+                            phase="first",
+                        ):
+                            self.emit_finding(alert)
 
-    def _record_slot_writes(
+    def _slot_write_entries(
         self,
-        req_id: str,
         all_ids: list[int],
         *,
         block_size: int,
         computed_before: int,
         scheduled: int,
         seq: list[int],
-    ) -> None:
-        """Stamp per-slot last write with the token whose KV lands at that slot.
-
-        This step writes KV for sequence positions ``[computed_before,
-        computed_before+scheduled)``; those tokens are inputs of this forward,
-        i.e. all present in ``seq`` (prompt + cumulative output at note time;
-        this step's samples are appended later by ``check_after_sample``).
-        """
+    ) -> list[tuple[int, int | None]]:
+        """Build ``(slot, token_id)`` pairs for this step's KV writes."""
         entries: list[tuple[int, int | None]] = []
         for pos in range(max(0, computed_before), max(0, computed_before) + scheduled):
             bi = pos // block_size
@@ -1113,8 +1329,7 @@ class RuntimeGuardProcessor:
             slot = int(all_ids[bi]) * block_size + (pos % block_size)
             token = seq[pos] if pos < len(seq) else None
             entries.append((slot, token))
-        if entries:
-            KvBlockMetaTracker.get().record_slot_writes(req_id, entries)
+        return entries
 
     def _enrich_detail_with_block_meta(
         self,
@@ -1124,55 +1339,18 @@ class RuntimeGuardProcessor:
         *,
         incident_type: str | None = None,
     ) -> dict[str, Any]:
-        """Attach ``block_ids`` / ``blocks`` / ``slot_mapping`` per report.* flags.
-
-        Only ``block_kv`` alerts force ``violated_blocks`` (last writer/wave) for
-        **errored blocks only** (ids listed in ``detail.violations``), ignoring
-        ``report.block_last_writer`` / ``report.block_last_write_wave``.
-        Full-request ``blocks[]`` still follows those report flags.
-        All other anomaly types / manual reports follow report flags strictly.
-        """
+        """Attach ``block_ids`` / ``blocks`` / ``slot_mapping`` per report.* flags."""
         include_ids = self.runtime_config.report_include_block_ids()
         include_slots = self.runtime_config.report_include_slot_mapping()
-        include_wave = self.runtime_config.report_block_last_write_wave()
-        include_writer = self.runtime_config.report_block_last_writer()
-        include_slot_meta = self.runtime_config.report_slot_last_write()
-        force_kv_writer = incident_type == "block_kv"
-        violated_ids = _block_kv_violated_block_ids(detail) if force_kv_writer else []
-        if force_kv_writer and not violated_ids:
-            force_kv_writer = False
-        if (
-            not include_ids
-            and not include_slots
-            and not include_wave
-            and not include_writer
-            and not include_slot_meta
-            and not force_kv_writer
-        ):
+        include_block_state = self.runtime_config.report_block_state()
+        if not include_ids and not include_slots and not include_block_state:
             return detail
         out = dict(detail)
         ids = block_ids_for_request(self.runner, req_id, req_idx)
-        if include_ids or include_wave or include_writer:
+        if include_ids or include_block_state:
             out["block_ids"] = ids
-        if include_wave or include_writer:
-            out["blocks"] = KvBlockMetaTracker.get().blocks_detail(
-                ids,
-                include_wave=include_wave,
-                include_writer=include_writer,
-                include_creation=True,
-            )
-        if include_slot_meta:
-            # Sparse: only slots that were written while tracking was on.
-            out["slots"] = KvBlockMetaTracker.get().slots_detail(
-                slots_for_block_ids(ids, block_size=resolve_block_size(self.runner))
-            )
-        if force_kv_writer:
-            # Errored blocks only — not the full request block table.
-            out["violated_blocks"] = KvBlockMetaTracker.get().blocks_detail(
-                violated_ids,
-                include_wave=True,
-                include_writer=True,
-            )
+        if include_block_state:
+            out["blocks"] = KvBlockMetaTracker.get().blocks_detail(ids)
         if include_slots:
             got = slot_mapping_for_request(
                 self.runner,

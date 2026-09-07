@@ -15,7 +15,7 @@ All perf tests are comparisons between two of these terminal states. A
 | **T0** | merge-base `37e382498` (NO runtime_guard code) | — | — | — | Pure upstream vllm-ascend; no `RuntimeGuardProcessor.bind` |
 | **T1** | current HEAD | none (plain `vllm serve ...`) | `0` (default) | all off | Guard infra loaded but everything off (production "set-and-forget" shape) |
 | **T2** | current HEAD | `runtime_config_path=...` + `runtime_config_reload_interval=3` | `3` | all off | Guard infra + hot-reload ON, detectors off (test harness shape) |
-| **T3** | current HEAD | same as T2 | `3` | 6 enabled (spec_acceptance/output_substring/token_repeat/block_kv/position_alignment/logits_finite) | Guard + hot-reload + active detection |
+| **T3** | current HEAD | same as T2 | `3` | enabled (spec_acceptance/output_substring/token_repeat/slot_consistency/logits_finite) | Guard + hot-reload + active detection |
 
 Note: T0 requires `git worktree add <path> 37e382498` (or `git checkout`).
 csrc is unchanged between merge-base and HEAD, so **no `.so` rebuild needed**.

@@ -865,6 +865,16 @@ class NPUModelRunner(GPUModelRunner):
 
         self._apply_pp_sampled_tokens_from_scheduler_output(scheduler_output)
         sampling_metadata = super()._update_states(scheduler_output)
+        # Parent already ran physical CoW via copy_kv_cache_blocks_inplace;
+        # mirror src→dst in the KV meta ledger when audit is on.
+        copies = getattr(scheduler_output, "kv_cache_block_copies", None)
+        if copies:
+            try:
+                from vllm_ascend.runtime_guard.kv_audit import on_block_copies
+
+                on_block_copies(copies, block_size=int(getattr(self, "block_size", 0) or 0) or None)
+            except Exception:
+                logger.exception("[kv_audit soft-fail] CoW meta clone")
         self._track_tmp_encoder_cache_refs(scheduler_output)
         return sampling_metadata
 
@@ -3340,6 +3350,16 @@ class NPUModelRunner(GPUModelRunner):
                 # Fill unused with -1. Needed for reshape_and_cache in full cuda
                 # graph mode. `blk_table_tensor` -1 to match mamba PAD_SLOT_ID
                 slot_mapping[num_tokens:num_tokens_padded].fill_(-1)
+                if num_tokens_padded > num_tokens:
+                    try:
+                        from vllm_ascend.runtime_guard.kv_audit import check_pad_slots
+
+                        check_pad_slots(
+                            slot_mapping[num_tokens:num_tokens_padded],
+                            where="prepare_inputs_pad",
+                        )
+                    except Exception:
+                        pass
                 blk_table_tensor[num_reqs:num_reqs_padded].fill_(0)
             if self.model_config.enable_return_routed_experts and kv_cache_gid == 0:
                 if self.routed_experts_initialized:
@@ -3831,6 +3851,15 @@ class NPUModelRunner(GPUModelRunner):
                     for kv_cache_gid in range(len(self.kv_cache_config.kv_cache_groups)):
                         blk_table = self.input_batch.block_table[kv_cache_gid]
                         blk_table.slot_mapping.gpu.fill_(-1)
+                        try:
+                            from vllm_ascend.runtime_guard.kv_audit import check_pad_slots
+
+                            check_pad_slots(
+                                blk_table.slot_mapping.gpu,
+                                where="dummy_run",
+                            )
+                        except Exception:
+                            pass
 
                 pad_attn = cudagraph_runtime_mode == CUDAGraphMode.FULL
                 # check how to build dummy

@@ -113,8 +113,7 @@ Before any work, judge whether runtime_guard is the right tool for the bug class
 
 **runtime_guard 能解决 (proceed)**:
 - 输出层异常: 复读 (token_repeat), 生僻字/乱码 (token_logprob), NaN logits (logits_finite), 输出含特定字符串 (output_substring)
-- KV block 元数据错位/重写冲突 (block_kv)
-- Position-id 错位 (position_alignment)
+- Slot token 与序列不一致 / 串用别人 KV (slot_consistency)
 - Spec decode 接受率异常 (spec_acceptance)
 
 **runtime_guard 有帮助但需配合 dump_kv + ref 对比 (proceed with caveat)**:
@@ -165,11 +164,9 @@ Q3: 输出异常具体是哪类? (可多选, 同时开多个 detector)
 │   → output_substring (需预知 pattern)
 ├─ E6. Spec decode (MTP/Eagle) 接受率异常
 │   → spec_acceptance (需 spec decode on)
-├─ E7. 怀疑 KV block 写入错 (block 重用错 / 写入顺序乱 / writer 冲突)
-│   → block_kv + dump_kv + ref compare
-├─ E8. 怀疑 position-id 错位 (RoPE 相关, 1-D text path)
-│   → position_alignment
-└─ E9. 具体类未定 (PD 分离 / 多 detector 候选)
+├─ E7. 怀疑用了别的请求的 KV (slot token ≠ 本请求序列)
+│   → slot_consistency + dump_kv
+└─ E8. 具体类未定 (PD 分离 / 多 detector 候选)
     → 全开 sweep (走 runtime-guard-detector-sweep), 让数据说话
 ```
 

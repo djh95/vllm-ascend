@@ -3,8 +3,8 @@ name: runtime-guard-analysis
 description: >-
   Analyze runtime_guard anomaly reports and per-request KV .pt dumps. Use when
   the user mentions runtime_guard report JSON, kv_cache dumps, dump_kv,
-  correlate req_id, nan/inf in KV, or post-mortem of token_repeat / block_kv /
-  manual_trigger captures.
+  correlate req_id, nan/inf in KV, or post-mortem of token_repeat / kv_slot_token /
+  kv_slot_order / manual_trigger captures.
 ---
 
 # runtime_guard analysis
