@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared lazy model-tokenizer loading for DFX detectors / report decode.
+"""Shared lazy model-tokenizer loading for runtime_guard detectors / report decode.
 
 Both the report tokenizer (``RuntimeGuardProcessor``) and the output-substring detector
 need the model tokenizer. This single helper keeps the ``cached_tokenizer_from_config``

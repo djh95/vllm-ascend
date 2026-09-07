@@ -82,7 +82,7 @@ def iter_local_request_rows(
 
 @dataclass(slots=True)
 class TriggerEvent:
-    """One control-plane trigger consumed from DFX runtime config."""
+    """One control-plane trigger consumed from runtime_config."""
 
     trigger_type: str
     req_id: str

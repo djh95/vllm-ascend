@@ -59,7 +59,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         # Throttle INFO short logs (per req) so TP0 is not flooded.
         self._short_log_ts: dict[str, float] = {}
         self._short_log_interval_s = 2.0
-        # Live knobs from DFX JSON only.
+        # Live knobs from runtime_config JSON only.
         if runtime_config is not None:
             self.refresh_from_config()
 
@@ -83,7 +83,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         """Batch entry: return alerts for the model runner to hand to Dumper.
 
         Note: this detector does **not** accumulate accepted output tokens into
-        the DFX cumulative IO buffer. IO is appended once in
+        the runtime_guard cumulative IO buffer. IO is appended once in
         ``DetectorManager.check_after_sample`` from validated sampled ids
         (avoids MTP double-count when both hooks run).
 

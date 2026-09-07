@@ -337,7 +337,7 @@ def prompt_token_ids_for_request(
     """Best-effort prompt token ids from runner request state / input batch / MRV2."""
     if runner is None:
         return None
-    # Bug #9 fix: prefer DFX-owned cache populated from scheduler_output on
+    # Bug #9 fix: prefer runtime_guard-owned cache populated from scheduler_output on
     # first prefill wave. v2 RequestState.all_token_ids is a StagedWriteTensor
     # whose host mirror is 0 until apply_staged_writes commits; v2 also pops
     # req_id from req_id_to_index on finish, so post-finish snapshots return

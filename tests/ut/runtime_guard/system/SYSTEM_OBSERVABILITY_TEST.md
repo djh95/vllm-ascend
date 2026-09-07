@@ -6,7 +6,7 @@
 >
 > **PR-A note:** online KV write-meta (`note_kv_block_writes` / `KvBlockMetaTracker`
 > wave ledger / `block_kv`) is **not** wired. Ignore L6 and tracker growth
-> checks until the KV-meta follow-up. UT expect ≈ **69 passed** on this branch.
+> checks until the KV-meta follow-up. UT expect ≈ **75 passed** on this branch.
 
 ## 0. Pre-flight (every section depends on this)
 
@@ -18,7 +18,7 @@ docker exec test-mrv2 bash -lc '
     || { echo "HEAD != origin; run: git pull --ff-only"; exit 1; }
   python -m pytest tests/ut/runtime_guard/ -q 2>&1 | tail -3
 '
-# Expect: 69 passed (or higher on follow-up branches)
+# Expect: 75 passed (or higher on follow-up branches)
 ```
 
 ```bash
@@ -296,7 +296,7 @@ with this template, parameterized by an env file.
 
 - **`logging.disable(NOTSET)` stuck**: `apply_ascend_log_level` clears it at entry (logger.py:99). Verify with M8 repeated toggle — if 2nd toggle fails to re-apply, the stuck-disable regression came back.
 - **`vllm.handlers.level=INFO` gates `vllm.*` DEBUG**: prior fix added `setLevel(DEBUG)` on `vllm.logger`. M2 must verify `vllm.engine_llm` DEBUG actually prints, not just `vllm_ascend.*` DEBUG.
-- **Non-DFX branch uses `vllm` root logger**: handlers' level gate still applies. M5 + M8 together cover this.
+- **Without runtime_guard, branch uses `vllm` root logger**: handlers' level gate still applies. M5 + M8 together cover this.
 - **Hot-reload takes 1 step to pick up**: always send warmup request after config edit, then wait ≥ `reload_interval_seconds` (default 3) + 1.
 
 ## 4. Auto-runner script

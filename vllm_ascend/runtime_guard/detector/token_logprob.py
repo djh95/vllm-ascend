@@ -55,7 +55,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
         self._ill_window_hits: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         self._ill_detector: Any | None = None
         self._ill_detector_init_failed = False
-        # Live knobs from DFX JSON only.
+        # Live knobs from runtime_config JSON only.
         if runtime_config is not None:
             self.refresh_from_config()
 
@@ -151,7 +151,7 @@ class TokenLogprobDetector(ConfigBackedDetector):
             if log_leader:
                 logger.info_once(
                     "[runtime_guard: token_logprob short] skip: detector.token_logprob.enabled=false "
-                    "in live DFX config (edit JSON + runtime_config_reload_interval>0, or set "
+                    "in live runtime_config (edit JSON + runtime_config_reload_interval>0, or set "
                     "true before start; look for '[runtime_guard runtime_config] updated')"
                 )
             return []

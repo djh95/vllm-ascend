@@ -60,7 +60,7 @@ def _inner_dp_world_or_none():
 
 
 def _runtime_config_sync_group_or_none():
-    """Process group for DFX config broadcast, or None → local file poll.
+    """Process group for runtime_config broadcast, or None → local file poll.
 
     Never return the full multi-DP ``get_world_group()`` when ``dp_size>1``:
     after a request, one EngineCore may still ``execute_dummy_batch`` while the
@@ -112,7 +112,7 @@ def _process_role_tag() -> str:
 
 
 def _is_json_writer() -> bool:
-    """True if this process may write the DFX JSON (one leader per EngineCore).
+    """True if this process may write the runtime_config JSON (one leader per EngineCore).
 
     Order:
     1. ``inner_dp_world`` first rank (per-DP monitor when the group exists)

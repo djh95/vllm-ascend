@@ -230,7 +230,7 @@ class RuntimeGuardProcessor:
         allow_arm: bool = True,
         scheduler_output: Any | None = None,
     ) -> bool:
-        """All-rank DFX config sync. Must not be skipped on early PP.
+        """All-rank runtime_config sync. Must not be skipped on early PP.
 
         ``allow_arm``: False on idle ``execute_dummy_batch``. Config sync still
         runs. ``dump.manual_trigger`` is **not** consumed on the dummy path — only a real
@@ -359,7 +359,7 @@ class RuntimeGuardProcessor:
         allow_arm: bool = True,
         scheduler_output: Any | None = None,
     ) -> None:
-        """Lockstep DFX sync for one engine wave (real step or idle dummy).
+        """Lockstep runtime_guard sync for one engine wave (real step or idle dummy).
 
         ``refresh_config`` uses the per-DP sync group (or local file poll) and
         must run on every rank of that EngineCore each wave — including idle
@@ -497,7 +497,7 @@ class RuntimeGuardProcessor:
     def _maybe_print_output_on_finish(self, finished_req_ids: Any, io_mgr: RequestIoSnapshotManager) -> None:
         """Log output_token_ids + text for finished reqs (TP0 only).
 
-        Content comes from DFX cumulative IO accumulated while
+        Content comes from runtime_guard cumulative IO accumulated while
         ``log.print_output_on_finish`` was true on sample steps (no historical
         backfill). Mid-request hot-enable may print a partial sequence or
         ``output_token_count=0`` / empty text if nothing was appended after
@@ -543,7 +543,7 @@ class RuntimeGuardProcessor:
         return self.detectors.any_enabled_for_spec()
 
     def needs_sample_phase_hooks(self) -> bool:
-        """True when sample-phase DFX hooks must run (else pure ``sample_fn``).
+        """True when sample-phase runtime_guard hooks must run (else pure ``sample_fn``).
 
         Missing ``runtime_config`` (bare test doubles) defaults to True so
         soft-fail / wiring tests still exercise the hook chain.
@@ -583,7 +583,7 @@ class RuntimeGuardProcessor:
         self.wave_tracker.record_sample_waves(req_ids)
 
 
-    # ---- single sink for the 7 post-pre-sample DFX hooks ---------------
+    # ---- single sink for post-pre-sample runtime_guard hooks ---------------
 
     def run_sample_phase(
         self,
@@ -596,7 +596,7 @@ class RuntimeGuardProcessor:
         routed_experts_fn: Callable[["SamplePhaseResult"], Any] | None = None,
         accepted_token_nums_fn: Callable[["SamplePhaseResult"], Any] | None = None,
     ) -> tuple["SamplePhaseResult", Any]:
-        """Single sink for the 7 post-pre-sample DFX hooks (Option α refactor).
+        """Single sink for post-pre-sample runtime_guard hooks.
 
         Replaces 7 inline ``self.runtime_guard.*`` calls scattered across
         ``NPUModelRunner.sample_tokens`` with one orchestration call so

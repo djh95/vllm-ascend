@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Small shared helpers used across DFX modules (no DFX dependencies)."""
+"""Small shared helpers used across runtime_guard modules."""
 
 from __future__ import annotations
 

@@ -27,7 +27,7 @@ this manager as a second per-req state owner — finish cleanup is
 ``RequestGuardStore.clear`` only.
 
 Async scheduling leaves runner ``req_output_token_ids`` as ``-1`` placeholders
-unless logits processors need real ids; DFX therefore prefers Store-built
+unless logits processors need real ids; runtime_guard therefore prefers Store-built
 cumulative ids for counts and report bodies.
 """
 
@@ -78,7 +78,7 @@ def _raw_output_token_ids(runner: Any, req_id: str, req_idx: int | None) -> Any:
 
 
 def output_token_count_for_request(runner: Any, req_id: str, req_idx: int | None = None) -> int:
-    """Length of cumulative output; prefer DFX Store list when present."""
+    """Length of cumulative output; prefer runtime_guard Store list when present."""
     st = RequestGuardStore.get().get_state(req_id)
     built = len(st.output_token_ids) if st is not None else 0
     if built > 0:

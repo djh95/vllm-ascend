@@ -392,7 +392,7 @@ class RuntimeConfig:
         """Materialize bootstrap merge to disk once (worker leader / single-process).
 
         Safe to call from every worker: non-leaders no-op; leaders act at most once
-        per process. Call from ``DfxProcessor`` so API/EngineCore never persist.
+        per process. Call from ``RuntimeGuardProcessor`` so API/EngineCore never persist.
 
         If the JSON already exists and this is an **explicit** ``runtime_config_path``,
         skip rewrite: disk is the source of truth — except when ``dump.dump_dir``
