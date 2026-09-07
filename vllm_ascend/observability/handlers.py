@@ -19,7 +19,13 @@ _HOTNESS_SUMMARY_METRICS = (
     "eplb:expert_hotness:update_max",
 )
 _IMBALANCE_METRIC = "eplb:expert_hotness:imbalance"
+_REPORT_COUNT_METRIC = "runtime_guard:report:count"
 _eplb_metrics_recorder = None
+_report_metrics_recorder = None
+
+
+def _counter_metric_type():
+    return getattr(MetricType, "COUNTER", None) or MetricType.GAUGE
 
 
 def _register_eplb_metrics():
@@ -42,6 +48,41 @@ def _register_eplb_metrics():
     )
     _eplb_metrics_recorder = metrics
     return metrics
+
+
+def _register_runtime_guard_report_metrics():
+    global _report_metrics_recorder
+
+    metrics = get_metric_recorder()
+    if metrics is _report_metrics_recorder:
+        return metrics
+
+    metrics.get_or_create_metric(
+        _REPORT_COUNT_METRIC,
+        metric_type=_counter_metric_type(),
+        label_names=["incident_type", "rank"],
+    )
+    _report_metrics_recorder = metrics
+    return metrics
+
+
+def record_runtime_guard_report(*, incident_type: str, rank_tag: str | None = None) -> None:
+    """Increment one counter for each successfully written runtime_guard report."""
+    try:
+        metrics = _register_runtime_guard_report_metrics()
+        metrics.record_metric(
+            _REPORT_COUNT_METRIC,
+            value=1.0,
+            labels={
+                "incident_type": str(incident_type or "unknown"),
+                "rank": str(rank_tag or "unknown"),
+            },
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record runtime_guard report metric; report file is preserved",
+            exc_info=True,
+        )
 
 
 def eplb_do_update_hotness_handler(original_func, worker, *args, **kwargs):
