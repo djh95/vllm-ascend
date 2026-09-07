@@ -16,9 +16,9 @@ docker exec test-mrv2 bash -lc '
   git fetch origin &&
   test "$(git rev-parse HEAD)" = "$(git rev-parse origin/feat/runtime-guard-config)" \
     || { echo "HEAD != origin; run: git pull --ff-only"; exit 1; }
-  python -m pytest tests/ut/runtime_guard/ -q 2>&1 | tail -3
+  python -m pytest tests/ut/runtime_guard/ tests/ut/runtime_config/ -q 2>&1 | tail -3
 '
-# Expect: 75 passed (or higher on follow-up branches)
+# Expect: 75 passed (runtime_guard 69 + runtime_config 6)
 ```
 
 ```bash

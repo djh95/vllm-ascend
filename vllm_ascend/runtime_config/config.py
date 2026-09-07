@@ -163,7 +163,7 @@ class RuntimeConfig:
 
         # In-memory merge always. ``ensure_file=True`` persists immediately (tests /
         # rare callers). Production AscendConfig uses False; worker leader calls
-        # :meth:`ensure_persisted`` once from ``RuntimeGuardProcessor``.
+        # :meth:`ensure_persisted` once from ``RuntimeGuardProcessor``.
         self._bootstrap(persist=ensure_file)
         logger.info(
             "[runtime_config] path=%s explicit_path=%s report_dir=%s hot_reload=%s persisted=%s",
