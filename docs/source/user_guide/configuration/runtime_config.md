@@ -51,6 +51,7 @@ Manual dump / manual trigger skip auto quota, cooldown, and input filters. Requi
 | `include_slot_mapping` | bool | `false` | Include slot_mapping slice in report |
 | `block_last_write_wave` | bool | `false` | Track last write wave per physical block |
 | `block_last_writer` | bool | `false` | Track last writer req_id per block |
+| `slot_last_write` | bool | `false` | Track per-slot last writer / wave / token id |
 
 ## log
 
@@ -134,7 +135,8 @@ Each nested detector section supports:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | bool | `false` | Check slot mapping against block-table metadata on KV writes |
+| `enabled` | bool | `false` | Compare per-slot meta token ids (from `KvBlockMetaTracker`) to the request prompt+output sequence |
+| `mode` | str | `"first"` | `"first"`: one full-prefix check at first note step; `"step"`: recheck every step (debug, O(prefix)) |
 
 ### position_alignment
 
