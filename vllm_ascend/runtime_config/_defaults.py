@@ -48,9 +48,9 @@ _DEFAULTS: dict[str, Any] = {
     },
     "ascend_log": {
         "level": "INFO",
-        # Relative module paths under vllm_ascend forced to DEBUG, e.g. ["dfx"].
+        # Relative module paths under vllm_ascend forced to DEBUG, e.g. ["runtime_guard"].
         "debug": [],
-        # Per-logger overrides, e.g. {"vllm.worker": "WARNING", "dfx": "DEBUG"}.
+        # Per-logger overrides, e.g. {"vllm.worker": "WARNING", "runtime_guard": "DEBUG"}.
         "modules": {},
     },
     # Ops logging switches (not persisted into anomaly report JSON files).

@@ -270,7 +270,7 @@ class AscendRejectionSampler(RejectionSampler):
         logits: torch.Tensor,
         metadata: SpecDecodeMetadata,
     ) -> None:
-        """DFX entry probe for rejection sampling.
+        """runtime_guard entry probe for rejection sampling.
 
         Captures the shape/dtype baseline at the rejection-sampling boundary
         so that mismatches between the target-model output and the spec decode
@@ -281,7 +281,7 @@ class AscendRejectionSampler(RejectionSampler):
         if not logger.isEnabledFor(logging.DEBUG):
             return
         logger.debug(
-            "[spec/dfx] rejection_sampler entry: "
+            "[runtime_guard spec] rejection_sampler entry: "
             "logits.shape=%s, logits.dtype=%s, max_spec_len=%d, "
             "num_total_drafts=%d, num_reqs=%d, "
             "logprobs_mode=%s(processed=%s), top_k=%s",
@@ -302,7 +302,7 @@ class AscendRejectionSampler(RejectionSampler):
         output_token_ids: torch.Tensor,
         metadata: SpecDecodeMetadata,
     ) -> None:
-        """DFX exit probe (acceptance signal) for rejection sampling.
+        """runtime_guard exit probe (acceptance signal) for rejection sampling.
 
         Reports placeholder fill rate and an approximate acceptance ratio so
         operators can tell at a glance whether the draft/target pairing is
@@ -320,7 +320,7 @@ class AscendRejectionSampler(RejectionSampler):
             else sum(metadata.num_draft_tokens)
         )
         logger.debug(
-            "[spec/dfx] rejection_sampler done: "
+            "[runtime_guard spec] rejection_sampler done: "
             "accepted=%d/%d (slot_fill=%.1f%%), drafted=%d, "
             "approx_accept_rate=%.1f%%",
             num_accepted,

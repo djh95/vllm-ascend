@@ -27,24 +27,11 @@ from vllm_ascend.runtime_guard.incident import Incident
 from vllm_ascend.runtime_guard.detector.config_backed import ConfigBackedDetector
 from vllm_ascend.runtime_guard.types import ILL_TYPE_REPEAT
 from vllm_ascend.runtime_guard.io_snapshot import RequestIoSnapshotManager, normalize_token_ids
+from vllm_ascend.runtime_config._filters import normalize_ignore_token_ids
 from vllm_ascend.runtime_config.config import RuntimeConfig
 from vllm_ascend.logger import init_logger_ascend
 
 logger = init_logger_ascend(__name__)
-
-
-def normalize_ignore_token_ids(raw: Any) -> list[int]:
-    """Validate config ``ignore_token_ids`` as a flat list of ints."""
-    if raw is None:
-        return []
-    if not isinstance(raw, (list, tuple)):
-        raise ValueError(f"ignore_token_ids must be a list of ints, got {type(raw).__name__}")
-    out: list[int] = []
-    for i, item in enumerate(raw):
-        if isinstance(item, bool) or not isinstance(item, int):
-            raise ValueError(f"ignore_token_ids[{i}] must be int, got {item!r}")
-        out.append(int(item))
-    return out
 
 
 @dataclass

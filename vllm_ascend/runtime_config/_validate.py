@@ -252,7 +252,7 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     if token["window"] < token["stride"]:
         raise ValueError("detector.token_logprob.window must be >= detector.token_logprob.stride")
 
-    from vllm_ascend.runtime_guard.detector.output_substring import normalize_raw_patterns
+    from vllm_ascend.runtime_config._filters import normalize_raw_patterns
 
     out_sub = detector["output_substring"]
     out_sub["patterns"] = normalize_raw_patterns(out_sub.get("patterns", []))
@@ -269,7 +269,7 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         else:
             raise ValueError("detector.output_substring.match_prefix must be bool")
 
-    from vllm_ascend.runtime_guard.detector.token_repeat import normalize_ignore_token_ids
+    from vllm_ascend.runtime_config._filters import normalize_ignore_token_ids
 
     token_repeat = detector["token_repeat"]
     token_repeat["window"] = int_field(

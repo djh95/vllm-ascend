@@ -1987,7 +1987,7 @@ class NPUModelRunner(GPUModelRunner):
         spec_decode_metadata: SpecDecodeMetadata,
         num_scheduled_tokens: int,
     ) -> None:
-        """DFX entry probe for propose_draft_token_ids.
+        """runtime_guard entry probe for propose_draft_token_ids.
 
         Records which speculative-decoding sub-path is about to run
         (ngram / medusa / eagle / extract_hidden_states / ...). When the
@@ -2005,7 +2005,7 @@ class NPUModelRunner(GPUModelRunner):
             else f"max_spec_len={spec_decode_metadata.max_spec_len}"
         )
         logger.debug(
-            "[spec/dfx] propose_draft_token_ids entry: "
+            "[runtime_guard spec] propose_draft_token_ids entry: "
             "drafter=%s, method=%s, k=%d, num_reqs=%d, "
             "num_scheduled_tokens=%d, spec_decode_metadata=%s, "
             "use_dcp=%s, dcp_size=%d",

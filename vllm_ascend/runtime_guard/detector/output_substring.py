@@ -26,7 +26,8 @@ from vllm_ascend.runtime_guard.detector.config_backed import ConfigBackedDetecto
 from vllm_ascend.runtime_guard.types import ILL_TYPE_NONE
 from vllm_ascend.runtime_guard.io_snapshot import RequestIoSnapshotManager, normalize_token_ids, output_token_count_for_request
 from vllm_ascend.runtime_guard.tokenizer import load_model_tokenizer
-from vllm_ascend.runtime_guard.util import decode_token_ids, is_int_list
+from vllm_ascend.runtime_guard.util import decode_token_ids
+from vllm_ascend.runtime_config._filters import normalize_raw_patterns
 from vllm_ascend.logger import init_logger_ascend
 
 if TYPE_CHECKING:
@@ -46,28 +47,6 @@ class CompiledOutputPattern:
     text: str
     token_ids: tuple[int, ...]
     raw: Any  # original JSON entry (str or list)
-
-
-def normalize_raw_patterns(raw: Any) -> list[Any]:
-    """Validate/filter ``detector.output_substring.patterns`` entries (no tokenizer)."""
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ValueError("detector.output_substring.patterns must be a list of str or int lists")
-    out: list[Any] = []
-    for i, item in enumerate(raw):
-        if isinstance(item, str):
-            if item:
-                out.append(item)
-            continue
-        if is_int_list(item):
-            out.append([int(x) for x in item])
-            continue
-        raise ValueError(
-            f"detector.output_substring.patterns[{i}] must be a non-empty str or "
-            f"non-empty list[int], got {type(item).__name__}"
-        )
-    return out
 
 
 def contains_token_subsequence(haystack: list[int], needle: list[int] | tuple[int, ...]) -> bool:

@@ -12,10 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Schema validation/normalization for ``input_filter.filters`` configs.
+"""Schema validation/normalization for guard-owned config sections.
 
 Owned by runtime_config so the config subsystem never imports from
-runtime_guard; the guard side consumes normalized filter configs only.
+runtime_guard; the guard side consumes normalized configs only. Covers
+``input_filter.filters`` plus detector-section list normalizers.
 """
 
 from __future__ import annotations
@@ -28,6 +29,51 @@ _VALID_MODES = frozenset({MODE_INCLUDE, MODE_EXCLUDE})
 
 LENGTH_OPS = frozenset({"gt", "gte", "lt", "lte", "eq", "between"})
 CONTAINS_MATCH = frozenset({"any", "subsequence"})
+
+
+def _is_int_list(value: Any) -> bool:
+    """True when ``value`` is a non-empty ``list[int]`` (bool excluded)."""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(x, int) and not isinstance(x, bool) for x in value)
+    )
+
+
+def normalize_raw_patterns(raw: Any) -> list[Any]:
+    """Validate/filter ``detector.output_substring.patterns`` entries (no tokenizer)."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("detector.output_substring.patterns must be a list of str or int lists")
+    out: list[Any] = []
+    for i, item in enumerate(raw):
+        if isinstance(item, str):
+            if item:
+                out.append(item)
+            continue
+        if _is_int_list(item):
+            out.append([int(x) for x in item])
+            continue
+        raise ValueError(
+            f"detector.output_substring.patterns[{i}] must be a non-empty str or "
+            f"non-empty list[int], got {type(item).__name__}"
+        )
+    return out
+
+
+def normalize_ignore_token_ids(raw: Any) -> list[int]:
+    """Validate config ``ignore_token_ids`` as a flat list of ints."""
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError(f"ignore_token_ids must be a list of ints, got {type(raw).__name__}")
+    out: list[int] = []
+    for i, item in enumerate(raw):
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise ValueError(f"ignore_token_ids[{i}] must be int, got {item!r}")
+        out.append(int(item))
+    return out
 
 
 def _parse_mode(raw: Any, *, index: int) -> str:
