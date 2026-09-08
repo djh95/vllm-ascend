@@ -27,18 +27,18 @@ import urllib.request
 
 URL = os.environ.get("RG_PERF_URL", "http://127.0.0.1:8017/v1/completions")
 CFG = os.environ.get("RG_PERF_CFG",
-                    "/workspace/djh-testruntime/rg_test/config/runtime_config.json")
+                    "/data0/test-mrv2-cann91/rg_test/config/runtime_config.json")
 OUT_AB = os.environ.get("RG_PERF_OUT_AB",
-                       "/workspace/djh-testruntime/rg_test/logs/perf_ab_quick.jsonl")
+                       "/data0/test-mrv2-cann91/rg_test/logs/perf_ab_quick.jsonl")
 OUT_BASELINE = os.environ.get(
     "RG_PERF_OUT_BASELINE",
-    "/workspace/djh-testruntime/rg_test/logs/perf_baseline.jsonl")
+    "/data0/test-mrv2-cann91/rg_test/logs/perf_baseline.jsonl")
 OUT_LEAKBACK_BASELINE = os.environ.get(
     "RG_PERF_OUT_LEAKBACK_BASELINE",
-    "/workspace/djh-testruntime/rg_test/logs/leakback_baseline.jsonl")
+    "/data0/test-mrv2-cann91/rg_test/logs/leakback_baseline.jsonl")
 OUT_LEAKBACK_AB = os.environ.get(
     "RG_PERF_OUT_LEAKBACK_AB",
-    "/workspace/djh-testruntime/rg_test/logs/leakback_ab.jsonl")
+    "/data0/test-mrv2-cann91/rg_test/logs/leakback_ab.jsonl")
 LEAKBACK_SECONDS = int(os.environ.get("RG_PERF_LEAKBACK_SEC", "300"))
 LEAKBACK_INTERVAL = int(os.environ.get("RG_PERF_LEAKBACK_INTERVAL", "60"))
 NPU_INDICES = os.environ.get("RG_PERF_NPU", "6,7").split(",")
