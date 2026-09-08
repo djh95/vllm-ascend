@@ -728,7 +728,7 @@ class RuntimeConfig:
 
     def input_filter_configs(self) -> list[dict[str, Any]]:
         """Normalized ``input_filter.filters`` for ``InputFilterManager``."""
-        from vllm_ascend.runtime_guard.input_filters import normalize_input_filter_configs
+        from vllm_ascend.runtime_config._filters import normalize_input_filter_configs
 
         raw = self.input_filter.get("filters", [])
         try:

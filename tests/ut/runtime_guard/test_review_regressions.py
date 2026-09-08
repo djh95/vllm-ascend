@@ -16,7 +16,7 @@
 """Regression UTs from the 2026-09-01 white-box review (task_spec/review_findings_20260901.md).
 
 IDs map to review findings:
-  V1  P0-4  matched_layers natural sort (first-divergence layer ordering)
+  V1  P0-4  matched_layers natural sort — lives on PR-B (analysis scripts)
   V2  P0-5  dumps_report_json tolerates non-JSON scalars (report never lost)
   V3  P0-1  soft-fail: hook exceptions must never propagate into the engine
   V4  P0-2  shipped example template loads + validates as-is
@@ -50,7 +50,6 @@ import torch
 import vllm_ascend.runtime_config.config as cfg_mod
 from vllm_ascend.runtime_config.config import RuntimeConfig
 from vllm_ascend.runtime_guard.action.queue import ActionQueue
-from vllm_ascend.runtime_guard.analysis.scripts._lib import NativeLayerDump, matched_layers
 from vllm_ascend.runtime_guard.async_output import AscendAsyncOutput
 from vllm_ascend.runtime_guard.detector.manager import DetectorManager
 from vllm_ascend.runtime_guard.detector.placement import (
@@ -63,28 +62,6 @@ from vllm_ascend.runtime_guard.detector.token_logprob import TokenLogprobDetecto
 from vllm_ascend.runtime_guard.processor import RuntimeGuardProcessor
 from vllm_ascend.runtime_guard.report import dumps_report_json
 from vllm_ascend.runtime_guard.wave_tracker import WaveTracker
-
-
-def _fake_dump(name: str) -> NativeLayerDump:
-    return NativeLayerDump(
-        path=Path("/dev/null"),
-        layer=name,
-        req_id="r",
-        block_ids=[0],
-        dump_all_blocks=False,
-        source="ut",
-        tensor=None,
-    )
-
-
-# ---------------------------------------------------------------- V1 (P0-4)
-
-
-def test_v1_matched_layers_natural_sort():
-    buggy = {f"layer_{i}": _fake_dump(f"layer_{i}") for i in (10, 2, 1, 33)}
-    ref = dict(buggy)
-    names = matched_layers(buggy, ref)
-    assert names == ["layer_1", "layer_2", "layer_10", "layer_33"]
 
 
 # ---------------------------------------------------------------- V2 (P0-5)
