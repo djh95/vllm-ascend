@@ -6,7 +6,7 @@
 >
 > **PR-A note:** online KV write-meta (`note_kv_block_writes` / `KvBlockMetaTracker`
 > wave ledger / `block_kv`) is **not** wired. Ignore L6 and tracker growth
-> checks until the KV-meta follow-up. UT expect ≈ **75 passed** on this branch.
+> checks until the KV-meta follow-up. UT expect ≈ **86 passed** on this branch.
 
 ## 0. Pre-flight (every section depends on this)
 
@@ -18,7 +18,7 @@ docker exec test-mrv2 bash -lc '
     || { echo "HEAD != origin; run: git pull --ff-only"; exit 1; }
   python -m pytest tests/ut/runtime_guard/ tests/ut/runtime_config/ -q 2>&1 | tail -3
 '
-# Expect: 75 passed (runtime_guard 69 + runtime_config 6)
+# Expect: 86 passed (runtime_guard 80 + runtime_config 6)
 ```
 
 ```bash

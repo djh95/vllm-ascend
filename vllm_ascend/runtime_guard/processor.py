@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar
 from vllm.distributed.parallel_state import get_pp_group
 
 from vllm_ascend.runtime_guard.incident import Incident
+from vllm_ascend.runtime_guard import inject
 from vllm_ascend.runtime_guard.detector.base import AnomalyDetector
 from vllm_ascend.runtime_guard.detector.manager import DetectorManager
 
@@ -571,6 +572,9 @@ class RuntimeGuardProcessor:
 
         Detection gating (rank / dump / detector-on) lives in ``DetectorManager``.
         """
+        if inject.ENABLED:
+            inject.inject_after_spec(accepted_token_nums)
+
         def _run() -> None:
             if not self.should_check_after_spec():
                 return
@@ -688,6 +692,8 @@ class RuntimeGuardProcessor:
         """Pre-sample hook: ``logits_finite`` (and future pre-sample detectors)."""
         del scheduler_output, _unused
         self._last_input_batch = input_batch
+        if inject.ENABLED:
+            inject.inject_before_sample(logits)
 
         def _run() -> None:
             for alert in self.detectors.check_before_sample(
@@ -710,6 +716,8 @@ class RuntimeGuardProcessor:
         Detection gating (rank / dump / detector-on) lives in ``DetectorManager``.
         Arm wave prefers main-thread stamps from :meth:`record_sample_waves`.
         """
+        if inject.ENABLED:
+            inject.inject_after_sample(sampled_token_ids, runner=self.runner)
 
         def _run() -> None:
             wave_by_req: dict[str, int] = {}

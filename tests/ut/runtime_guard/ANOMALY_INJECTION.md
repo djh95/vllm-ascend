@@ -56,15 +56,23 @@ Single env var `RG_INJECT` controls all hooks; absent → 0 overhead in prod.
 RG_INJECT=scenario_name[:step_trigger][:param]
 ```
 
-Injection entry point: `_refresh_config_body` end (per-step, all detectors
-pre-flight). Hooks dispatch to `runner_hooks.py` / `kv_block_meta.py` /
-`detector/manager.py` as needed.
+Injection entry points (as-built, one guarded call each in `processor.py`;
+`step` counts pre-sample waves and defaults to 5):
+
+| Hook | Scenarios |
+|------|-----------|
+| `check_before_sample` | #1 `nan_logits`, #2 `inf_logits` (corrupt `logits[0, col]` pre-detect, one-shot) |
+| `check_after_spec` | #5 `spec_all_reject` (zero `accepted_token_nums` pre-detect, one-shot) |
+| `check_after_sample` | #3 `forbidden_substring` (row-0 token cycles pattern ids), #4 `token_loop` (row-0 pinned to the pre-trigger token for `param` waves, default 40) |
 
 ### Detector coverage (shipped detectors on this branch)
 
-> **Status: the `RG_INJECT` mechanism is NOT implemented yet** — this file is
-> the design matrix. `inject.py` / `inject_scenarios/` do not exist on the
-> branch; live injection runs are blocked on that work.
+> **Status (as-built):** `vllm_ascend/runtime_guard/inject.py` implements
+> scenarios #1–#5 (`nan_logits` / `inf_logits` / `forbidden_substring` /
+> `token_loop` / `spec_all_reject`) with synthetic UT
+> (`tests/ut/runtime_guard/test_inject_scenarios.py`, no NPU). Live runs
+> (§Live run procedure) are pending an NPU window; the live runner script is
+> still to be added under `tests/perf/runtime_guard/`.
 
 | # | Scenario | Injection point | What gets corrupted | Detector | Expected report field |
 |---|----------|------------------|----------------------|----------|----------------------|
@@ -102,39 +110,32 @@ Deferred backlog (KV-meta follow-up branch): #6 `kv_wave_regression` /
 1. **Zero prod path**: `RG_INJECT` env unset → `inject.py` `inject_for_step()` returns immediately. No overhead.
 2. **Reentrant**: each scenario is an independent function with isolated state.
 3. **Observable**: injection triggers print `[INJECT] scenario=X step=N` so it can be cross-referenced with detector hit log lines.
-4. **One-shot**: each scenario fires once unless explicitly re-armed (avoids accidental cascade in scenarios #11/#12).
+4. **One-shot vs armed**: `nan_logits` / `inf_logits` / `spec_all_reject` fire
+   once; `forbidden_substring` / `token_loop` stay armed from `step` (they need
+   multiple waves to cross the detector window), with `token_loop` bounded by
+   its `param` waves. Re-arm = restart the process.
 
-## Implementation skeleton
+## Implementation (as-built)
 
 ```
 vllm_ascend/runtime_guard/
-├── inject.py                          # NEW: env parser + dispatch
-└── inject_scenarios/
-    ├── __init__.py
-    ├── logits.py                      # #1, #2
-    ├── sampler.py                     # #3, #4, #5
-    ├── kv_meta.py                     # #6, #7, #8, #9
-    └── position.py                    # #10
+└── inject.py                          # env parser + all 5 scenario hooks (no NPU deps)
+
+vllm_ascend/runtime_guard/processor.py # 3 guarded call sites:
+                                       #   check_before_sample / check_after_spec / check_after_sample
+                                       #   (`if inject.ENABLED:` → zero overhead when env unset)
 
 tests/ut/runtime_guard/
-├── test_inject_scenarios.py          # NEW: synthetic UT for each scenario (no NPU needed)
-└── ANOMALY_INJECTION.md              # this file
+├── test_inject_scenarios.py           # synthetic UT per scenario (no NPU)
+└── ANOMALY_INJECTION.md               # this file
 
 tests/perf/runtime_guard/
-└── run_inject.sh                     # NEW: live runner — start guard server,
+└── run_inject.sh                      # TODO (live window): start guard server,
                                        # loop RG_INJECT over scenarios, collect reports
+
+Deferred with the KV-meta backlog: inject_scenarios/{kv_meta,position}.py
+(#6–#10) — add submodules only when those scenarios ship.
 ```
-
-Inject call site (one line added to `processor._refresh_config_body` end, before
-the `return`):
-
-```python
-from vllm_ascend.runtime_guard.inject import inject_for_step
-inject_for_step(self, allow_arm=allow_arm, scheduler_output=scheduler_output)
-```
-
-`inject_for_step` checks `os.environ.get("RG_INJECT")` once at module load
-(caches the parsed scenario); returns immediately if empty.
 
 ## Live run procedure
 
