@@ -264,7 +264,9 @@ def test_check_pad_slots_ok_when_all_negative(caplog):
 
 def test_report_kv_audit_auto_on_with_slot_invariants(tmp_path, monkeypatch):
     from vllm_ascend.runtime_config.config import RuntimeConfig
+    from vllm_ascend.runtime_guard import kv_meta_compat
 
+    kv_meta_compat.reset_for_tests()
     monkeypatch.chdir(tmp_path)
     cfg = RuntimeConfig(config_path=tmp_path / "runtime" / "config" / "runtime_config.json")
     assert cfg.report_kv_audit() is False

@@ -54,3 +54,22 @@
 3. P0-2 AscendStore load  
 4. P1-5 offload `num_tokens`  
 5. 其余 P1 → P2；P0-4 内容校验单独立项（成本高）
+
+---
+
+## 门控后适配 backlog（已记，未做）
+
+> 2026-09-09：`kv_meta_compat` 已落地——sparse / hybrid·Mamba / sliding_window
+> **强制关** KV meta（L1+L2）并打 warning；prefix / PD / offload **允许 L1**，
+> 开 L2 时 info 提示 load 槽位可能 unverified。下列项需额外适配后再开或增强。
+
+| # | 项 | 目标 | 粗估 |
+|---|----|------|------|
+| A1 | Sliding window / attention sink | L2 按窗口裁剪对账；淘汰 invalidate | ~300–600 LOC |
+| A2 | NZ / SFA / DSA 旁路 scatter 全挂 | 消除假阴性（同 P0-1） | ~150–400 LOC |
+| A3 | AscendStore load 钩子 | 同 P0-2 | ~80–200 LOC |
+| A4 | Offload 传 `num_tokens` | 尾块 PARTIAL（同 P1-5） | ~50–150 LOC |
+| A5 | reshape finding 不丢 | 同 P0-3 | ~80–150 LOC |
+| A6 | Load 路径内容弱校验 / dump 对拍 | 同 P0-4 | 400+ LOC |
+| A7 | Sparse KV 真支持 | 新账本，非 PA slot | 1.5k–3k+ LOC |
+| A8 | Mamba / GDN | 状态机另案（同 P2-13） | 1k–2k+ LOC |

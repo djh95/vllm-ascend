@@ -332,9 +332,13 @@ class RuntimeGuardProcessor:
         """
         try:
             from vllm_ascend.runtime_guard import kv_audit
+            from vllm_ascend.runtime_guard.kv_meta_compat import apply_kv_meta_compat
 
             cfg = self.runtime_config
             runner = self.runner
+            # Refuse gate before reading report_kv_audit() so sparse/Mamba/
+            # sliding cannot keep hooks armed via JSON.
+            apply_kv_meta_compat(runner, cfg)
             bs = int(getattr(runner, "block_size", 0) or 0)
             if bs <= 0:
                 cache_cfg = getattr(getattr(runner, "vllm_config", None), "cache_config", None)

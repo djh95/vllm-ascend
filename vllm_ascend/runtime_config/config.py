@@ -978,6 +978,10 @@ class RuntimeConfig:
         Explicit ``report.kv_audit`` or auto-on when ``report.block_state``
         or slot meta invariants need the same meta stream.
         """
+        from vllm_ascend.runtime_guard.kv_meta_compat import is_kv_meta_blocked
+
+        if is_kv_meta_blocked():
+            return False
         report = self._data.get("report") or {}
         if bool(report.get("kv_audit", False)):
             return True
@@ -1043,8 +1047,23 @@ class RuntimeConfig:
         return sec if isinstance(sec, dict) else {}
 
     def invariant_get(self, section: str, key: str, default: Any = None) -> Any:
-        """Read ``invariant.<section>.<key>``."""
-        return self.invariant_section(section).get(key, default)
+        """Read ``invariant.<section>.<key>`` with incident_type aliases.
+
+        When the KV meta gate is blocked, KV ledger sections always report
+        ``enabled=False`` even if JSON still says true (until the next
+        ``apply_kv_meta_compat`` rewrite).
+        """
+        # slot_consistency emits incident_type=kv_slot_token (section ≠ type).
+        aliases = {
+            "kv_slot_token": "slot_consistency",
+        }
+        name = aliases.get(section, section)
+        if key == "enabled" and name in ("slot_consistency", "kv_slot_order", "kv_state"):
+            from vllm_ascend.runtime_guard.kv_meta_compat import is_kv_meta_blocked
+
+            if is_kv_meta_blocked():
+                return False
+        return self.invariant_section(name).get(key, default)
 
     def action_section_for(self, incident_type: str) -> dict[str, Any]:
         """Config section that owns ``on_trigger`` for this incident type."""
