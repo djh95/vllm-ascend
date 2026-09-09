@@ -139,6 +139,7 @@ KV slot meta 状态机（`KvBlockMetaTracker`）：
 - 请求结束再做一次全前缀 token check；**不**在 finish 清空 ledger
 - 非法跳写 → `invariant.kv_slot_order`；token 不一致 → `invariant.slot_consistency`
 - **待优化清单**（旁路 scatter / AscendStore / reshape finding / PD 内容校验等）：见包内 [`KV_META_TODO.md`](../../../vllm_ascend/runtime_guard/KV_META_TODO.md)
+- **方案总览**（两层检测、问题类型、特性拒开与适配量）：见 [`KV_META_DESIGN.md`](../../../vllm_ascend/runtime_guard/KV_META_DESIGN.md)
 
 共享：`detector.stop_after_alert`（默认 `true`）— 同一请求首次 alert 后不再重复 detect（含 invariant）。
 
