@@ -15,10 +15,9 @@
 
 """KV meta (L1/L2) compatibility gate.
 
-Unsupported layouts (sparse / Mamba·hybrid / sliding window) force-disable
-block-slot meta consumers and log once. Prefix / PD / offload stay allowed for
-L1; when L2 is also requested we log that load paths may leave slots
-unverified. Further adaptations are tracked in ``KV_META_TODO.md``.
+Any layout that still needs adaptation (see ``KV_META_TODO.md``) force-disables
+block-slot meta consumers and logs a warning. Dense local paged-attention
+reshape_and_cache paths remain the only supported shape for now.
 """
 
 from __future__ import annotations
@@ -38,15 +37,13 @@ _KV_META_INVARIANT_SECTIONS: tuple[str, ...] = (
 
 _blocked_reasons: tuple[str, ...] = ()
 _last_block_key: str | None = None
-_last_load_advisory_key: str | None = None
 
 
 def reset_for_tests() -> None:
     """Clear process-local gate state (unit tests)."""
-    global _blocked_reasons, _last_block_key, _last_load_advisory_key
+    global _blocked_reasons, _last_block_key
     _blocked_reasons = ()
     _last_block_key = None
-    _last_load_advisory_key = None
 
 
 def is_kv_meta_blocked() -> bool:
@@ -59,7 +56,7 @@ def blocked_reasons() -> tuple[str, ...]:
 
 
 def probe_incompatible_features(runner: Any) -> list[str]:
-    """Return human-readable reasons KV meta cannot run with this runner."""
+    """Return reasons KV meta cannot run until adaptation lands."""
     reasons: list[str] = []
     if runner is None:
         return reasons
@@ -68,6 +65,18 @@ def probe_incompatible_features(runner: Any) -> list[str]:
     sparse_cfg = getattr(ascend, "sparse_kv_offload_config", None) if ascend is not None else None
     if sparse_cfg is not None and bool(getattr(sparse_cfg, "enabled", False)):
         reasons.append("sparse_kv_offload")
+
+    if ascend is not None:
+        if bool(getattr(ascend, "enable_sparse_sfa_c8", False)):
+            reasons.append("enable_sparse_sfa_c8")
+        if bool(getattr(ascend, "enable_sparse_li_c8", False)):
+            reasons.append("enable_sparse_li_c8")
+        if bool(getattr(ascend, "enable_dsa_cp", False)):
+            reasons.append("enable_dsa_cp")
+        for attr in ("kv_offload_config", "recompute_cpu_offload_config"):
+            cfg = getattr(ascend, attr, None)
+            if cfg is not None and bool(getattr(cfg, "enabled", False)):
+                reasons.append(attr.replace("_config", ""))
 
     vllm_config = getattr(runner, "vllm_config", None)
     model_config = getattr(vllm_config, "model_config", None) if vllm_config is not None else None
@@ -83,6 +92,15 @@ def probe_incompatible_features(runner: Any) -> list[str]:
     if _model_has_sliding_window(model_config):
         reasons.append("sliding_window")
 
+    if cache_config is not None and bool(getattr(cache_config, "enable_prefix_caching", False)):
+        reasons.append("prefix_caching")
+
+    if vllm_config is not None and getattr(vllm_config, "kv_transfer_config", None) is not None:
+        reasons.append("kv_transfer")
+        connector = _kv_connector_name(getattr(vllm_config, "kv_transfer_config", None))
+        if connector:
+            reasons.append(f"kv_connector={connector}")
+
     # Dedupe while preserving order.
     out: list[str] = []
     seen: set[str] = set()
@@ -94,32 +112,33 @@ def probe_incompatible_features(runner: Any) -> list[str]:
 
 
 def probe_external_load_features(runner: Any) -> list[str]:
-    """Features that inject whole blocks (L1 OK; L2 often unverified)."""
-    tags: list[str] = []
-    if runner is None:
-        return tags
-    vllm_config = getattr(runner, "vllm_config", None)
-    if vllm_config is None:
-        return tags
-    cache_config = getattr(vllm_config, "cache_config", None)
-    if cache_config is not None and bool(getattr(cache_config, "enable_prefix_caching", False)):
-        tags.append("prefix_caching")
-    if getattr(vllm_config, "kv_transfer_config", None) is not None:
-        tags.append("kv_transfer")
-    # Native / simple CPU offload often rides kv_transfer_config; also check
-    # Ascend additional knobs when present.
-    ascend = getattr(runner, "ascend_config", None)
-    for attr in ("kv_offload_config", "recompute_cpu_offload_config"):
-        cfg = getattr(ascend, attr, None) if ascend is not None else None
-        if cfg is not None and bool(getattr(cfg, "enabled", False)):
-            tags.append(attr.replace("_config", ""))
-    out: list[str] = []
-    seen: set[str] = set()
-    for t in tags:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+    """Deprecated alias: external-load features are refuse-gated now."""
+    return [
+        r
+        for r in probe_incompatible_features(runner)
+        if r
+        in (
+            "prefix_caching",
+            "kv_transfer",
+            "kv_offload",
+            "recompute_cpu_offload",
+        )
+        or r.startswith("kv_connector=")
+    ]
+
+
+def _kv_connector_name(kv_transfer_config: Any) -> str | None:
+    if kv_transfer_config is None:
+        return None
+    for attr in ("kv_connector", "connector", "engine_id"):
+        raw = getattr(kv_transfer_config, attr, None)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    # Class name fallback (MooncakeConnector / AscendStore…).
+    cls = type(kv_transfer_config).__name__
+    if cls and cls != "object":
+        return cls
+    return None
 
 
 def _model_has_sliding_window(model_config: Any) -> bool:
@@ -166,53 +185,30 @@ def _force_disable_kv_meta_sections(cfg: Any) -> list[str]:
     return flipped
 
 
-def _wants_l2_slot_check(cfg: Any) -> bool:
-    if cfg is None:
-        return False
-    for name in ("slot_consistency", "kv_slot_order"):
-        if bool(cfg.invariant_get(name, "enabled", False)):
-            return True
-    return False
-
-
 def apply_kv_meta_compat(runner: Any, cfg: Any) -> bool:
-    """Apply refuse gate + load-path advisory. Return True if meta is blocked.
+    """Refuse-gate KV meta when any unadapted feature is on. Return True if blocked.
 
     Call from ``_sync_kv_audit`` / bind so hot-reload cannot re-enable against
     an incompatible runner.
     """
-    global _blocked_reasons, _last_block_key, _last_load_advisory_key
+    global _blocked_reasons, _last_block_key
 
     reasons = probe_incompatible_features(runner)
     _blocked_reasons = tuple(reasons)
 
     if reasons:
-        # Always force-disable so a later JSON enable cannot stick while blocked.
         _force_disable_kv_meta_sections(cfg)
         key = ",".join(reasons)
         if key != _last_block_key:
             _last_block_key = key
             logger.warning(
                 "[runtime_guard] KV meta (kv_audit / slot_consistency / "
-                "kv_slot_order / kv_state / block_state) disabled — incompatible "
-                "with %s. logits_finite and non-KV detectors are unchanged. "
-                "See runtime_guard/KV_META_TODO.md for adaptation backlog.",
+                "kv_slot_order / kv_state / block_state) disabled — not yet "
+                "adapted for %s. logits_finite and non-KV detectors are "
+                "unchanged. See runtime_guard/KV_META_TODO.md.",
                 ", ".join(reasons),
             )
         return True
 
     _last_block_key = None
-    load_tags = probe_external_load_features(runner)
-    if load_tags and _wants_l2_slot_check(cfg):
-        key = ",".join(load_tags)
-        if key != _last_load_advisory_key:
-            _last_load_advisory_key = key
-            logger.info(
-                "[runtime_guard] KV meta L1 (block state) is supported with %s; "
-                "L2 slot-token checks may leave load-filled slots unverified "
-                "until content-level adaptation lands (KV_META_TODO P0-4).",
-                ", ".join(load_tags),
-            )
-    else:
-        _last_load_advisory_key = None
     return False

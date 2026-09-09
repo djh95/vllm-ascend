@@ -57,19 +57,19 @@
 
 ---
 
-## 门控后适配 backlog（已记，未做）
+## 门控后适配 backlog（已记，未做 → **当前一律拒开**）
 
-> 2026-09-09：`kv_meta_compat` 已落地——sparse / hybrid·Mamba / sliding_window
-> **强制关** KV meta（L1+L2）并打 warning；prefix / PD / offload **允许 L1**，
-> 开 L2 时 info 提示 load 槽位可能 unverified。下列项需额外适配后再开或增强。
+> 2026-09-09：`kv_meta_compat` 对下列未适配特性 **强制关** KV meta（L1+L2）并
+> warning；仅稠密本地 PA `reshape_and_cache` 路径可开。适配完成后再从拒开名单移除。
 
-| # | 项 | 目标 | 粗估 |
-|---|----|------|------|
-| A1 | Sliding window / attention sink | L2 按窗口裁剪对账；淘汰 invalidate | ~300–600 LOC |
-| A2 | NZ / SFA / DSA 旁路 scatter 全挂 | 消除假阴性（同 P0-1） | ~150–400 LOC |
-| A3 | AscendStore load 钩子 | 同 P0-2 | ~80–200 LOC |
-| A4 | Offload 传 `num_tokens` | 尾块 PARTIAL（同 P1-5） | ~50–150 LOC |
-| A5 | reshape finding 不丢 | 同 P0-3 | ~80–150 LOC |
-| A6 | Load 路径内容弱校验 / dump 对拍 | 同 P0-4 | 400+ LOC |
-| A7 | Sparse KV 真支持 | 新账本，非 PA slot | 1.5k–3k+ LOC |
-| A8 | Mamba / GDN | 状态机另案（同 P2-13） | 1k–2k+ LOC |
+| # | 项 | 探测 / 拒开 tag | 粗估 |
+|---|----|-----------------|------|
+| A1 | Sliding window / attention sink | `sliding_window` | ~300–600 LOC |
+| A2 | NZ / SFA / DSA 旁路 scatter | `enable_sparse_sfa_c8` / `enable_sparse_li_c8` / `enable_dsa_cp`（其余旁路靠 P0-1 补钩后可收紧探测） | ~150–400 LOC |
+| A3 | AscendStore / PD / kv_transfer | `kv_transfer` (+ `kv_connector=…`) | ~80–200 LOC（Store）；PD 钩已有但仍整体拒开至验完 |
+| A4 | Offload（含 recompute CPU） | `kv_offload` / `recompute_cpu_offload` | ~50–150 LOC |
+| A5 | reshape finding 不丢 | （缺陷修复，非特性开关） | ~80–150 LOC |
+| A6 | Load 路径内容弱校验 | 随 A3/A4 解除拒开后做 | 400+ LOC |
+| A7 | Sparse KV | `sparse_kv_offload` | 1.5k–3k+ LOC |
+| A8 | Mamba / GDN / hybrid | `hybrid_mamba_model` / `mamba_cache_mode=*` | 1k–2k+ LOC |
+| A9 | Prefix caching | `prefix_caching` | 随 LOAD 语义验收后解除 |
