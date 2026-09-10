@@ -63,6 +63,7 @@ RuntimeGuardProcessor.bind(runner)
   → ActionExecutor         # report | dump_kv | set_log_level (async queue)
 ```
 
+Requirements (Chinese): [runtime_guard_requirements.md](../../../zh/design/runtime_guard_requirements.md)  
 Design details (Chinese): [runtime_guard_design.md](../../../zh/design/runtime_guard_design.md)  
 Operations runbook (Chinese): [runtime_guard_ops.md](../../../zh/design/runtime_guard_ops.md)
 
@@ -139,6 +140,8 @@ Agent skills (Cursor): `.agents/skills/runtime-guard-*` → full bodies under `v
 
 ## Related docs
 
+- [runtime_guard_requirements.md](../../../zh/design/runtime_guard_requirements.md) — requirements (What / 验收)  
 - [runtime_config.md](../configuration/runtime_config.md) — JSON field reference  
 - [runtime_guard_design.md](../../../zh/design/runtime_guard_design.md) — full design  
-- [runtime_guard_ops.md](../../../zh/design/runtime_guard_ops.md) — ops / troubleshooting
+- [runtime_guard_ops.md](../../../zh/design/runtime_guard_ops.md) — ops / troubleshooting  
+- [KV_META_DESIGN.md](../../../vllm_ascend/runtime_guard/KV_META_DESIGN.md) — KV meta (PR-C)

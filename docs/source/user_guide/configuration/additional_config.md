@@ -112,6 +112,7 @@ vllm serve Qwen/Qwen3-8B --additional-config '{
 }'
 ```
 
+Requirements (Chinese): [runtime_guard_requirements.md](../../../zh/design/runtime_guard_requirements.md).  
 Design (Chinese): [runtime_guard_design.md](../../../zh/design/runtime_guard_design.md).  
 Operations (Chinese): [runtime_guard_ops.md](../../../zh/design/runtime_guard_ops.md).
 

@@ -228,5 +228,6 @@ Supported filter type: `input_token_id_prefix` with `mode` (`include` \| `exclud
 ## Related docs
 
 - [Runtime Guard feature guide](../feature_guide/runtime_guard.md)
+- [runtime_guard_requirements.md](../../../zh/design/runtime_guard_requirements.md)
 - [runtime_guard_design.md](../../../zh/design/runtime_guard_design.md)
 - [runtime_guard_ops.md](../../../zh/design/runtime_guard_ops.md)

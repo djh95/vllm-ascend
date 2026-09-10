@@ -1,6 +1,7 @@
 # runtime_guard 运维与排障
 
-> 面向部署 / on-call。设计细节见 [runtime_guard_design.md](./runtime_guard_design.md)；  
+> 面向部署 / on-call。需求见 [runtime_guard_requirements.md](./runtime_guard_requirements.md)；  
+> 设计细节见 [runtime_guard_design.md](./runtime_guard_design.md)；  
 > 配置字段见 [runtime_config.md](../../source/user_guide/configuration/runtime_config.md)。
 
 ## 1. 最小可用配置
@@ -157,6 +158,8 @@ manual 触发 incident_type 为 `manual_trigger`，默认对 batch 内各 live �
 
 ## 6. 相关文档
 
+- [runtime_guard_requirements.md](./runtime_guard_requirements.md)
 - [runtime_guard_design.md](./runtime_guard_design.md)
+- [KV_META_DESIGN.md](../../../vllm_ascend/runtime_guard/KV_META_DESIGN.md)
 - [runtime_guard.md](../../source/user_guide/feature_guide/runtime_guard.md)
 - [runtime_config.md](../../source/user_guide/configuration/runtime_config.md)

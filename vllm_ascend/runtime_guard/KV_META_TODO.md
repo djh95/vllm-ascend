@@ -1,6 +1,7 @@
 # KV meta / kv_audit — 待优化清单
 
-> 方案总览（问题类型 / 特性支持 / 适配量）：见同目录 [`KV_META_DESIGN.md`](./KV_META_DESIGN.md)。
+> 方案总览（问题类型 / 特性支持 / 适配量）：见同目录 [`KV_META_DESIGN.md`](./KV_META_DESIGN.md)。  
+> 产品需求（不绑 PR-A 实现）：[`docs/zh/design/runtime_guard_requirements.md`](../../docs/zh/design/runtime_guard_requirements.md)。
 
 记录时间：2026-09-07。对照当前已落地能力（见下「已覆盖」）列出后续完善项；**尚未实现**，按优先级消化。
 

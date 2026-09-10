@@ -2,10 +2,12 @@
 
 > 状态：WIP（`feat/runtime-guard-kv`）  
 > 代码：`kv_audit` / `kv_block_meta` / `invariant/*` / `kv_meta_compat`  
+> 需求（What / 验收，不绑 PR-A 实现）：[`docs/zh/design/runtime_guard_requirements.md`](../../docs/zh/design/runtime_guard_requirements.md)  
 > 待办清单：[`KV_META_TODO.md`](./KV_META_TODO.md)  
 > 记录：2026-09-09
 
-本文汇总：**两层检测方案**、**三处数据面与责任划分**、**问题类型与能否解决**、**省 KV 特性支持与适配量**。与实现不一致处以代码与 `KV_META_TODO` 为准。
+本文汇总：**两层检测方案**、**三处数据面与责任划分**、**问题类型与能否解决**、**省 KV 特性支持与适配量**。  
+产品口径以需求文档为准；与**当前代码**不一致处（例如 compat 仍一律拒开 L1）以代码与 `KV_META_TODO` 为实现现状，**不以现状收窄需求**。
 
 ---
 
@@ -166,7 +168,7 @@ runtime_guard 账本主要挂在 **Worker 写路径 + 下发的 block_ids/序列
 |----|------|
 | **A** `feat/runtime-guard-config` | 控制面：config、输出侧 detector、inject、dump_kv、report；**无** online KV meta |
 | **B** `feat/runtime-guard-analysis` | 离线 analysis / skills（基于 A） |
-| **C** 本分支 | KV meta + invariant + 钩子 + **compat 拒开** + 本文档 |
+| **C** 本分支 | KV meta + invariant + 钩子 + **compat 门控** + 本文档；需求见 `runtime_guard_requirements.md` FR-4 / §9 |
 
 ---
 

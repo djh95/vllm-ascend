@@ -100,8 +100,10 @@ Worker: RuntimeGuardProcessor.bind(runner)
 
 ## 3. Detector vs Invariant
 
-检测仅在 **last PP rank** 运行。Report / KV dump 写盘：`last PP` + action leader（通常 TP0）。  
-Detector 经 LPT/`detector_placement` 分到 TP ranks；Invariant 用 `check_scope`（不跨 rank 传 Incident：谁检查谁写 report）。
+输出侧 after-sample 在 **last PP + TP0**（async `unique_reply_rank` 只物化 output rank；禁止其它 TP rank 强制 `get_output()`）。  
+KV 账本挂在 Worker **写路径**，与 sample-phase 解耦。  
+Report / KV dump 写盘：`last PP` + action leader（通常 TP0）。  
+Invariant 用 `check_scope`（谁检查谁写 report）。LPT / `detector_placement` 不是产品约束。
 
 ### Detector
 
@@ -201,6 +203,8 @@ v1/v2 在 `compute_logits` 外包一层以插入 `check_before_sample`（`runner
 
 ## 9. 相关文档
 
+- 需求：[runtime_guard_requirements.md](./runtime_guard_requirements.md)
+- KV meta 方案：[KV_META_DESIGN.md](../../../vllm_ascend/runtime_guard/KV_META_DESIGN.md)
 - 运维与排障：[runtime_guard_ops.md](./runtime_guard_ops.md)
 - 用户功能指南：[runtime_guard.md](../../source/user_guide/feature_guide/runtime_guard.md)
 - 配置字段表：[runtime_config.md](../../source/user_guide/configuration/runtime_config.md)
