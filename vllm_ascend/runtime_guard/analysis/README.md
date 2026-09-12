@@ -35,7 +35,7 @@ dump 布局以 **config 运行时写盘**为准，本仓库脚本按约定读盘
 | **分析后处理** | `analysis/scripts/` + `skill/` | CLI + 调查流程 |
 | **后处理功能测** | `test/analysis/` | 脚本 UT；清单见 `MATRIX.md` |
 | **预留** | `runtime_config/{analysis,test}/` | 空壳，按需扩展 |
-| **实卡功能/性能/拓扑** | （待建）`test/live/` 等 | 不进 config CI |
+| **实卡功能/拓扑** | `test/live/FUNCTIONAL_TEST_LIST.md` | live NPU 清单；不进 config CI |
 
 ---
 
