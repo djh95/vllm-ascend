@@ -33,8 +33,8 @@ test/perf/scripts/
 
 # Terminology + required comparisons
 
-> **Do not mix labels with `dfx-perf-bench` SKILL.** That skill uses A=no-DFX /
-> B=DFX+reload>0+detector-off for a *different* project (PR 12209 DFX). Here
+> **Do not mix A/B labels with unrelated DFX bench skills.** Those use A=no-DFX /
+> B=DFX+reload>0+detector-off for a *different* project. Here
 > A/B inside `perf_ab_quick.py` means detector on/off — different axis.
 > This README is the authoritative source for the runtime_guard project.
 
@@ -97,8 +97,11 @@ For C1+C2 combined, rotate three states in one pass:
 |--------|------------------|------|
 | `perf_baseline.py` | T1 (or T0 from merge-base worktree) | `RG_PERF_OUT_BASELINE` |
 | `perf_ab_quick.py` | C3 (T3 "B" vs T2 "A") | `RG_PERF_OUT_AB` |
-| `test_refresh_config_cost.py` | CPU 微基准：reload=0 early-return（可选 CI） | — |
 | `scripts/*.sh` | 起服 / 交叉轮换封装（**待按机房补**） | 写入 `logs/{v1,v2}/` |
+
+**CPU 微基准 A0/A1**（`refresh_config` 成本）在 **config 产品树**：  
+`feat/runtime-guard-config` → `vllm_ascend/runtime_guard/test/perf/test_refresh_config_cost.py`  
+（需 `RuntimeConfig` / `RuntimeGuardProcessor`，本旁支无业务代码，不能放这里。）
 
 Env defaults live in `perf_lib.py` (`RG_PERF_URL`, `RG_PERF_CFG`, `RG_PERF_NPU`, …).
 Override per lab; do not commit secrets.
@@ -115,4 +118,4 @@ Override per lab; do not commit secrets.
 ## Cannot automate without NPU
 
 No Ascend NPU in typical agent/CI → C1–C6 are **manual NPU runs**.  
-`test_refresh_config_cost.py` may run on CPU as a smoke for early-return cost only.
+Product CPU A0/A1 (`test_refresh_config_cost.py`) runs on **config** branch CI/UT.

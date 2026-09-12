@@ -1,7 +1,7 @@
 """C3 perf + memory comparison: T3 (B, detectors on) vs T2 (A, detectors off), x3 cross-rotated.
 
 IMPORTANT: A/B here mean detector off/on WITHIN reload=3 — NOT the same as
-dfx-perf-bench SKILL's A/B which mean no-DFX / DFX+reload>0+off.
+unrelated DFX bench skills where A/B mean no-DFX / DFX+reload>0+off.
 See vllm_ascend/runtime_guard/test/perf/README.md for the unified T-label terminology.
 
 Server must be in T2 base shape (run_rg.sh guard with reload_interval=3);
