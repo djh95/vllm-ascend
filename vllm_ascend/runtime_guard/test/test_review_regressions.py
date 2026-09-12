@@ -1145,6 +1145,46 @@ def test_v21b_default_path_missing_file_pure_defaults(tmp_path: Path, monkeypatc
     assert rc.detector_get("output_substring", "enabled", True) is False
 
 
+def test_v21c_pre_bootstrap_file_ignored_on_reload(tmp_path: Path):
+    """A JSON written before this process's bootstrap must not leak in via the
+    first hot-reload (the race where the background reloader reads the stale
+    file before ``ensure_persisted`` overwrites it)."""
+    import vllm_ascend.runtime_config.config as cfg
+
+    cfg_file = tmp_path / "runtime_config.json"
+    # Hand-edit written well before bootstrap: token_repeat enabled.
+    cfg_file.write_text('{"detector": {"token_repeat": {"enabled": true}}}', encoding="utf-8")
+    past = time.time() - 100
+    os.utime(cfg_file, (past, past))
+
+    rc = cfg.RuntimeConfig(
+        config_path=str(cfg_file),
+        report_dir=tmp_path / "report",
+        ensure_file=False,  # production: persist deferred to ensure_persisted
+        reload_interval_seconds=1,
+        sync_mode="file",
+    )
+    # Bootstrap ignores the stale file: detector stays at its default (off).
+    assert rc.detector_get("token_repeat", "enabled", True) is False
+    # A non-forced reload must NOT apply the pre-bootstrap file either.
+    assert rc.reload(force=False) is False
+    assert rc.detector_get("token_repeat", "enabled", True) is False
+
+    # Writer persists the effective startup config (defaults), overwriting stale.
+    assert rc.ensure_persisted() is True
+    on_disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert on_disk["detector"]["token_repeat"]["enabled"] is False
+
+    # A genuine post-bootstrap hot-reload edit IS picked up.
+    data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    data["detector"]["token_repeat"]["enabled"] = True
+    cfg_file.write_text(json.dumps(data), encoding="utf-8")
+    future = time.time() + 10
+    os.utime(cfg_file, (future, future))
+    assert rc.reload(force=False) is True
+    assert rc.detector_get("token_repeat", "enabled", False) is True
+
+
 # ------------------------------------------- configurable dump root (V23)
 
 

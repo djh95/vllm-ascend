@@ -316,6 +316,11 @@ class RuntimeConfig:
                     self._version = float(self._mtime)
                 except OSError:
                     self._version = 0.0
+                # Mark the pre-bootstrap file as already-reflected so reload()
+                # does not re-apply it before the writer overwrites it with the
+                # effective startup config (otherwise a stale hand-edit leaks in
+                # via the first hot-reload, then gets persisted back out).
+                self._content_digest = self._digest_path(self.config_path)
             else:
                 self._mtime = None
                 self._version = 0.0
