@@ -18,16 +18,18 @@ from pathlib import Path
 from typing import Any
 
 KNOWN_DETECTORS = (
+    # Shipped on feat/runtime-guard-config (DETECTOR_SECTIONS).
     "logits_finite",
-    "token_logprob",
     "token_repeat",
+    "output_substring",
+    "spec_acceptance",
+    "manual_trigger",
+    # Legacy / not shipped — still recognized when reading old reports.
+    "token_logprob",
     "slot_consistency",
     "kv_slot_token",
     "kv_slot_order",
     "kv_state",
-    "spec_acceptance",
-    "output_substring",
-    "manual_trigger",
 )
 
 

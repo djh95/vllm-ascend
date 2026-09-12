@@ -506,14 +506,15 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | **多模态** | 无 VL/音频请求路径 | P2（若产品不支持可永久剔除） |
 | **实卡 → 后处理闭环** | 缺：live dump 后立刻跑 `verify_request_kv` / `correlate`（脚本在 analysis） | P1 |
 | **v1↔v2 字段级对拍** | 有双跑规则，缺「同请求同配置 report schema/命中字段」对拍表 | P1 |
-| **golden 标杆入库** | §15 已定义目录；`reports/` / `dump_schema/` 实体与 diff 脚本待补 | P0 |
-| **注入五步闭环脚本** | §10.1 已定义；G-01.. 执行脚本与定位笔记模板待补 | P0 |
+| **golden 标杆入库** | 已有模板 `golden/reports/*.json` + `diff_report_golden.py`；须用实卡绿跑刷新 | P0 |
+| **注入五步闭环脚本** | `p0_05_inject_nan.sh` 已覆盖 G-01；G-02..G-05 仿写待补 | P0 |
 
-### 14.2 Skills / 文档提及、当前产品 `_defaults` 无的检测器
+### 14.2 Skills / 文档与产品 detector 对齐
 
-`slot_consistency` / `kv_slot_token` / `kv_slot_order` / `kv_state` 出现在 analysis skills 与
-`summarize_reports.KNOWN_DETECTORS`，但 **config 产品 `DETECTOR_SECTIONS` 仅 4 个**。  
-→ 不进 live 正式表，直到产品合入；skills 需与产品对齐，避免假覆盖。
+当前产品 `DETECTOR_SECTIONS` 仅四键：`logits_finite` / `token_repeat` /
+`output_substring` / `spec_acceptance`。  
+skills 与 `summarize_reports.KNOWN_DETECTORS` 已标注：`token_logprob` /
+`slot_*` / `kv_state` 为 **未合入**（可读旧 report，不可当交付能力）。
 
 ### 14.3 Perf 侧缺口（详见 `../perf/README.md`）
 

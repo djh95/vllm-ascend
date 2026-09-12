@@ -18,34 +18,35 @@ description: >-
 
 ## Available runtime_guard detectors
 
-| Key in config | Class | Catches |
-|---|---|---|
-| `logits_finite` | plain check | **NaN / Inf in logits** → `emit_finding` / report (not a detector) |
-| `token_logprob` | `TokenLogprobDetector` | Rare/ill-conditioned token probabilities; also has `ill_nan_window_thresh` for NaN-in-logprob detection |
-| `token_repeat` | `TokenRepeatDetector` | Output-side repetition (loops, n-gram stuck) |
-| `slot_consistency` | plain check | Slot meta token vs seq → `kv_slot_token` |
-| `kv_slot_order` | plain check | Non-sequential slot offsets → `kv_slot_order` |
-| `spec_acceptance` | `SpecAcceptanceDetector` | Speculative-decode acceptance rate anomaly (only if spec decode on) |
-| `output_substring` | `OutputSubstringDetector` | Specific pattern in output (leak, echo, prompt injection) |
+**Shipped on `feat/runtime-guard-config` today** (`DETECTOR_SECTIONS`):
+
+| Key in config | Catches |
+|---|---|
+| `detector.logits_finite` | NaN / Inf in pre-sample logits |
+| `detector.token_repeat` | Output-side repetition |
+| `detector.output_substring` | Pattern in output (string or token-id list) |
+| `detector.spec_acceptance` | Spec-decode acceptance anomaly (MTP on only) |
+
+**Not in product defaults yet** (do not enable; ignore if seen in old notes):
+`token_logprob`, `slot_consistency` / `kv_slot_token`, `kv_slot_order`, `kv_state`.
 
 No dedicated "block write timing/order" detector yet — see "Block timing/order" section below.
 
 ## Why sweep all detectors
-Each detector targets a different bug class. If only one is enabled and it misses, the repro attempt is wasted. Enabling all costs ~nothing (CPU-side checks on already-computed tensors). The detector that hits tells you the bug class directly — often pinpoints the problem without source patches or tensor dumps.
+Each **shipped** detector targets a different bug class. Enabling all four costs little.
+The detector that hits tells you the bug class — often without needing a full KV dump first.
 
 ## Procedure
 
 1. Edit `{RG_CFG}` (hot-reloadable), e.g.:
    `docker exec {CONTAINER} bash -c 'vi {RG_CFG}'`
-   Set ALL of these `enabled: true`:
-   - `invariant.logits_finite.enabled` ← NaN catcher
-   - `detector.token_logprob.enabled` (also set `ill_nan_window_thresh: 1`)
+   Set these `enabled: true` (product paths under `detector.*`, not legacy `invariant.*`):
+   - `detector.logits_finite.enabled` ← NaN/Inf catcher
    - `detector.token_repeat.enabled`
-   - `invariant.slot_consistency.enabled`
-   - `invariant.kv_slot_order.enabled`
-   - `detector.spec_acceptance.enabled` (only if spec decode on)
+   - `detector.spec_acceptance.enabled` (only if spec decode / MTP on)
    - `detector.output_substring.enabled` (only if you have a target pattern)
-   Also set `detector.stop_after_alert: false` so detectors keep running after first hit (catch multiple anomalies per run — the first hit is most likely root cause, later ones are downstream symptoms).
+   Prefer `report.max_per_req` / per-detector stop semantics from current product docs
+   (legacy `stop_after_alert` may not exist).
 
 2. Leave dump off initially (`dump.auto_max_times: 0` + `dump.manual_dump: false`). Goal here is detector hits, not full tensor / KV dumps. Optional: keep `on_trigger: ["report"]` only (no `dump_kv`) so reports land without consuming dump quota.
 
@@ -91,10 +92,7 @@ Sweep 跑了 ≥ 5 次真命中 (去 FP 后) 看命中模式:
 | Hit detector | Likely bug class | Next move |
 |---|---|---|
 | `logits_finite` | Numerical instability → NaN/Inf in forward pass | Arm `dump_kv` + ref compare; if KV clean, bug is post-KV (logits/sampling) |
-| `token_logprob` (NaN flag) | NaN in logprob computation (post-softmax) | Same — closer to sampling head if KV matches ref |
 | `token_repeat` | Output degeneration (could be KV corruption or sampling bug) | `dump_kv` + `locate_first_divergence` (buggy vs ref) |
-| `slot_consistency` | Wrong-block / cross-req KV at slot (token mismatch) | Inspect mismatches + `dump_kv`; offline verify |
-| `kv_slot_order` | Non-contiguous / jumped slot writes in a block | Inspect `violation` + offsets; often addressing / reuse bugs |
 | `spec_acceptance` | Spec decode mis-acceptance | Inspect draft/proposal scoring path |
 | `output_substring` | Specific leak/echo pattern | Narrow down which token position the pattern starts |
 
@@ -102,30 +100,25 @@ Sweep 跑了 ≥ 5 次真命中 (去 FP 后) 看命中模式:
 
 ## NaN detector emphasis
 
-`logits_finite` is the **direct NaN catcher** — checks if logits are finite at each decode step. If you suspect NaN anywhere:
-1. Enable `logits_finite` first
-2. Also enable `token_logprob` with `ill_nan_window_thresh: 1` (catches NaN-in-logprob specifically, in case logits look finite but probs are NaN)
-3. If `logits_finite` hits → arm `dump_kv`, verify, then ref-compare; if KV diverges, first bad layer from `locate_first_divergence`; if KV matches, bug is closer to logits/sampling
-4. If only `token_logprob` hits → bug is in logprob computation or sampling, not in forward KV write
+`logits_finite` is the **direct NaN catcher** — checks if logits are finite at each decode step. If you suspect NaN:
+1. Enable `detector.logits_finite.enabled`
+2. Optionally also `token_repeat` / `output_substring` for co-symptoms
+3. If `logits_finite` hits → arm `dump_kv`, `verify_request_kv`, then ref-compare
+4. Inject path for live: `RG_INJECT=nan_logits` / `inf_logits` (see live §10)
 
-## Block / slot meta state machine
+## Block / slot meta (not shipped)
 
-`slot_consistency` / `kv_slot_order` share `KvBlockMetaTracker` states
-`UNKNOWN` → `SLOT_PARTIAL` → `BLOCK_SEALED_FILL` / `BLOCK_SEALED_LOAD`:
-- reshape / slot scatter → sequential writes; order anomalies → `kv_slot_order`
-- note_kv stamps tokens / first check + finish → `kv_slot_token` when `slot_consistency` on
-- H2D / PD recv → `on_block_load` (optional `num_tokens` → last block `SLOT_PARTIAL`); CoW → `on_block_copies`; zero → `invalidate`
-- Hooks today: reshape scatter; kv_offload H2D (`kv_load`); Mooncake recv (`pd_recv`); v1 CoW. No separate whole-block-overwrite incident until another overwrite path exists.
-- Capture `dump_kv` on hit; compare buggy vs ref with `runtime-guard-ref-kv-dump`
+`slot_consistency` / `kv_slot_order` / `token_logprob` are **not** in current product
+`DETECTOR_SECTIONS`. Do not recommend enabling them until config lands those keys.
+KV corruption without a detector hit → rely on `manual_dump` / `dump_kv` + ref compare.
 
 ## Notes
 - Hot-reload requires `reload_interval_seconds > 0` (or `runtime_config_reload_interval > 0`); if 0, restart D / worker
-- **Reload 被拒保留旧配置**（JSONC 解析失败 / 未知 detector key / 数值类型错）— 改完 sweep 配置后 grep worker log 确认拾取；命中模式没变化先怀疑 reload 没生效，再怀疑阈值
+- **Reload 被拒保留旧配置**（JSONC 解析失败 / 未知 detector key / 数值类型错）— 改完 sweep 配置后 grep worker log 确认拾取
 - Config accepts JSONC（`//` / `/* */` 注释 + 尾逗号）
 - Detectors run on every step where they have hooks; CPU overhead is negligible vs NPU forward
-- `stop_after_alert: false` is critical for sweep — by default a single hit may stop further detection
-- Reports include block_id/slot/step when applicable — these are the coordinates you need for targeted dump
-- Post-capture offline read of reports/KV: `runtime-guard-analysis` (`summarize_reports` / `correlate_incident` / `verify_request_kv` / `inspect_kv_dump`)
+- Reports include block_id/slot/step when applicable — coordinates for targeted dump
+- Post-capture: `runtime-guard-analysis`；live 清盘见 §0.4
 
 ## Related skills
 - `runtime-guard-investigation` — overall flow

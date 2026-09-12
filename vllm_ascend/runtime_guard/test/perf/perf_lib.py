@@ -25,24 +25,33 @@ import subprocess
 import time
 import urllib.request
 
+# Defaults are local/portable. Lab machines must set RG_PERF_* explicitly
+# (do not rely on a hardcoded /data0/... path).
+_PERF_ROOT = os.environ.get("RG_PERF_ROOT", os.path.join(".", "rg_perf"))
 URL = os.environ.get("RG_PERF_URL", "http://127.0.0.1:8017/v1/completions")
-CFG = os.environ.get("RG_PERF_CFG",
-                    "/data0/test-mrv2-cann91/rg_test/config/runtime_config.json")
-OUT_AB = os.environ.get("RG_PERF_OUT_AB",
-                       "/data0/test-mrv2-cann91/rg_test/logs/perf_ab_quick.jsonl")
+CFG = os.environ.get(
+    "RG_PERF_CFG",
+    os.path.join(_PERF_ROOT, "config", "runtime_config.json"),
+)
+OUT_AB = os.environ.get(
+    "RG_PERF_OUT_AB",
+    os.path.join(_PERF_ROOT, "logs", "perf_ab_quick.jsonl"),
+)
 OUT_BASELINE = os.environ.get(
     "RG_PERF_OUT_BASELINE",
-    "/data0/test-mrv2-cann91/rg_test/logs/perf_baseline.jsonl")
+    os.path.join(_PERF_ROOT, "logs", "perf_baseline.jsonl"),
+)
 OUT_LEAKBACK_BASELINE = os.environ.get(
     "RG_PERF_OUT_LEAKBACK_BASELINE",
-    "/data0/test-mrv2-cann91/rg_test/logs/leakback_baseline.jsonl")
+    os.path.join(_PERF_ROOT, "logs", "leakback_baseline.jsonl"),
+)
 OUT_LEAKBACK_AB = os.environ.get(
     "RG_PERF_OUT_LEAKBACK_AB",
-    "/data0/test-mrv2-cann91/rg_test/logs/leakback_ab.jsonl")
+    os.path.join(_PERF_ROOT, "logs", "leakback_ab.jsonl"),
+)
 LEAKBACK_SECONDS = int(os.environ.get("RG_PERF_LEAKBACK_SEC", "300"))
 LEAKBACK_INTERVAL = int(os.environ.get("RG_PERF_LEAKBACK_INTERVAL", "60"))
-NPU_INDICES = os.environ.get("RG_PERF_NPU", "6,7").split(",")
-
+NPU_INDICES = os.environ.get("RG_PERF_NPU", "0").split(",")
 _para = (
     "盛唐诗人李白，字太白，号青莲居士，被后人誉为诗仙。"
     "李白的诗歌想象丰富，飘逸豪放，代表作有《将进酒》《蜀道难》《静夜思》。"

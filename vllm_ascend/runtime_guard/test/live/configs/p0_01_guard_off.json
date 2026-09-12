@@ -1,0 +1,13 @@
+{
+  "reload_interval_seconds": 0,
+  "dump": {
+    "auto_max_times": 0,
+    "manual_dump": false
+  },
+  "detector": {
+    "logits_finite": { "enabled": false },
+    "token_repeat": { "enabled": false },
+    "output_substring": { "enabled": false },
+    "spec_acceptance": { "enabled": false }
+  }
+}

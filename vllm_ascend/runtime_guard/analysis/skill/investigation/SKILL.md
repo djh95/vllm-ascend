@@ -120,13 +120,13 @@ Before any work, judge whether runtime_guard is the right tool for the bug class
 - kernel 内部数值发散但未到 NaN/logits 异常且 KV 也正常 — detectors 不命中；若无 output 现象且不想抓 KV，本 skill 帮不上。
 
 **runtime_guard 能解决 (proceed)**:
-- 输出层异常: 复读 (token_repeat), 生僻字/乱码 (token_logprob), NaN logits (logits_finite), 输出含特定字符串 (output_substring)
-- Slot token 与序列不一致 / 串用别人 KV (slot_consistency)
-- Spec decode 接受率异常 (spec_acceptance)
+- 输出层异常: 复读 (`token_repeat`), NaN logits (`logits_finite`), 输出含特定字符串 (`output_substring`)
+- Spec decode 接受率异常 (`spec_acceptance`，需 MTP)
+- KV 可疑但无专用 slot detector 时：`manual_dump` / `dump_kv` + ref 对比（产品暂无 `slot_consistency`）
 
 **runtime_guard 有帮助但需配合 dump_kv + ref 对比 (proceed with caveat)**:
 - PD 分离 KV 传输 bug — detector 命中给现场坐标 + `dump_kv`，再用 ref 对比完成最终定位
-- 数值发散仅当发散到 logits/logprob 层才能命中 detector；定界仍靠 buggy vs ref `dump_kv`
+- 数值发散仅当发散到 logits 层才能命中 detector；定界仍靠 buggy vs ref `dump_kv`
 
 If triage says runtime_guard can't help, tell the user directly. Don't burn cycles on the wrong tool.
 

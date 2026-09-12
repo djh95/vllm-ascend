@@ -27,15 +27,15 @@ Use `runtime-guard-investigation` Step 1 decision tree to reach a leaf (E1-E9 or
 | Bug class | Detector(s) | Key params | Notes |
 |---|---|---|---|
 | **E1 token repeat** | `token_repeat` | `window: 32`, `repeat_sum_threshold: 64`, `min_tokens: 32`, `consecutive_hits: 1`, `ignore_token_ids: []` | 最轻量; 复读/退化首选; `on_trigger: ["report","dump_kv"]` |
-| **E2 生僻字** | `token_logprob` | `ill_rare_window_thresh: 1`, `window: 64`, `stride: 32`, `topk: 20` | 需 worker 自动补 top-k logprobs |
-| **E3 乱码** | `token_logprob` | `ill_garbled_window_thresh: 1` | 同上 |
-| **E4 NaN/Inf** | `logits_finite` (+ optional `token_logprob`) | `invariant.logits_finite.enabled: true`（soft-assert，不参与 LPT）; 可选 `token_logprob.ill_nan_window_thresh: 1` | `logits_finite` 抓 forward logits NaN; `token_logprob` 抓 post-softmax |
-| **E5 含特定字符串** | `output_substring` | `patterns: ["..."]` (string 或 list[int] token id), `match_prefix: false` 或 `true` | 须知要找什么; 每 req 告警一次 |
-| **E6 spec 接受率异常** | `spec_acceptance` | `window: 10`, `low_threshold: 0.3`, `high_threshold: 0.96`, `len_low_threshold: 1.4`, `len_high_threshold: 2.8` | 仅 spec decode (MTP/Eagle) on 时有效 |
-| **E7 串 KV / slot 不一致** | `slot_consistency` | `invariant.slot_consistency.enabled` | slot meta token vs 推理序列；查「用了别人的 KV」 |
-| **E7b slot 写序异常** | `kv_slot_order` | `invariant.kv_slot_order.enabled` | 块内 offset gap / wrong_start |
-| **E8 PD 分离未定类** | 全开 sweep | 全 `enabled: true`, `stop_after_alert: false` | 走 `runtime-guard-detector-sweep` |
-| **定界 / 逐层对比** | (无新 detector) | 抓 buggy + ref `dump_kv` 后跑 `locate_first_divergence` / `compare_per_layer` | 见 `runtime-guard-ref-kv-dump` |
+| **E4 NaN/Inf** | `logits_finite` | `detector.logits_finite.enabled: true` | 抓 forward logits NaN/Inf；注入 `RG_INJECT=nan_logits` |
+| **E5 含特定字符串** | `output_substring` | `patterns: ["..."]` (string 或 list[int]), `match_prefix: false` 或 `true` | 须知要找什么; 每 req 告警一次 |
+| **E6 spec 接受率异常** | `spec_acceptance` | `window: 10`, `low_threshold: 0.3`, `high_threshold: 0.96`, `len_low_threshold: 1.4`, `len_high_threshold: 2.8` | 仅 MTP/spec on |
+| **E8 未定类** | 四检测器 sweep | 见 `runtime-guard-detector-sweep`（仅 shipped 四键） | 勿开未合入的 slot_* |
+| **定界 / 逐层对比** | (无新 detector) | buggy + ref `dump_kv` → `locate_first_divergence` / `compare_per_layer` | 见 `runtime-guard-ref-kv-dump` |
+
+**Not shipped**（勿推荐，直到 config `DETECTOR_SECTIONS` 合入）:  
+`token_logprob`（E2/E3）、`slot_consistency` / `kv_slot_order`（旧 E7）。  
+KV 串扰可疑时：`manual_dump` + ref 对比，而不是假开不存在的 detector。
 
 ### Step 3: Compute `auto_max_times` from repro rate
 

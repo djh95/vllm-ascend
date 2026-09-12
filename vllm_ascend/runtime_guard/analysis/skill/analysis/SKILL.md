@@ -3,8 +3,8 @@ name: runtime-guard-analysis
 description: >-
   Analyze runtime_guard anomaly reports and per-request KV .pt dumps. Use when
   the user mentions runtime_guard report JSON, kv_cache dumps, dump_kv,
-  correlate req_id, nan/inf in KV, or post-mortem of token_repeat / kv_slot_token /
-  kv_slot_order / manual_trigger captures.
+  correlate req_id, nan/inf in KV, or post-mortem of token_repeat / logits_finite /
+  output_substring / spec_acceptance / manual_trigger captures.
 ---
 
 # runtime_guard analysis（抓现场后）
@@ -93,7 +93,7 @@ python -m vllm_ascend.runtime_guard.analysis.scripts.verify_request_kv \
 
 ```bash
 python -m vllm_ascend.runtime_guard.analysis.scripts.inspect_kv_dump \
-  --path ./runtime/report/kv_cache/<type>/<req_id>/wave_N/<rank_tag>/wave_N/<rank_tag>/<file>.pt
+  --path ./runtime/report/kv_cache/<type>/<req_id>/wave_N/<rank_tag>/<file>.pt
 ```
 
 payload 还带 `tp_rank` / `num_kv_heads`（本 TP shard 切过的 KV head 数）— 跨 rank / 跨 TP 对比前先用它们核对
