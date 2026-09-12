@@ -120,36 +120,11 @@ step N+1   last-PP 全部 TP  sync_for_step
 - `interval = 0`：启动后配置静态，仅保留启动 overlay 与一次性 `manual_trigger`。
 - 热更失败（ malformed JSON）：保留旧配置，服务继续。
 
-合并顺序：`defaults ← runtime_config_path ← additional_config.runtime_config`（启动 overlay）。
+合并顺序：启动时 `defaults ← additional_config.runtime_config`（覆盖写盘）；热更 `defaults ← JSON`。
 
-### 2.3.1 待办：启动落盘简化（流程 1 + 流程 2）
+### 2.3.1 启动落盘
 
-> 已讨论、**尚未改代码**。热更逐步 sync（流程 3）不动。
-
-**现状问题**：`ensure_file=False` 时 `_bootstrap` 只做内存 merge，随后 `ensure_persisted()` 再按「显式路径？已有文件？只 backfill dump_dir？」写盘，与 bootstrap 规则双轨。
-
-**目标**：启动一次 merge、落盘一条规则。
-
-```text
-bootstrap()：
-  1. 读盘（失败/非法 → {}）
-  2. effective = defaults ← JSON ← overlay
-     （interval / sync_mode 以 ctor 为准并冻住）
-  3. dump_dir：仅 JSON 未写非空 dump_dir 时，内存种 startup 值
-  4. validate（失败 → defaults+ctor 再 validate；defaults 仍失败则 raise）
-  5. self._data = effective
-  6. writer 且（默认路径 或 显式路径文件不存在）→ 原子写整份 effective
-     否则不写盘（显式已有文件：不改盘、不 backfill）
-  7. ensure_persisted → 删掉主体，或留空 no-op 兼容壳
-```
-
-**dump_root 收成一句**（省略 / `null` / `""` 同等）：
-
-`JSON 非空 dump_dir` → 否则 `startup runtime_dump_dir` → 否则 `<report_dir>/kv_cache`。
-
-**砍掉**：显式路径已有文件时的 dump_dir backfill；bootstrap 三级坏 JSON 降级；normalize 在 merge 路径上的重复调用（与已做的 into 单实现一致）。
-
-**代价**：显式配置文件不会被自动补上 `dump_dir` 行（内存有种子、盘上可无）；要持久化请手写 JSON。相关 UT 需改断言。
+启动只合成一次 effective（defaults + overlay + ctor seeds），writer 在 `_bootstrap(persist=True)` / `ensure_persisted()` 时**整份覆盖**已有 JSON。不再读盘合并、不再对显式路径 skip rewrite / dump_dir backfill。热更仍只读 JSON。
 
 ### 2.4 JSON 顶层结构
 

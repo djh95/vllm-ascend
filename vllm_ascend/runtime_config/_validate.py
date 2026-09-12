@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from vllm_ascend.runtime_config._defaults import (
+    ASCEND_LOG_KEYS,
     DETECTOR_KEYS,
     DETECTOR_SECTIONS,
     DUMP_KEYS,
@@ -130,10 +131,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     validation is safe regardless of whether the caller normalized first.
     """
     _normalize_config_sections_into(data)
-    # Retired sections; ignore leftover JSON so hot-reload of older configs
-    # does not fail (must run before unknown-key checks).
-    data.pop("detector_placement", None)
-    data.pop("input_filter", None)
     for section in (
         "dump",
         "ascend_log",
@@ -143,7 +140,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     ):
         if section not in data or not isinstance(data[section], dict):
             raise ValueError(f"runtime config missing object section '{section}'")
-    data["detector"].pop("token_logprob", None)
     interval = data.get("reload_interval_seconds", 0)
     if not isinstance(interval, (int, float)) or interval < 0:
         raise ValueError(f"reload_interval_seconds must be >= 0, got {interval}")
@@ -151,22 +147,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     if sync_mode not in (SYNC_BROADCAST, SYNC_FILE):
         raise ValueError(f"sync_mode must be '{SYNC_BROADCAST}' or '{SYNC_FILE}'")
     unknown_dump = sorted(set(data["dump"]) - DUMP_KEYS)
-    # Retired msprobe-dump bridge keys; ignore in older JSON (native dump_kv only).
-    for retired in ("reload_msprobe", "msprobe_config_path", "dump_all_blocks"):
-        if retired in data["dump"]:
-            data["dump"].pop(retired, None)
-            unknown_dump = [k for k in unknown_dump if k != retired]
-    # Alias: dump.manual_trigger → dump.manual_dump (canonical JSON key).
-    if "manual_trigger" in data["dump"]:
-        if "manual_dump" not in data["dump"] or data["dump"].get("manual_dump") in (
-            False,
-            0,
-            None,
-        ):
-            data["dump"]["manual_dump"] = data["dump"].pop("manual_trigger")
-        else:
-            data["dump"].pop("manual_trigger", None)
-        unknown_dump = [k for k in unknown_dump if k != "manual_trigger"]
     if unknown_dump:
         raise ValueError(f"dump has unknown key(s) {unknown_dump}; allowed={sorted(DUMP_KEYS)}")
     auto_max_times = data["dump"].get("auto_max_times", 0)
@@ -196,10 +176,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     )
     validate_dump_mutual_exclusive(data["dump"])
     unknown_log = sorted(set(data["log"]) - LOG_KEYS)
-    # Retired: SamplingMeta is now DEBUG on after-sample (logger level), not a JSON switch.
-    if "print_sampling_meta" in data["log"]:
-        data["log"].pop("print_sampling_meta", None)
-        unknown_log = [k for k in unknown_log if k != "print_sampling_meta"]
     if unknown_log:
         raise ValueError(f"log has unknown key(s) {unknown_log}; allowed={sorted(LOG_KEYS)}")
     for log_key in ("print_output_on_finish",):
@@ -252,6 +228,11 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     level = data["ascend_log"].get("level", "INFO")
     if not isinstance(level, str):
         raise ValueError("ascend_log.level must be str")
+    unknown_ascend = sorted(set(data["ascend_log"]) - ASCEND_LOG_KEYS)
+    if unknown_ascend:
+        raise ValueError(
+            f"ascend_log has unknown key(s) {unknown_ascend}; allowed={sorted(ASCEND_LOG_KEYS)}"
+        )
     debug = data["ascend_log"].get("debug", [])
     if not isinstance(debug, list):
         raise ValueError("ascend_log.debug must be a list of module name strings")
@@ -273,9 +254,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
             # Control-plane overrides for incident_type=manual_trigger (not a detector).
             if not isinstance(value, dict):
                 raise ValueError("detector.manual_trigger must be an object")
-            dump_kv = value.get("dump_kv")
-            if isinstance(dump_kv, dict):
-                dump_kv.pop("dump_all_blocks", None)
             unknown_sub = sorted(set(value) - MANUAL_TRIGGER_SECTION_KEYS)
             if unknown_sub:
                 raise ValueError(
@@ -291,13 +269,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
             )
         if not isinstance(value, dict):
             raise ValueError(f"detector.{key} must be an object")
-        # Retired LPT placement keys; ignore in older JSON (detection is TP0).
-        value.pop("exec_scope", None)
-        # Retired logits_finite multi-step window (every-step .item() gate now).
-        value.pop("check_every_tokens", None)
-        dump_kv = value.get("dump_kv")
-        if isinstance(dump_kv, dict):
-            dump_kv.pop("dump_all_blocks", None)  # retired: always request block slice
         unknown_sub = sorted(set(value) - DETECTOR_KEYS[key])
         if unknown_sub:
             raise ValueError(

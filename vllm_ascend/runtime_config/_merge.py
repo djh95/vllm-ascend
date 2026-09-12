@@ -53,7 +53,6 @@ def _leaf_changes(old: Any, new: Any, prefix: str = "") -> list[str]:
 
 def _normalize_ascend_log_section_into(ascend: dict[str, Any]) -> None:
     """Normalize ``ascend_log`` in place (level, debug list, modules dict)."""
-    ascend.pop("enabled", None)
     if "level" not in ascend:
         ascend["level"] = "INFO"
     debug = ascend.get("debug", [])
@@ -79,11 +78,9 @@ def _normalize_ascend_log_section_into(ascend: dict[str, Any]) -> None:
 
 
 def _normalize_config_sections_into(data: dict[str, Any]) -> None:
-    """Normalize ``ascend_log`` in place.
+    """Normalize ``ascend_log`` shape in place (coerce debug/modules).
 
-    ``ascend_log`` has no ``enabled`` field (level controls logging); strip it
-    if a user adds one so the section stays canonical. Used by
-    :func:`validate_runtime_config` and as the single normalize implementation.
+    Unknown keys are rejected by :func:`validate_runtime_config`, not stripped here.
     """
     if not isinstance(data, dict):
         return

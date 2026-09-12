@@ -146,10 +146,11 @@ class RuntimeConfig:
         self._bootstrap_persisted = False
         self._bg_reloader_started = False
         self._bg_thread: threading.Thread | None = None
-        # Same seeding contract for dump.dump_dir (startup arg → JSON when unset).
+        # Same seeding contract for dump.dump_dir (startup arg always applied at bootstrap).
         self._startup_dump_dir = (str(dump_dir).strip() if dump_dir else None) or None
         # ``additional_config.runtime_config`` (same schema as JSON file); applied once
-        # at bootstrap after defaults/file. Not re-applied on hot-reload.
+        # at bootstrap after defaults. Not re-applied on hot-reload. Existing JSON is
+        # overwritten on persist with this effective startup config.
         if startup_overlay is not None and not isinstance(startup_overlay, dict):
             raise ValueError(f"additional_config.runtime_config must be a dict, got {type(startup_overlay).__name__}.")
         self._startup_overlay = deepcopy(startup_overlay) if startup_overlay else None
@@ -201,18 +202,15 @@ class RuntimeConfig:
             )
             return {}
 
-    def _merge_bootstrap(self, loaded: dict[str, Any]) -> dict[str, Any]:
-        """Build effective config for process start.
+    def _merge_bootstrap(self, *, use_overlay: bool = True) -> dict[str, Any]:
+        """Build effective config for process start: defaults ← startup overlay.
 
-        - ``_DEFAULTS ← JSON`` for both explicit and default paths: keys the
-          file configures win; everything else falls back to ``_DEFAULTS``.
-          A missing / unreadable file yields pure defaults.
-        - Then ``← additional_config.runtime_config`` overlay (same schema), if set.
+        Existing JSON on disk is ignored at bootstrap and overwritten when
+        persisting. Hot-reload is what re-reads the file after start.
         """
-        loaded = _normalize_config_sections(loaded) if loaded else loaded
-        merged = _deep_merge(_DEFAULTS, loaded)
-        if self._startup_overlay:
-            overlay = _normalize_config_sections(deepcopy(self._startup_overlay))
+        merged = deepcopy(_DEFAULTS)
+        if use_overlay and self._startup_overlay:
+            overlay = deepcopy(self._startup_overlay)
             # Startup path/interval still win over overlay copies of those keys.
             overlay.pop("reload_interval_seconds", None)
             pre = deepcopy(merged)
@@ -229,38 +227,10 @@ class RuntimeConfig:
         # Persist startup hot-reload interval for visibility (runtime gate is still
         # ``self._reload_interval`` only).
         merged["reload_interval_seconds"] = self._reload_interval
-        loaded_for_seed = loaded if self._explicit_config_path else None
-        self._apply_startup_dump_dir_seed(merged, loaded_for_seed)
-        return _normalize_config_sections(merged)
-
-    def _apply_startup_dump_dir_seed(
-        self,
-        merged: dict[str, Any],
-        loaded: dict[str, Any] | None,
-    ) -> None:
-        """Seed ``dump.dump_dir`` from startup when JSON left it unset.
-
-        Omitted key: seed from the startup ``runtime_dump_dir`` arg.
-        Explicit ``null`` / empty string: leave cleared (user intent → default).
-        """
-        dump = merged.setdefault("dump", {})
-        if loaded is not None and not self._dump_omits_key(loaded, "dump_dir"):
-            return
-        cur = dump.get("dump_dir")
-        if isinstance(cur, str) and cur.strip():
-            return
         if self._startup_dump_dir:
-            dump["dump_dir"] = self._startup_dump_dir
-
-    @staticmethod
-    def _dump_omits_key(data: dict[str, Any] | None, key: str) -> bool:
-        """True when ``dump.<key>`` is absent from user JSON (not explicitly set)."""
-        if not isinstance(data, dict):
-            return True
-        dump = data.get("dump")
-        if not isinstance(dump, dict):
-            return True
-        return key not in dump
+            merged.setdefault("dump", {})["dump_dir"] = self._startup_dump_dir
+        # validate_runtime_config normalizes ascend_log in place.
+        return merged
 
     @staticmethod
     def _auto_on_from_dump(dump: dict[str, Any]) -> bool:
@@ -283,45 +253,31 @@ class RuntimeConfig:
         os.replace(tmp_path, self.config_path)
 
     def _bootstrap(self, *, persist: bool) -> None:
-        """Load / merge / optionally save complete effective config at startup.
+        """Materialize defaults (+ startup overlay) and optionally overwrite JSON.
 
-        Disk write is leader-only (or single-process); other ranks keep in-memory merge.
+        Disk write is leader-only (or single-process); other ranks keep in-memory.
         """
         self.report_dir.mkdir(parents=True, exist_ok=True)
-        overwrite_default = not self._explicit_config_path
-        # Both paths: read the JSON if present; anything it configures wins,
-        # missing keys fall back to defaults. A missing file → pure defaults.
-        loaded = self._read_json_object()
         try:
-            merged = self._merge_bootstrap(loaded)
+            merged = self._merge_bootstrap()
             validate_runtime_config(merged)
         except Exception as exc:
-            # Same degrade semantics as hot-reload: a bad startup file must
-            # never kill the service; fall back to pure defaults.
+            # Bad overlay must not kill the service; retry with defaults + ctor seeds.
             logger.error(
                 "[runtime_config] startup config rejected path=%s error=%s; using defaults",
                 self.config_path,
                 exc,
             )
-            merged = self._merge_bootstrap({})
-            try:
-                validate_runtime_config(merged)
-            except Exception:
-                merged = deepcopy(_DEFAULTS)
-                if self._ctor_sync_mode is not None:
-                    merged["sync_mode"] = self._ctor_sync_mode
-                merged["reload_interval_seconds"] = self._reload_interval
-                validate_runtime_config(merged)
+            merged = self._merge_bootstrap(use_overlay=False)
+            validate_runtime_config(merged)
 
         can_write = persist and _is_json_writer()
-        if overwrite_default:
-            logger.info(
-                "[runtime_config] no explicit runtime_config_path; using defaults for "
-                "unconfigured keys path=%s will_persist=%s (keys configured in this file "
-                "win; set additional_config.runtime_config_path for a dedicated config)",
-                self.config_path,
-                can_write,
-            )
+        logger.info(
+            "[runtime_config] bootstrap defaults (+ overlay) path=%s will_persist=%s "
+            "(overwrites existing file when persisting)",
+            self.config_path,
+            can_write,
+        )
 
         if can_write:
             try:
@@ -336,10 +292,9 @@ class RuntimeConfig:
                 )
                 self._bootstrap_persisted = True
                 logger.info(
-                    "[runtime_config] bootstrap saved path=%s explicit_path=%s overwrite_default=%s %s",
+                    "[runtime_config] bootstrap saved path=%s explicit_path=%s %s",
                     self.config_path,
                     self._explicit_config_path,
-                    overwrite_default,
                     self.interaction_mode_summary(),
                 )
                 self._warn_interaction_quirks()
@@ -355,10 +310,6 @@ class RuntimeConfig:
         else:
             self._data = merged
             self._invalidate_hot_path_gates()
-            # Do NOT delete the default-path JSON here. Non-leader workers used to
-            # unlink "stale" files while awaiting leader persist, which raced and
-            # removed the file the leader had just written — service ends with no
-            # runtime_config.json. Leader ``ensure_persisted`` overwrites defaults.
             if self.config_path.exists():
                 try:
                     self._mtime = self.config_path.stat().st_mtime
@@ -378,17 +329,13 @@ class RuntimeConfig:
         self._last_reload_ts = time.time()
 
     def ensure_persisted(self) -> bool:
-        """Materialize bootstrap merge to disk once (worker leader / single-process).
+        """Materialize bootstrap defaults to disk once (worker leader / single-process).
 
         Safe to call from every worker: non-leaders no-op; leaders act at most once
         per process. Call from ``RuntimeGuardProcessor`` so API/EngineCore never persist.
 
-        If the JSON already exists and this is an **explicit** ``runtime_config_path``,
-        skip rewrite: disk is the source of truth — except when ``dump.dump_dir``
-        is **omitted** and a startup seed exists, in which case only that key is
-        backfilled. Default path (no explicit path) materializes the merged
-        effective config (``defaults ← file ← startup``) so the file reflects
-        what the process actually runs.
+        Always overwrites any existing JSON with the effective startup config
+        (defaults ← ``additional_config.runtime_config`` overlay ← startup seeds).
         """
         if self._bootstrap_persisted:
             return True
@@ -398,44 +345,8 @@ class RuntimeConfig:
                 self.config_path,
             )
             return False
-        overwrite_default = not self._explicit_config_path
         try:
             with self._lock_config():
-                if self.config_path.exists() and not overwrite_default:
-                    on_disk = self._read_json_object()
-                    if not isinstance(on_disk, dict):
-                        on_disk = {}
-                    dump = on_disk.setdefault("dump", {})
-                    if not isinstance(dump, dict):
-                        dump = {}
-                        on_disk["dump"] = dump
-                    backfilled: list[str] = []
-                    if self._startup_dump_dir and self._dump_omits_key(on_disk, "dump_dir"):
-                        dump["dump_dir"] = self._startup_dump_dir
-                        backfilled.append("dump.dump_dir")
-                    if backfilled:
-                        self._write_data_unlocked(on_disk)
-                        mtime = self.config_path.stat().st_mtime
-                        if "dump.dump_dir" in backfilled:
-                            self.dump["dump_dir"] = self._startup_dump_dir
-                        self._mtime = mtime
-                        self._version = float(mtime)
-                        self._bootstrap_persisted = True
-                        logger.info(
-                            "[runtime_config] ensure_persisted backfilled %s path=%s",
-                            ",".join(backfilled),
-                            self.config_path,
-                        )
-                        return True
-                    mtime = self.config_path.stat().st_mtime
-                    self._mtime = mtime
-                    self._version = float(mtime)
-                    self._bootstrap_persisted = True
-                    logger.info(
-                        "[runtime_config] ensure_persisted skip rewrite (explicit path, file exists) path=%s",
-                        self.config_path,
-                    )
-                    return True
                 self._write_data_unlocked(self._data)
                 mtime = self.config_path.stat().st_mtime
             self._mtime = mtime
@@ -443,10 +354,9 @@ class RuntimeConfig:
             self._version = float(mtime)
             self._bootstrap_persisted = True
             logger.info(
-                "[runtime_config] worker leader persisted path=%s explicit_path=%s overwrite_default=%s",
+                "[runtime_config] worker leader persisted path=%s explicit_path=%s (overwrote)",
                 self.config_path,
                 self._explicit_config_path,
-                overwrite_default,
             )
             return True
         except Exception as exc:
@@ -1230,8 +1140,6 @@ class RuntimeConfig:
                 logger.error("[runtime_config] root must be object, got %s", type(loaded).__name__)
                 return False
             merged = _deep_merge(_DEFAULTS, _normalize_config_sections(loaded))
-            # Missing key ≠ explicit null: do not let _DEFAULTS wipe a seeded path.
-            self._apply_startup_dump_dir_seed(merged, loaded)
             return self._apply_loaded(
                 _normalize_config_sections(merged),
                 version=mtime,

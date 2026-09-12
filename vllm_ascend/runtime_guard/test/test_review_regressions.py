@@ -141,6 +141,19 @@ def _template_path() -> Path:
 
 
 def test_v4_example_template_loads_and_validates(tmp_path: Path):
+    from copy import deepcopy
+
+    from vllm_ascend.runtime_config._defaults import _DEFAULTS
+    from vllm_ascend.runtime_config._merge import _deep_merge, _normalize_config_sections
+    from vllm_ascend.runtime_config._validate import validate_runtime_config
+    from vllm_ascend.runtime_config.jsonc_io import loads_jsonc
+
+    raw = loads_jsonc(_template_path().read_text(encoding="utf-8"))
+    assert isinstance(raw, dict)
+    merged = _normalize_config_sections(_deep_merge(deepcopy(_DEFAULTS), raw))
+    validate_runtime_config(merged)
+
+    # Bootstrap ignores / overwrites any preexisting file with defaults.
     cfg_path = tmp_path / "runtime_config.json"
     shutil.copy(_template_path(), cfg_path)
     cfg = RuntimeConfig(
@@ -151,15 +164,17 @@ def test_v4_example_template_loads_and_validates(tmp_path: Path):
     )
     assert cfg.detectors_enabled_in(cfg._data) is False
     assert cfg.dump_enabled() is False
-    # The template must genuinely parse (JSONC) and validate: reload succeeds.
-    assert cfg.reload(force=True) is True
-
-
-# ---------------------------------------------------------------- V13 (P0-2)
 
 
 def test_v13_jsonc_comments_and_trailing_commas(tmp_path: Path):
     cfg_path = tmp_path / "runtime_config.json"
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        reload_interval_seconds=1,
+        sync_mode="file",
+    )
     cfg_path.write_text(
         """{
   // enable repeat detection
@@ -169,12 +184,8 @@ def test_v13_jsonc_comments_and_trailing_commas(tmp_path: Path):
 }""",
         encoding="utf-8",
     )
-    cfg = RuntimeConfig(
-        config_path=cfg_path,
-        report_dir=tmp_path / "report",
-        ensure_file=True,
-        reload_interval_seconds=0,
-    )
+    os.utime(cfg_path, (time.time() + 10, time.time() + 10))
+    assert cfg.reload(force=True) is True
     assert cfg.detector_get("token_repeat", "enabled") is True
     assert cfg.detector_get("token_repeat", "window") == 8
 
@@ -183,6 +194,7 @@ def test_v13_jsonc_comments_and_trailing_commas(tmp_path: Path):
 
 
 def test_v5_bootstrap_invalid_content_falls_back_to_defaults(tmp_path: Path):
+    """Preexisting invalid JSON is ignored at bootstrap; defaults are written over it."""
     cfg_path = tmp_path / "runtime_config.json"
     cfg_path.write_text(
         json.dumps({"detector": {"fatal_error": {"enabled": True}}}),
@@ -195,6 +207,8 @@ def test_v5_bootstrap_invalid_content_falls_back_to_defaults(tmp_path: Path):
         reload_interval_seconds=0,
     )
     assert cfg.detectors_enabled_in(cfg._data) is False
+    on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert "fatal_error" not in on_disk.get("detector", {})
 
 
 # ---------------------------------------------------------------- V6 (P1-C1)
@@ -502,7 +516,7 @@ def test_v12c2_logits_finite_hit_resolved_before_enqueue():
     assert alerts[0].detail.get("flat_token_index") == 1
     assert alerts[0].detail.get("finite_kind") == "nan"
 
-def test_v12d_logits_finite_check_every_tokens_retired():
+def test_v12d_logits_finite_check_every_tokens_rejected():
     import copy
 
     from vllm_ascend.runtime_config._defaults import _DEFAULTS
@@ -513,8 +527,8 @@ def test_v12d_logits_finite_check_every_tokens_retired():
         "enabled": True,
         "check_every_tokens": 100,
     }
-    validate_runtime_config(data)
-    assert "check_every_tokens" not in data["detector"]["logits_finite"]
+    with pytest.raises(ValueError, match="unknown key"):
+        validate_runtime_config(data)
 
 
 def test_v12e_logits_finite_skip_stopped_on_hot_path():
@@ -1103,18 +1117,19 @@ def test_v19f_multi_job_arm_refunds_once_when_all_fail(tmp_path: Path):
 # ------------------------------------------- default-path merge (V21)
 
 
-def test_v21_default_path_file_keys_win_rest_default(tmp_path: Path, monkeypatch):
+def test_v21_bootstrap_overwrites_existing_file_with_defaults(tmp_path: Path, monkeypatch):
     import vllm_ascend.runtime_config.config as cfg
 
     cfg_file = tmp_path / "runtime" / "config" / "runtime_config.json"
     cfg_file.parent.mkdir(parents=True)
-    # Only one key configured; everything else must fall back to defaults.
     cfg_file.write_text('{"detector": {"token_repeat": {"enabled": true}}}', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     rc = cfg.RuntimeConfig(config_path=None)
-    assert rc.detector_get("token_repeat", "enabled", False) is True
-    # Unconfigured keys → defaults (token_repeat window default, substring off).
+    assert rc.detector_get("token_repeat", "enabled", True) is False
+    assert rc.ensure_persisted() is True
+    on_disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert on_disk["detector"]["token_repeat"]["enabled"] is False
     assert rc.detector_get("token_repeat", "window", 0) == int(
         cfg._DEFAULTS["detector"]["token_repeat"]["window"]
     )
@@ -1154,14 +1169,24 @@ def test_v23_dump_root_default_json_and_startup_seed(tmp_path: Path, monkeypatch
     assert rc.reload()
     assert rc.dump_root() == (tmp_path / "custom_dumps").resolve()
 
-    # Startup arg seeds JSON dump_dir when the key is omitted.
+    # Startup dump_dir always seeds (preexisting file ignored at bootstrap).
     cfg_file.write_text("{}", encoding="utf-8")
-    seeded = cfg.RuntimeConfig(config_path=str(cfg_file), dump_dir=str(tmp_path / "from_startup"))
+    seeded = cfg.RuntimeConfig(
+        config_path=str(cfg_file),
+        dump_dir=str(tmp_path / "from_startup"),
+        ensure_file=True,
+        reload_interval_seconds=1,
+        sync_mode="file",
+    )
     assert seeded.dump_root() == (tmp_path / "from_startup").resolve()
-    # Explicit null in JSON clears the seed (user intent → derived default).
-    cfg_file.write_text('{"dump": {"dump_dir": null}}', encoding="utf-8")
-    cleared = cfg.RuntimeConfig(config_path=str(cfg_file), dump_dir=str(tmp_path / "from_startup"))
-    assert cleared.dump_root() == cleared.report_dir / "kv_cache"
+    on_disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert on_disk["dump"]["dump_dir"] == str(tmp_path / "from_startup")
+    # Clear via hot-reload after start.
+    data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    data["dump"]["dump_dir"] = None
+    cfg_file.write_text(json.dumps(data), encoding="utf-8")
+    assert seeded.reload(force=True)
+    assert seeded.dump_root() == seeded.report_dir / "kv_cache"
 
 
 def test_v23b_report_writer_dump_dir_follows_provider(tmp_path: Path):

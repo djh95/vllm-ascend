@@ -66,16 +66,16 @@ def test_startup_overlay_enables_detector(tmp_path: Path):
 
 def test_malformed_json_keeps_previous(tmp_path: Path):
     cfg_path = tmp_path / "runtime_config.json"
-    _write(
-        cfg_path,
-        {"detector": {"token_repeat": {"enabled": True, "window": 16}}},
-    )
+    _write(cfg_path, {})
     cfg = RuntimeConfig(
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
         reload_interval_seconds=0.01,
         sync_mode="file",
+        startup_overlay={
+            "detector": {"token_repeat": {"enabled": True, "window": 16}},
+        },
     )
     assert cfg.detector_get("token_repeat", "enabled") is True
     # Corrupt file; reload must soft-fail and keep in-memory config.
@@ -88,7 +88,7 @@ def test_malformed_json_keeps_previous(tmp_path: Path):
 
 def test_hot_reload_picks_up_detector_enable(tmp_path: Path):
     cfg_path = tmp_path / "runtime_config.json"
-    _write(cfg_path, {"detector": {"token_repeat": {"enabled": False}}})
+    _write(cfg_path, {})
     cfg = RuntimeConfig(
         config_path=cfg_path,
         report_dir=tmp_path / "report",
@@ -117,7 +117,7 @@ def test_hot_reload_picks_up_detector_enable(tmp_path: Path):
 
 def test_dump_auto_and_manual_exclusive_or_derived(tmp_path: Path):
     cfg_path = tmp_path / "runtime_config.json"
-    _write(cfg_path, {"dump": {"auto_max_times": 0, "manual_dump": False}})
+    _write(cfg_path, {})
     cfg = RuntimeConfig(
         config_path=cfg_path,
         report_dir=tmp_path / "report",
@@ -147,9 +147,14 @@ def test_actions_default_on_trigger_includes_report(tmp_path: Path):
 def test_detector_on_trigger_override_accepted(tmp_path: Path):
     """Per-detector on_trigger / dump_kv must validate (ActionExecutor reads them)."""
     cfg_path = tmp_path / "runtime_config.json"
-    _write(
-        cfg_path,
-        {
+    _write(cfg_path, {})
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        reload_interval_seconds=1,
+        sync_mode="file",
+        startup_overlay={
             "detector": {
                 "token_repeat": {
                     "enabled": True,
@@ -160,25 +165,30 @@ def test_detector_on_trigger_override_accepted(tmp_path: Path):
             }
         },
     )
-    cfg = RuntimeConfig(
-        config_path=cfg_path,
-        report_dir=tmp_path / "report",
-        ensure_file=True,
-    )
     sec = cfg.detector_section("token_repeat")
     assert sec.get("on_trigger") == ["report", "dump_kv"]
     assert cfg.detector_section("manual_trigger").get("on_trigger") == ["report"]
 
 
-def test_dump_manual_trigger_alias_maps_to_manual_dump(tmp_path: Path):
-    cfg_path = tmp_path / "runtime_config.json"
-    _write(cfg_path, {"dump": {"manual_trigger": 2}})
-    cfg = RuntimeConfig(
-        config_path=cfg_path,
-        report_dir=tmp_path / "report",
-        ensure_file=True,
-        reload_interval_seconds=1,
-    )
-    assert "manual_trigger" not in cfg.dump
-    assert cfg.dump.get("manual_dump") == 2
-    assert cfg.manual_trigger_count() == 2
+def test_dump_manual_trigger_unknown_key_rejected():
+    from copy import deepcopy
+
+    from vllm_ascend.runtime_config._defaults import _DEFAULTS
+    from vllm_ascend.runtime_config._validate import validate_runtime_config
+
+    data = deepcopy(_DEFAULTS)
+    data["dump"]["manual_trigger"] = 2
+    with pytest.raises(ValueError, match="unknown key"):
+        validate_runtime_config(data)
+
+
+def test_ascend_log_enabled_unknown_key_rejected():
+    from copy import deepcopy
+
+    from vllm_ascend.runtime_config._defaults import _DEFAULTS
+    from vllm_ascend.runtime_config._validate import validate_runtime_config
+
+    data = deepcopy(_DEFAULTS)
+    data["ascend_log"]["enabled"] = True
+    with pytest.raises(ValueError, match="unknown key"):
+        validate_runtime_config(data)

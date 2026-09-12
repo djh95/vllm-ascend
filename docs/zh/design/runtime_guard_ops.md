@@ -42,7 +42,7 @@ vllm serve <model> --additional-config '{
 }'
 ```
 
-合并顺序：`defaults ← runtime_config_path ← additional_config.runtime_config`。  
+合并顺序：启动时 `defaults ← additional_config.runtime_config`，并覆盖写盘；热更新时 `defaults ← JSON`。  
 热更只重读 JSON 文件，不再套一层 overlay。
 
 ## 2. 常用操作

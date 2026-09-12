@@ -94,7 +94,7 @@ Runtime Guard provides online anomaly detection, structured incident reports, an
 | ---- | ---- | ------- | ----------- |
 | `runtime_config_path` | str | `None` | Path to `runtime_config.json`. When omitted, vLLM-Ascend uses `<cwd>/runtime/config/runtime_config.json` (created with defaults on first start). |
 | `runtime_config_reload_interval` | float | `0` | Poll interval in seconds for hot-reload. `0` = static config after startup. |
-| `runtime_config` | dict | `None` | Startup overlay: `defaults ← runtime_config_path ← runtime_config`. Hot-reload re-reads the JSON file only. |
+| `runtime_config` | dict | `None` | Startup overlay: `defaults ← runtime_config`. Bootstrap overwrites the JSON file with this effective config. Hot-reload re-reads the JSON file only. |
 | `runtime_report_dir` | str | `None` | Report and KV dump root. Default `<cwd>/runtime/report`. |
 
 Example (online):

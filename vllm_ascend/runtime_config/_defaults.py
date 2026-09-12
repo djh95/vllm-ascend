@@ -138,6 +138,7 @@ DETECTOR_SECTIONS: tuple[str, ...] = (
 DUMP_KEYS: frozenset[str] = frozenset(_DEFAULTS["dump"])
 LOG_KEYS: frozenset[str] = frozenset(_DEFAULTS["log"])
 REPORT_KEYS: frozenset[str] = frozenset(_DEFAULTS["report"])
+ASCEND_LOG_KEYS: frozenset[str] = frozenset(_DEFAULTS["ascend_log"])
 # Per-detector action overrides (not in each detector's default dict).
 _DETECTOR_ACTION_KEYS: frozenset[str] = frozenset(
     {
