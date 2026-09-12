@@ -43,8 +43,8 @@ Priorities: **P0** every PR / smoke; **P1** full suite; **P2** env-dependent.
 
 `feat/runtime-guard-analysis` → `vllm_ascend/runtime_guard/test/perf/README.md`
 
-本产品分支 **不再维护** NPU perf 脚本与结果文档。CPU 热路径微基准若需，见 analysis 同目录
-`test_refresh_config_cost.py`（可选）。
+本产品分支 **不再维护** NPU perf 脚本与结果文档。  
+**CPU 热路径微基准 A0/A1** 仍在本树：`vllm_ascend/runtime_guard/test/perf/test_refresh_config_cost.py`。
 
 | Label | Config | Claim |
 |-------|--------|-------|
@@ -61,8 +61,8 @@ Priorities: **P0** every PR / smoke; **P1** full suite; **P2** env-dependent.
 
 | Experiment | In this repo UT? | How |
 |------------|------------------|-----|
-| **A0** Hook present, reload=0, detectors/dump off → `refresh_config` ≪ 1 ms | **Moved** | analysis `test/perf/test_refresh_config_cost.py` |
-| **A1** reload&gt;0, detectors/dump off → bounded CPU | **Moved** | same |
+| **A0** Hook present, reload=0, detectors/dump off → `refresh_config` ≪ 1 ms | **Yes** (opt-in) | `vllm_ascend/runtime_guard/test/perf/test_refresh_config_cost.py` |
+| **A1** reload&gt;0, detectors/dump off → bounded CPU | **Yes** | same |
 | **A2** Empty `block_ids` never full-cache D2H | **Yes** | `test_detectors_and_kv.py` |
 | **A3** Soft-fail bad JSON | **Yes** | `test_runtime_config_core.py` |
 | **E1** Live NPU: **no PR code** vs **PR + no additional-config** | **No (NPU)** | analysis `test/perf/README.md`（须 v1+v2） |

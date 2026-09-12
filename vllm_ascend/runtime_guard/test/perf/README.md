@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Perf / live NPU benches moved off this branch.
+"""Perf layout on the product branch.
 
-Authoritative location (analysis toolbox branch)::
+**NPU live throughput (C1–C6, serve scripts, perf_lib)** lives on::
 
     feat/runtime-guard-analysis
-    vllm_ascend/runtime_guard/test/perf/     # C1–C6, scripts, README
-    vllm_ascend/runtime_guard/test/live/    # functional checklist + launch scripts
+    vllm_ascend/runtime_guard/test/perf/
 
-This product branch keeps CPU UTs under ``vllm_ascend/runtime_guard/test/``
-(see ``TEST_MATRIX.md``). Do **not** re-add NPU throughput scripts here.
+**CPU microbench kept here** (needs product ``RuntimeConfig`` /
+``RuntimeGuardProcessor``)::
+
+    test_refresh_config_cost.py   # TEST_MATRIX A0 / A1
+
+Do not re-add NPU harness scripts to this product tree.
 """
