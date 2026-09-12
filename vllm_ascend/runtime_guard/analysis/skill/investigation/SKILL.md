@@ -159,23 +159,21 @@ Q2: 服务跑起来后现象是什么?
 └─ G. 拓扑/网络/权重错 (TP/PP/DP 配错, Mooncake broken, 权重文件坏)
     → NOT runtime_guard. 修配置/网络/权重先.
 
-Q3: 输出异常具体是哪类? (可多选, 同时开多个 detector)
+Q3: 输出异常具体是哪类? (可多选, 同时开多个 **已合入** detector)
 ├─ E1. 输出 token 复读 / 卡在某个词循环
 │   → token_repeat (最轻量, 首选; on_trigger: report + dump_kv)
-├─ E2. 输出含生僻字 / 罕见 token
-│   → token_logprob.ill_rare_window_thresh (需 worker top-k logprobs)
-├─ E3. 输出乱码 / 无意义字符序列
-│   → token_logprob.ill_garbled_window_thresh
-├─ E4. 输出 NaN / Inf token / 包含 <unk> 等
-│   → logits_finite + token_logprob.ill_nan_window_thresh
+├─ E2/E3. 生僻字 / 乱码
+│   → **产品暂无 token_logprob**；先 output 现象 + manual_dump/ref 对比；勿假开未合入键
+├─ E4. 输出 NaN / Inf / 异常 token
+│   → logits_finite（注入 RG_INJECT=nan_logits|inf_logits）
 ├─ E5. 输出含特定字符串 (prompt 泄露 / echo / 注入痕迹)
 │   → output_substring (需预知 pattern)
 ├─ E6. Spec decode (MTP/Eagle) 接受率异常
 │   → spec_acceptance (需 spec decode on)
-├─ E7. 怀疑用了别的请求的 KV (slot token ≠ 本请求序列)
-│   → slot_consistency + dump_kv
+├─ E7. 怀疑用了别的请求的 KV
+│   → **无 slot_consistency**；manual_dump / dump_kv + ref 对比定界
 └─ E8. 具体类未定 (PD 分离 / 多 detector 候选)
-    → 全开 sweep (走 runtime-guard-detector-sweep), 让数据说话
+    → 四键 sweep (runtime-guard-detector-sweep)，让数据说话
 ```
 
 ### Step 2: Repro availability + quick smoke (1-2h)
@@ -358,7 +356,8 @@ python -m vllm_ascend.runtime_guard.analysis.scripts.compare_per_layer \
 If `locate_first_divergence` / `compare_per_layer` show KV nearly identical:
 
 1. Bug is likely **after** KV write: logits / logprob / sampling / output assembly.
-2. Re-read detector hits (`logits_finite` / `token_logprob` / `token_repeat`) and report `output_token_ids` for the first wrong token.
+2. Re-read detector hits (`logits_finite` / `token_repeat` / `output_substring` /
+   `spec_acceptance`) and report `output_token_ids` for the first wrong token.
 3. Stay on native tools — do **not** open msprobe. If the case needs op-level hidden-state dumps outside `dump_kv`, tell the user that is **out of scope** for this skill and stop or hand off explicitly.
 
 ## dump_kv cheat sheet

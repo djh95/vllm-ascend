@@ -199,3 +199,42 @@ def test_prepare_ref_inputs_writes_force_feed(tmp_path: Path):
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["force_feed_token_ids"] == [1, 2, 3, 4, 5]
     assert payload["n_total"] == 5
+
+
+def test_diff_report_golden_pass_and_fail(tmp_path: Path):
+    import importlib.util
+    import sys
+
+    scripts = (
+        Path(__file__).resolve().parents[1] / "live" / "scripts" / "diff_report_golden.py"
+    )
+    spec = importlib.util.spec_from_file_location("diff_report_golden", scripts)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["diff_report_golden"] = mod
+    spec.loader.exec_module(mod)
+
+    report = tmp_path / "report_x.json"
+    report.write_text(
+        json.dumps(
+            {
+                "incident_type": "logits_finite",
+                "dump_attempted": False,
+                "req_id": "floating",
+                "detail": {"ill_type": "nan"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    golden = tmp_path / "g.json"
+    golden.write_text(
+        json.dumps({"incident_type": "logits_finite", "dump_attempted": False, "ill_type": "nan"}),
+        encoding="utf-8",
+    )
+    assert mod.main(["--report", str(report), "--golden", str(golden)]) == 0
+    golden_bad = tmp_path / "g_bad.json"
+    golden_bad.write_text(
+        json.dumps({"incident_type": "token_repeat", "dump_attempted": False}),
+        encoding="utf-8",
+    )
+    assert mod.main(["--report", str(report), "--golden", str(golden_bad)]) == 1

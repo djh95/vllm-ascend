@@ -20,6 +20,7 @@
 | A7 | `verify_request_kv` PASS / missing FAIL | ✅ |
 | A9 | `compare_kv_dumps` 同张量无坏点 | ✅ |
 | A10 | `prepare_ref_inputs` force-feed JSON | ✅ |
+| A12 | `diff_report_golden` 关键字段对拍 | ✅ |
 
-可选后续：A8 `inspect_kv_dump`；A11 旧扁平路径；A12 report 标杆字段 diff 辅助。
+可选后续：A8 `inspect_kv_dump`；A11 旧扁平路径。
 """

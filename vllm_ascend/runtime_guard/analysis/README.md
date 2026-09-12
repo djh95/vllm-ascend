@@ -28,7 +28,8 @@ vllm_ascend/runtime_config/test/**
 
 产品 CPU UT / `TEST_MATRIX` 在 **config**。  
 **实卡 live 清单、启动脚本、golden、NPU perf** 在 **本分支**（需挂 config 产品 build 才能起服）。  
-dump 布局以 **config 运行时写盘**为准，本仓库脚本按约定读盘。
+dump 布局以 **config 运行时写盘**为准，本仓库脚本按约定读盘。  
+合 main 注意点见 `MERGE.md`。
 
 ---
 

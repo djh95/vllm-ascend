@@ -1,23 +1,18 @@
-# live / scripts（启动 + 执行脚本）
-
-**归属**：仅 `feat/runtime-guard-analysis`。
+# live / scripts
 
 | 文件 | 用途 |
 |------|------|
-| `_common.sh` | `RUNNER`、清盘 `trap`、`df`、路径 |
-| `diff_report_golden.py` | report 关键字段 vs `../golden/reports/` |
-| `p0_01_guard_off.sh` … `p0_08_disk_reclaim.sh` | P0 冒烟（部分仍需机房补起服） |
-| `p0_05_inject_nan.sh` | G-01 注入闭环 |
-
-用法：
+| `_common.sh` | RUNNER、清盘、`df` |
+| `run_both_runners.sh` | 先 v2 再 v1 跑同一脚本 |
+| `g_inject.sh` + `g01`…`g06` | §10 注入闭环 |
+| `p0_01`…`p0_08` | P0 冒烟 |
+| `diff_report_golden.py` / `refresh_golden.py` | 标杆对比 / 从实卡 report 刷新 |
 
 ```bash
-export MODEL=/path/to/weights
-export RG_PRODUCT_ROOT=/path/to/product/checkout   # config 产品树
-export RUNNER=v2   # or v1
-# 服务已起且挂上 ../configs/<case>.json 后：
-bash vllm_ascend/runtime_guard/test/live/scripts/p0_05_inject_nan.sh
-KEEP_DUMP=1 bash …/p0_03_manual_dump.sh   # 保留 dump 排查
+export RG_PRODUCT_ROOT=/path/to/config-checkout
+export MODEL=... SERVED_MODEL_NAME=...
+# 服务已挂对应 configs/*.json 后：
+bash …/live/scripts/run_both_runners.sh g01_nan_logits.sh
+KEEP_DUMP=1 bash …/p0_03_manual_dump.sh
+python3 …/refresh_golden.py --report path/report.json --out …/golden/reports/g01_nan_logits.json
 ```
-
-测后默认删 `kv_cache`（§0.4）。配置在 `../configs/`，标杆在 `../golden/`。

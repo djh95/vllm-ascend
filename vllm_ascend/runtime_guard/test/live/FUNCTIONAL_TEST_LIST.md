@@ -506,8 +506,8 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | **多模态** | 无 VL/音频请求路径 | P2（若产品不支持可永久剔除） |
 | **实卡 → 后处理闭环** | 缺：live dump 后立刻跑 `verify_request_kv` / `correlate`（脚本在 analysis） | P1 |
 | **v1↔v2 字段级对拍** | 有双跑规则，缺「同请求同配置 report schema/命中字段」对拍表 | P1 |
-| **golden 标杆入库** | 已有模板 `golden/reports/*.json` + `diff_report_golden.py`；须用实卡绿跑刷新 | P0 |
-| **注入五步闭环脚本** | `p0_05_inject_nan.sh` 已覆盖 G-01；G-02..G-05 仿写待补 | P0 |
+| **golden 标杆入库** | 模板 + `diff`/`refresh_golden` 已有；须实卡绿跑后覆盖 JSON | P0 |
+| **注入五步闭环脚本** | `g01`…`g06` + `g_inject.sh` 已齐；机房起服参数仍需填 | P0 |
 
 ### 14.2 Skills / 文档与产品 detector 对齐
 
@@ -520,11 +520,11 @@ skills 与 `summarize_reports.KNOWN_DETECTORS` 已标注：`token_logprob` /
 
 | 缺口 | 说明 |
 |------|------|
-| C1/C2 交叉轮换正式数 | 历史 pending；**须分 v1/v2** |
-| C5 dump_kv 开销 | 未建 |
-| C6 leak-back 门禁 | `perf_lib` 有采样，缺正式验收条 |
-| 起服脚本未入库 | `perf/scripts/` 仅占位 |
-| 机房路径写死 | `perf_lib` 默认 `/data0/...` 需环境变量化（勿当通用默认） |
+| C1/C2 交叉轮换正式数 | 历史 pending；**须分 v1/v2**；`run_c1_c2_cross_rotate.sh` 已给步骤 |
+| C5 dump_kv 开销 | `run_c5_dump.sh` 骨架；正式阈值待定 |
+| C6 leak-back 门禁 | `run_c6_leakback.sh` 骨架 |
+| 起服脚本未入库 | `serve_t0`…`t3` 已入库；`START_CMD` 由机房填充 |
+| 机房路径写死 | 已改为 `RG_PERF_ROOT` 默认 `./rg_perf` |
 
 ---
 

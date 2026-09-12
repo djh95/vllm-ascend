@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# Serve T1 skeleton (product HEAD, no additional-config). RUNNER=v1|v2.
-set -euo pipefail
-RUNNER="${RUNNER:-v2}"
-export VLLM_USE_V2_MODEL_RUNNER=$([ "$RUNNER" = v2 ] && echo 1 || echo 0)
+# T1: product HEAD, no additional-config (reload=0 default).
+source "$(cd "$(dirname "$0")" && pwd)/_common.sh"
 MODEL="${MODEL:?set MODEL}"
-PORT="${PORT:-8017}"
-echo "[perf] T1 runner=$RUNNER — start product vllm serve here (fill lab flags)"
-echo "  example: vllm serve \"$MODEL\" --port $PORT"
-echo "  then: RG_PERF_URL=http://127.0.0.1:${PORT}/v1/completions python -m vllm_ascend.runtime_guard.test.perf.perf_baseline"
+echo "[perf] T1 product=$PRODUCT_ROOT runner=$RUNNER"
+if [[ -n "${START_CMD:-}" ]]; then
+  eval "$START_CMD"
+else
+  echo "example:"
+  echo "  PYTHONPATH=$PRODUCT_ROOT vllm serve \"$MODEL\" --port $PORT --tensor-parallel-size $TP"
+  echo "then: RG_PERF_URL=http://127.0.0.1:${PORT}/v1/completions \\"
+  echo "  python -m vllm_ascend.runtime_guard.test.perf.perf_baseline"
+fi

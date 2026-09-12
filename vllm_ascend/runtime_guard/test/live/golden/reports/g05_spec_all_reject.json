@@ -1,0 +1,5 @@
+{
+  "incident_type": "spec_acceptance",
+  "dump_attempted": false,
+  "notes": "G-05 needs MTP; refresh thresholds/detail from lab"
+}
