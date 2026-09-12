@@ -192,3 +192,91 @@ def test_ascend_log_enabled_unknown_key_rejected():
     data["ascend_log"]["enabled"] = True
     with pytest.raises(ValueError, match="unknown key"):
         validate_runtime_config(data)
+
+
+def test_startup_overlay_reload_interval_overridden_by_ctor(tmp_path: Path):
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {})
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        reload_interval_seconds=5,
+        startup_overlay={
+            "reload_interval_seconds": 999,
+            "detector": {"token_repeat": {"enabled": True}},
+        },
+    )
+    # Ctor interval is authoritative; overlay's copy is ignored.
+    assert cfg.reload_interval_seconds == 5.0
+    assert cfg.hot_reload_enabled is True
+    assert cfg._data["reload_interval_seconds"] == 5.0
+    # Overlay still applies other (non-frozen) keys.
+    assert cfg.detector_get("token_repeat", "enabled") is True
+
+
+def test_startup_overlay_sync_mode_overridden_by_ctor(tmp_path: Path):
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {})
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        sync_mode="broadcast",
+        startup_overlay={"sync_mode": "file"},
+    )
+    assert cfg.sync_mode == "broadcast"
+    assert cfg._data["sync_mode"] == "broadcast"
+
+
+def test_startup_overlay_dump_dir_overridden_by_ctor(tmp_path: Path):
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {})
+    overlay_dir = tmp_path / "from_overlay"
+    ctor_dir = tmp_path / "from_ctor"
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        dump_dir=str(ctor_dir),
+        startup_overlay={"dump": {"dump_dir": str(overlay_dir)}},
+    )
+    assert cfg.dump_root() == ctor_dir.resolve()
+
+
+def test_startup_overlay_non_dict_raises(tmp_path: Path):
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {})
+    with pytest.raises(ValueError, match="must be a dict"):
+        RuntimeConfig(
+            config_path=cfg_path,
+            report_dir=tmp_path / "report",
+            startup_overlay=["not", "a", "dict"],
+        )
+
+
+def test_startup_overlay_unknown_key_soft_fails_to_defaults(tmp_path: Path):
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {})
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        startup_overlay={"detector": {"fatal_error": {"enabled": True}}},
+    )
+    # Bad overlay must not kill the service; fall back to defaults.
+    assert cfg.detectors_enabled_in(cfg._data) is False
+    assert cfg.detector_get("token_repeat", "enabled") is False
+
+
+def test_report_dir_explicit(tmp_path: Path):
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {})
+    reports = tmp_path / "reports"
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=reports,
+        ensure_file=True,
+    )
+    assert cfg.report_dir == reports.resolve()
+    assert cfg.dump_root() == reports.resolve() / "kv_cache"
