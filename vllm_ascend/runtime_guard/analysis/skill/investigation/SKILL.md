@@ -1,11 +1,11 @@
 ---
 name: runtime-guard-investigation
 description: >-
-  Use when debugging an intermittent NPU/vllm-ascend bug (token repetition,
-  garbled output, NaN, KV corruption) on a runtime_guard-instrumented deployment.
-  Captures the end-to-end investigation workflow with native dump_kv only:
-  triage → repro → env setup → dump_kv sanity → stress + capture → verify →
-  ref dump_kv → compare_kv_similarity / locate_first_divergence / compare_per_layer. No msprobe.
+  Use when debugging intermittent NPU/vllm-ascend precision bugs (token
+  repetition, garbled output, NaN, KV corruption) with runtime_guard: detect →
+  report → dump_kv → force-feed report token ids for ref → compare and localize
+  (KV vs model/post-sample; compute vs pollution; stage/token/layer/block).
+  Native dump_kv only; no msprobe.
 ---
 
 # runtime_guard-Based Bug Investigation (native dump_kv only)
@@ -61,11 +61,96 @@ Start every investigation by resolving the 4 required inputs above (from memory 
 
 ## Investigation goal
 
-Find the **first divergent point** between the buggy runtime KV and a reference `dump_kv`, then map it to a root cause (layer × token × slot / transfer boundary).
+**主干能力**：异常检测 → report → dump KV → 用 report 里的 **token ids** 跑清洁标杆 → buggy vs ref 对比 → **精度问题定界**。
 
-Two-phase refinement (both on native `.pt` dirs):
-1. **Phase E.1 (default first)**: Find first **KV cache** divergence — `locate_first_divergence` on buggy vs ref dirs. Locate first divergent KV point (token × layer).
-2. **Phase E.2 (only if KV nearly identical)**: Bug is likely **post-KV** (logits / sampling / decode path after write). Confirm with `compare_per_layer`; then lean on detector class + report `output_token_ids` — do **not** escalate to msprobe.
+可回答的结论（定界目标）：
+
+| 定界问题 | 典型结论 |
+|----------|----------|
+| 问题在哪一类 | **KV cache** / **模型计算本身** / **后采样（logits→token）** |
+| 机制 | **计算出错** vs **KV 污染（写坏/串用/传输脏）** |
+| 时空位置 | **哪个阶段**（prefill/decode）、**从哪个 token**、**从哪一层** |
+| 操作粒度 | **单 token** / **连续多 token** / **block 级** 写入引入 |
+| 污染时机 | 异常点**之后**邻域是否仍正常 → 写入后污染 vs 写入时即坏 |
+
+两阶段细化（均在 native `.pt` 上）：
+
+1. **Phase E.1（默认先做）**：buggy vs ref 找 **首个 KV 分歧**（token × layer）— `locate_first_divergence` / `compare_kv_similarity`。
+2. **Phase E.2（仅当 KV 几乎一致）**：偏向 **后采样 / 模型输出头之后**；结合 detector（logits_finite、token_repeat、spec_acceptance…）与 report 字段，**不要**上 msprobe。
+
+## 精度定界决策树（强制按序回答）
+
+前置：detector 已命中并写出 report；`on_trigger` 含 `dump_kv` 时已保存异常侧 KV；  
+`verify_request_kv` PASS；用 report 的 `prompt_token_ids` + `output_token_ids` **force-feed** 出 ref dump（见 `runtime-guard-ref-kv-dump`）。
+
+观测信号来源：
+
+| 信号 | 来自 | 用途 |
+|------|------|------|
+| token ids | report `detail` | 复现同一序列、对齐对比下标 |
+| 接受率 | `spec_acceptance` report | 投机路径异常类 |
+| logits 非有限 | `logits_finite` | 采样前数值炸 |
+| （若有）logprob | 旧/未合入 detector 或外部 | 仅作辅证；产品默认无 token_logprob |
+| 层×token 余弦 / maxdiff | `locate_first_divergence` 两表 | 定界主证据 |
+
+### Q1 — KV cache 是否异常？
+
+对比 buggy vs ref（同 token 序列）：
+
+| 结果 | 解释 | 下一步 |
+|------|------|--------|
+| **KV 无异常**（各层各 token cos 高、无首分歧） | 更可能是 **模型本身 / 后采样 / decode 写 KV 之后** 的问题，不是 cache 内容错 | → Phase E.2：看 detector 类（logits_finite→采样前；token_repeat→输出退化；spec→MTP） |
+| **KV 有异常** | 问题在 **KV 路径或产生该 KV 的计算/写入** | → Q2 |
+
+### Q2 — 什么阶段异常？从哪个 token？哪一层？
+
+用 Table1（per-token min-cos）+ Table2（首坏 token 的 per-layer cos）：
+
+| 模式 | 解释 |
+|------|------|
+| 首坏 token 落在 **prompt 段** | 偏向 **prefill** 写入/计算 |
+| 首坏 token 落在 **output 段** | 偏向 **decode** 逐步写入 |
+| **所有层**从某 token 起一起坏 | 像 **整包写入/传输/block 拷贝** 污染，不一定是单层算子 |
+| **从某一层开始**后面层都坏、前面层好 | 该层（及其后依赖）**计算出错** 或该层写出污染 |
+| 仅个别层坏、前后层好 | 局部算子 / 该层专属路径（含 TP shard 时先排除切头布局） |
+
+记录交付：`first_bad_token_idx` + role(prompt/out[k]) + `first_bad_layer`。
+
+### Q3 — 一个 token 异常，连续多个，还是 block 级？
+
+看首分歧后的 token 轴形态（结合 `block_size` / `block_ids`）：
+
+| 形态 | 倾向的操作级别 |
+|------|----------------|
+| **单 token** 尖刺，邻域正常 | 单步 decode / 单次 slot 写 |
+| **连续多个 token** 坏 | 连续 decode 步、或一段序列的同一错误源 |
+| 按 **block 边界**整齐变坏（整 block 槽位） | block 级 load/store、CoW、PD recv、H2D 整块 |
+
+### Q4 — 异常点之后的 KV 是否正常？
+
+| 异常点之后 | 解释 |
+|------------|------|
+| **紧邻后续正常**（或很快恢复高相似） | 更像 **写入后被污染/被覆盖一次**，不是整条序列算死 |
+| **从首坏点起一路全异常** | 更像 **写入时即错**（错误计算写入或错误源持续） |
+| 后续更糟 / 扩散 | 错误在后续步被放大（attention 读脏 KV 等） |
+
+### Q5 — 什么类型异常？（相似度形态）
+
+对首坏点及邻域的 cos（默认阈 `cos_thresh≈0.99`，可按模型微调）：
+
+| 形态 | 倾向 |
+|------|------|
+| **相似度断崖下降**（高→接近 0 / 随机） | **污染 / 串用 / 错 block / 未初始化垃圾** |
+| 稳定落在 **~0.8–0.9**（或缓降平台） | 更像 **计算误差 / 精度路径差**（非彻底脏数据） |
+| 个别元素 nan/inf（`inspect_kv_dump`） | 数值爆炸；常与 logits_finite 同源或更早 |
+
+综合 Q1–Q5 输出一句话定界模板：
+
+```
+【定界】KV=<异常|正常>; 阶段=<prefill|decode>; 首坏token=<i/role>; 首坏层=<L>;
+粒度=<单token|连续|block>; 时机=<写入时即坏|写入后污染>;
+类型=<污染断崖|计算平台(~0.8-0.9)|后采样/非KV>; 证据=<脚本与路径>
+```
 
 ## Hard constraints (do not violate)
 
@@ -92,7 +177,8 @@ Ref (clean):
 
 Compare:
   locate_first_divergence / compare_kv_similarity / compare_per_layer
-    --buggy-dir <bad> --ref-dir <ref> --report <report_*.json>
+    --buggy-dir <bad>/wave_N/<rank_tag> --ref-dir <ref>/wave_N/<rank_tag>
+  → 精度定界 Q1–Q5（KV? 阶段/token/层? 粒度? 其后是否正常? 污染 vs 计算?）
 ```
 
 ## Environment cheat sheet (from `{CONTAINER}`)
@@ -327,38 +413,40 @@ python -m vllm_ascend.runtime_guard.analysis.scripts.prepare_ref_inputs \
 
 ### Step 7: Compare, find first divergent KV (Phase E.1)
 
-**对比输入**: buggy `{KV_ROOT}/.../<bad_req>/` + ref dir + buggy report（推 first-wrong / 对齐 token）.
+**对比输入**: buggy `{KV_ROOT}/.../<bad_req>/wave_N/<rank_tag>/` + ref 同结构 + buggy report。
 
 ```bash
 python -m vllm_ascend.runtime_guard.analysis.scripts.locate_first_divergence \
-  --buggy-dir {KV_ROOT}/<type>/<bad_req>/ \
-  --ref-dir   {KV_ROOT}/<type>/<ref_req>/ \
+  --buggy-dir {KV_ROOT}/<type>/<bad_req>/wave_N/<rank_tag>/ \
+  --ref-dir   {KV_ROOT}/<type>/<ref_req>/wave_N/<rank_tag>/ \
   --report    {REPORT}/<type>/report_....json \
   --block-size 128 --cos-thresh 0.99
 
 python -m vllm_ascend.runtime_guard.analysis.scripts.compare_per_layer \
-  --buggy-dir {KV_ROOT}/<type>/<bad_req>/ \
-  --ref-dir   {KV_ROOT}/<type>/<ref_req>/ \
+  --buggy-dir {KV_ROOT}/<type>/<bad_req>/wave_N/<rank_tag>/ \
+  --ref-dir   {KV_ROOT}/<type>/<ref_req>/wave_N/<rank_tag>/ \
   --report    {REPORT}/<type>/report_....json
 ```
 
-- **Table 1**: per-token min-cos → first bad token.
-- **Table 2**: that token’s per-layer cos / maxdiff → first divergent layer.
-- **容差**: 可先 ref-vs-ref（同输入跑两遍）估 noise floor；超出 baseline 才是真发散.
+- **Table 1**: per-token min-cos → first bad token（**Q2/Q3/Q4**）。
+- **Table 2**: that token’s per-layer cos / maxdiff → first divergent layer（**Q2**）。
+- **容差**: 可先 ref-vs-ref 估 noise floor；超出 baseline 才是真发散。
+- **必须**按上文 **精度定界决策树 Q1–Q5** 填结论模板；勿只贴表。
 
 **Decision** (取决于 `{TOPO}`):
 - PD-separated: D 端收到的 KV ≠ ref prefill → bug in P prefill 或 P→D transfer；D decode 层 KV ≠ ref decode → bug in D decode write.
 - single-process: 某层 KV ≠ ref → bug in that layer’s KV write / attention path.
-- KV nearly identical → Phase E.2.
+- KV nearly identical → Phase E.2（**Q1=KV 无异常**）。
 
 ### Step 8: Phase E.2 — KV 一致时的下一步
 
-If `locate_first_divergence` / `compare_per_layer` show KV nearly identical:
+If `locate_first_divergence` / `compare_per_layer` show KV nearly identical（**Q1：KV 无异常**）:
 
-1. Bug is likely **after** KV write: logits / logprob / sampling / output assembly.
+1. 定界为 **非 KV cache 内容问题**：偏向 **模型本身 / 后采样（logits→token）/ 输出组装**。
 2. Re-read detector hits (`logits_finite` / `token_repeat` / `output_substring` /
    `spec_acceptance`) and report `output_token_ids` for the first wrong token.
-3. Stay on native tools — do **not** open msprobe. If the case needs op-level hidden-state dumps outside `dump_kv`, tell the user that is **out of scope** for this skill and stop or hand off explicitly.
+3. 用定界模板收口：`类型=后采样/非KV`。Stay on native tools — do **not** open msprobe.
+   Op-level hidden-state dumps outside `dump_kv` are **out of scope** for this skill.
 
 ## dump_kv cheat sheet
 

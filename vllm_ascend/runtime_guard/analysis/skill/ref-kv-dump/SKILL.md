@@ -2,9 +2,10 @@
 name: runtime-guard-ref-kv-dump
 description: >-
   Capture a reference KV dump via runtime_guard dump_kv (same token IDs as the
-  buggy report) and compare against the buggy kv_cache dir: first-divergence
-  two tables and per-layer cosine. Use for token_repeat / KV corruption after
-  verify_request_kv PASS. No msprobe.
+  buggy report) and compare against the buggy kv_cache dir for precision
+  localization: first-divergence tables + interpret Q1–Q5 (KV vs post-sample,
+  prefill/decode, token/layer, block grain, pollution vs compute via cos shape).
+  Use after verify_request_kv PASS. No msprobe.
 ---
 
 # Reference KV via native dump_kv
@@ -83,6 +84,31 @@ python -m vllm_ascend.runtime_guard.analysis.scripts.compare_per_layer \
 
 **Table 1**: per-token min-cos over matched layers → first bad token.  
 **Table 2**: that token’s per-layer cos / maxdiff → first divergent layer.
+
+### 如何把两表读成「精度定界」（与 investigation Q1–Q5 对齐）
+
+主干逻辑：**检测 → report → dump 异常 KV → 用 report token ids 跑标杆 ref → 对比定界**。
+
+1. **KV 是否异常？**  
+   - 无首分歧 / 全程高相似 → **非 KV 内容问题**（模型/后采样等）→ 停在 detector 解释。  
+   - 有首分歧 → 继续 2–5。
+
+2. **阶段 / token / 层**  
+   - token 在 prompt 段 → prefill；在 output 段 → decode。  
+   - 全层同时坏 → 整包写/传；从某层起坏 → 该层计算/写出。
+
+3. **粒度**  
+   - 单 token / 连续多 token / 按 `block_size` 对齐的整 block → 对应单步写、连续 decode、block 级 load/store。
+
+4. **异常点之后**  
+   - 邻域又正常 → 写入后污染/覆盖；一路坏到底 → 写入时即错或错误源持续。
+
+5. **类型（cos 形态）**  
+   - **断崖**（→0 / 噪声级）→ 污染/串 block/脏数据。  
+   - **平台 ~0.8–0.9** → 更偏计算/精度路径差。  
+   - nan/inf（`inspect_kv_dump`）→ 数值爆炸。
+
+结论必须落到 investigation 里的一句话模板（KV/阶段/token/层/粒度/时机/类型）。
 
 Assumes sequence starts at offset 0 of `block_ids[0]`. Layers matched by
 payload `layer` name (intersection of both dirs), ordered by natural sort

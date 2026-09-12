@@ -20,7 +20,7 @@ description: >-
 
 - **§15**：先确认能 dump、结构正常（`verify_request_kv` / `inspect_kv_dump`），再汇总。  
 - **§15.3**：与 `test/live/golden/reports/` 标杆比关键字段；KV 数值对比用 ref skill，比完删临时 dump（§0.4）。  
-- **§10**：注入场景须能初步定位；流程过时则**更新本 skill 与 investigation/ref-kv-dump**。
+- **§10**：注入场景须能初步定位；**精度定界 Q1–Q5** 见 `runtime-guard-investigation`；流程过时则回写 skill。
 
 默认 `--report-dir`：`./runtime/report`（可问用户确认）。
 
@@ -100,7 +100,7 @@ payload 还带 `tp_rank` / `num_kv_heads`（本 TP shard 切过的 KV head 数�
 两份 dump 的 head 切片一致，否则 cos 差可能只是 TP 切分不同而不是数值问题。层名排序是 natural sort
 （`layer_2` < `layer_10`），首个发散层的序号可信。
 
-### Step 5 — 结论
+### Step 5 — 结论（对账级）
 
 用中文（除非用户要求其他语言）汇总：
 
@@ -108,6 +108,22 @@ payload 还带 `tp_rank` / `num_kv_heads`（本 TP shard 切过的 KV head 数�
 2. `block_ids` 数量与 verify 结论
 3. 关键要层的 nan/inf / 数值范围（若跑了 Step 4）
 4. 未覆盖项（例如无 dump、token 列表缺失）
+
+### Step 6 — 精度定界（有 buggy+ref 时）
+
+本 skill 的 Step 0–5 只做**现场对账**。一旦已有 ref dump，按
+`runtime-guard-investigation` 的 **精度定界决策树 Q1–Q5** 解读
+`locate_first_divergence` / `compare_kv_similarity` 结果：
+
+| 问 | 答什么 |
+|----|--------|
+| Q1 | KV 是否异常？否 → 模型/后采样；是 → 继续 |
+| Q2 | prefill 还是 decode？首坏 token？首坏层？（全层坏=整包写；从某层起=该层计算） |
+| Q3 | 单 token / 连续多 token / block 级？ |
+| Q4 | 异常点之后是否正常？（邻域正常=写入后污染；一路坏=写入时即错） |
+| Q5 | cos 断崖≈污染；~0.8–0.9≈计算问题 |
+
+交付一句话定界模板见 investigation skill。脚本细节见 `runtime-guard-ref-kv-dump`。
 
 ## 落盘约定
 
