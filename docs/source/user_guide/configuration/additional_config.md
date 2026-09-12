@@ -53,6 +53,10 @@ The following table lists additional configuration options available in vLLM Asc
 | `eplb_config`                       | dict | `{}`    | Runner-specific EPLB extensions. See [Expert Parallelism Load Balancer](../feature_guide/expert_parallelism_load_balancer.md). |
 | `scheduler_config`                  | dict | `{}`    | Configuration options for Ascend scheduler extensions, including balance scheduling, recompute scheduling, DyntraLB, ShortRequestFirst, and dynamic chunked pipeline parallel. |
 | `refresh`                           | bool | `false` | Whether to refresh global Ascend configuration content. This is usually used by rlhf or ut/e2e test case. |
+| `runtime_config_path`               | str  | `None`  | Path to Runtime Guard JSON config. Default: `<cwd>/runtime/config/runtime_config.json`. See [Runtime Guard](../feature_guide/runtime_guard.md). |
+| `runtime_config_reload_interval`    | float| `0`     | Hot-reload period in seconds for `runtime_config.json`. `0` disables hot-reload (static after startup). |
+| `runtime_config`                    | dict | `None`  | Startup overlay merged into runtime config defaults (detectors, dump quota, report flags). |
+| `runtime_report_dir`                | str  | `None`  | Override report root directory. Default: `<cwd>/runtime/report`. |
 | `dump_config`                       | dict | `None`  | Inline msprobe dump configuration. vLLM-Ascend will materialize it to a temporary JSON file and pass that file to the debugger. |
 | `dump_config_path`                  | str  | `None`  | Configuration file path for msprobe dump (compatible legacy option).                                      |
 | `enable_shared_expert_dp`           | bool | `False` | Replicate shared-expert weights across TP ranks and run the shared expert with data parallelism. This option is independent of upstream MoE sequence parallelism; either feature or both can be enabled. It improves performance but consumes more memory. |
@@ -81,6 +85,35 @@ The following table lists additional configuration options available in vLLM Asc
 | `enable_reduce_sample`              | bool | `False` | Whether to enable reduce sample optimization to reduce communication and computation overheads in the tensor parallelism scenario. When enabled, logits are kept partitioned across TP ranks and only the small set of top-k candidate values/indices is communicated, instead of performing a full-vocabulary all-to-all/all-gather. **Note**: This is an experimental feature. **Limitations**: (1) Not supported on PD-disaggregated scenario. (2) Must be disabled when sampling logprobs are requested. When reduce sample is enabled, logprobs are silently computed over partitioned logits instead of the full vocabulary, producing incorrect logprob values and top-k rankings. (3) Cannot be enabled together with lmhead TP.|
 
 The details of each configuration option are as follows:
+
+<span id="runtime_guard"></span>**runtime_guard**
+
+Runtime Guard provides online anomaly detection, structured incident reports, and optional native KV cache dump. See the [Runtime Guard feature guide](../feature_guide/runtime_guard.md) for usage and the [runtime_config reference](./runtime_config.md) for JSON fields.
+
+| Name | Type | Default | Description |
+| ---- | ---- | ------- | ----------- |
+| `runtime_config_path` | str | `None` | Path to `runtime_config.json`. When omitted, vLLM-Ascend uses `<cwd>/runtime/config/runtime_config.json` (created with defaults on first start). |
+| `runtime_config_reload_interval` | float | `0` | Poll interval in seconds for hot-reload. `0` = static config after startup. |
+| `runtime_config` | dict | `None` | Startup overlay: `defaults ← runtime_config_path ← runtime_config`. Hot-reload re-reads the JSON file only. |
+| `runtime_report_dir` | str | `None` | Report and KV dump root. Default `<cwd>/runtime/report`. |
+
+Example (online):
+
+```bash
+vllm serve Qwen/Qwen3-8B --additional-config '{
+  "runtime_config_path": "/data/runtime/config/runtime_config.json",
+  "runtime_config_reload_interval": 5,
+  "runtime_config": {
+    "detector": {
+      "token_repeat": { "enabled": true, "on_trigger": ["report", "dump_kv"] }
+    },
+    "dump": { "auto_max_times": 3 }
+  }
+}'
+```
+
+Design (Chinese): [runtime_guard_design.md](../../../zh/design/runtime_guard_design.md).  
+Operations (Chinese): [runtime_guard_ops.md](../../../zh/design/runtime_guard_ops.md).
 
 **xlite_graph_config**
 
