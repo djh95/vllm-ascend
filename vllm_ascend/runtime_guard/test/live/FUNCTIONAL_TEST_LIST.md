@@ -147,6 +147,10 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | F-05 | `reload_interval_seconds>0` | — | 设 3，改配置内容 | 热重载在 ≤interval 内生效（detector 开关/阈值变化） |
 | F-06 | `reload_interval_seconds` 非法 | — | 写 `"abc"` / `-1` | 软警告，回退默认，服务不崩 |
 | F-07 | 未知顶层键 | — | 写 `{"windw": 10}`（typo） | 重载被**响亮拒绝**（V10），旧配置保留，日志报 unknown key |
+| F-08 | `additional_config.runtime_config` 启动 overlay | — | 起服务时传 overlay 设 `detector.token_repeat.enabled=true` | 启动即生效（不经 JSON/热重载），`ensure_persisted` 把有效配置写回 JSON |
+| F-09 | 启动参数优先级 | — | 同时传 `runtime_config_reload_interval` / `runtime_dump_dir` / `sync_mode` 与 overlay 同名字段不同值 | 启动参数 authoritative，overlay 同名字段被忽略（日志确认 ctor 覆盖） |
+| F-10 | 启动 overlay 非法 | — | overlay 传未知键 `detector.fatal_error`，或传非 dict（如 list） | 软失败回退默认，服务不崩，detector 全关 |
+| F-11 | pre-bootstrap 旧 JSON | — | 起服前在 JSON 里手工设 `token_repeat.enabled=true`，起服不传 overlay | 被 defaults+overlay 覆盖写回（`enabled=false`），首个热重载周期不读回旧值 |
 
 ### 1.2 `dump` 子块
 
