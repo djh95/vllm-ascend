@@ -9,8 +9,8 @@ T-label terminology (see vllm_ascend/runtime_guard/test/perf/README.md):
 perf_baseline.py    -> T1 (or T0 if run from merge-base worktree)
 perf_ab_quick.py    -> T3 "B" vs T2 "A" x3 cross-rotated
 
-IMPORTANT: A/B here mean detector off/on WITHIN reload=3 — NOT the same as
-unrelated DFX bench skills where A/B mean no-DFX / DFX+reload>0+off.
+IMPORTANT: A/B here mean detector off/on WITHIN reload=3 — NOT "feature off vs
+harness-on" from other projects' A/B benches.
 
 Memory sampling: every round records pre/post RSS of the vllm parent+worker
 PIDs and per-NPU HBM-Usage. A 5-min idle leak-back phase runs after the

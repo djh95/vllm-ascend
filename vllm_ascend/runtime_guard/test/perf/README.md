@@ -33,9 +33,9 @@ test/perf/scripts/
 
 # Terminology + required comparisons
 
-> **Do not mix A/B labels with unrelated DFX bench skills.** Those use A=no-DFX /
-> B=DFX+reload>0+detector-off for a *different* project. Here
-> A/B inside `perf_ab_quick.py` means detector on/off — different axis.
+> **Do not mix A/B labels with other projects' benches.** Elsewhere A/B may mean
+> "feature off vs harness-on/detectors-off". Here A/B in `perf_ab_quick.py` means
+> **detectors off vs on** (both under reload=3) — different axis.
 > This README is the authoritative source for the runtime_guard project.
 
 ## Terminal-state config labels (T-labels)
