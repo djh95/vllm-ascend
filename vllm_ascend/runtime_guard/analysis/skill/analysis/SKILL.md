@@ -16,6 +16,12 @@ description: >-
 前提：线上已写出 `report_*.json`，可选写出 `dump_kv` 的 `.pt`。  
 本 skill 只做离线读盘分析，不改 `runtime_config`、不重跑服务。
 
+与 live 测试对齐（`test/live/FUNCTIONAL_TEST_LIST.md`）：
+
+- **§15**：先确认能 dump、结构正常（`verify_request_kv` / `inspect_kv_dump`），再汇总。  
+- **§15.3**：与 `test/live/golden/reports/` 标杆比关键字段；KV 数值对比用 ref skill，比完删临时 dump（§0.4）。  
+- **§10**：注入场景须能初步定位；流程过时则**更新本 skill 与 investigation/ref-kv-dump**。
+
 默认 `--report-dir`：`./runtime/report`（可问用户确认）。
 
 ## 分析流程

@@ -9,9 +9,12 @@ description: >-
 
 # Reference KV via native dump_kv
 
+Living doc：对比流程若变（路径、脚本参数）→ **回写本 skill**（live §10.3）。  
+磁盘：全量 buggy/ref dump **对比结束后删除**（live §0.4）；只保留 `test/live/golden/` 小标杆。
+
 ## Goal
 
-Compare **buggy** `kv_cache/<type>/<req_id>/wave_N/<rank_tag>/wave_N/<rank_tag>/*.pt` vs **ref** dump from a clean
+Compare **buggy** `kv_cache/<type>/<req_id>/wave_N/<rank_tag>/*.pt` vs **ref** dump from a clean
 run that force-feeds the same `prompt_token_ids + output_token_ids`.
 
 ## Why force-feed token IDs

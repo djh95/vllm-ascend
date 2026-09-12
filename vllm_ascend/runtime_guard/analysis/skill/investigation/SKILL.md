@@ -11,13 +11,21 @@ description: >-
 # runtime_guard-Based Bug Investigation (native dump_kv only)
 
 This skill is a living document — refine it as each case teaches new lessons.
+**实卡测完若发现步骤/路径/字段过时，必须回写本文件**（与 live §10.3 一致）。
 
 正文路径：`vllm_ascend/runtime_guard/analysis/skill/investigation/SKILL.md`  
 分析脚本：`python -m vllm_ascend.runtime_guard.analysis.scripts.<module>`  
 抓现场后的离线汇总/对账：见 `runtime-guard-analysis`。  
-抓 ref + 两表对比：见 `runtime-guard-ref-kv-dump`。
+抓 ref + 两表对比：见 `runtime-guard-ref-kv-dump`。  
+Live 验收：`test/live/FUNCTIONAL_TEST_LIST.md` §0.4（磁盘）、§10（注入闭环）、§15（dump/标杆）。
 
 **Dump 路径只有 native `dump_kv`。** 不要走 msprobe / PrecisionDebugger / AclGraphDumper / `dump_tensor_data` / msprobe-target-config。
+
+## Disk hygiene（每次抓 dump）
+
+- 测前看 `df`；测后**删除**临时 `kv_cache` 全量数据（失败可 `KEEP_DUMP=1` 暂留，排查完即删）。
+- Git / 旁支只保留 `test/live/golden/` 小标杆，不提交全量 KV。
+- 标杆刷新与 report 关键字段对比见 live §15。
 
 ## Required inputs (resolve BEFORE Step 1)
 
