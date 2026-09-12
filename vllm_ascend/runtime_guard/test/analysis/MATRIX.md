@@ -21,6 +21,11 @@
 | A9 | `compare_kv_dumps` 同张量无坏点 | ✅ |
 | A10 | `prepare_ref_inputs` force-feed JSON | ✅ |
 | A12 | `diff_report_golden` 关键字段对拍 | ✅ |
+| A13 | `parse_rank_tag` dp/tp/pp/cp 解析 | ✅ |
+| A14 | `stitch_tp_heads` TP 头维拼接（dim=-2） | ✅ |
+| A15 | `stitch_kv_dir` 多 rank 按层拼接 | ✅ |
+| A16 | `compare_stitched_kv` PP 部分覆盖（missing/extra） | ✅ |
+| A17 | `stitch_kv` CLI `--dump-dir` 覆盖检查 | ✅ |
 
 可选后续：A8 `inspect_kv_dump`；A11 旧扁平路径。
 """

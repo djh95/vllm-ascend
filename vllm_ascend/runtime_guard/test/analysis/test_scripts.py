@@ -12,13 +12,18 @@ import torch
 from vllm_ascend.runtime_guard.analysis.scripts._lib import (
     NativeLayerDump,
     compare_kv_dumps,
+    compare_stitched_kv,
     gather_token_rows,
+    parse_rank_tag,
     report_dump_attempted,
     resolve_kv_dump_dir,
+    stitch_kv_dir,
+    stitch_tp_heads,
 )
 from vllm_ascend.runtime_guard.analysis.scripts import (
     correlate_incident,
     prepare_ref_inputs,
+    stitch_kv,
     summarize_reports,
     verify_request_kv,
 )
@@ -238,3 +243,104 @@ def test_diff_report_golden_pass_and_fail(tmp_path: Path):
         encoding="utf-8",
     )
     assert mod.main(["--report", str(report), "--golden", str(golden_bad)]) == 1
+
+
+def _write_rank_pt(
+    rank_dir: Path,
+    *,
+    tag: str,
+    tp: int,
+    layer: str = "L0",
+    heads: int = 2,
+    dim: int = 3,
+    fill: float = 0.0,
+    req_id: str = "reqA",
+) -> None:
+    """Write one TP head-shard .pt under a ``{rank_tag}`` dir."""
+    t = torch.full((2, BLOCK_SIZE, heads, dim), fill, dtype=torch.float32)
+    rank_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "req_id": req_id,
+            "block_ids": [10, 11],
+            "layer": layer,
+            "source": "test",
+            "rank_tag": tag,
+            "tp_rank": tp,
+            "num_kv_heads": heads,
+            "tensor": t,
+        },
+        rank_dir / f"{req_id}_{layer}_req.pt",
+    )
+
+
+def test_parse_rank_tag():
+    assert parse_rank_tag("dp0_tp1_pp2_cp0") == {"dp": 0, "tp": 1, "pp": 2, "cp": 0}
+    assert parse_rank_tag("dp2_tp0_pp1_cp3") == {"dp": 2, "tp": 0, "pp": 1, "cp": 3}
+    assert parse_rank_tag("not-a-tag") is None
+
+
+def test_stitch_tp_heads_concats_head_dim():
+    a = NativeLayerDump(
+        path=Path("tp0.pt"),
+        layer="L0",
+        req_id="reqA",
+        block_ids=[10, 11],
+        source="test",
+        tensor=torch.zeros(2, BLOCK_SIZE, 2, 3),
+        rank_tag="dp0_tp0_pp0_cp0",
+        num_kv_heads=2,
+        tp_rank=0,
+    )
+    b = NativeLayerDump(
+        path=Path("tp1.pt"),
+        layer="L0",
+        req_id="reqA",
+        block_ids=[10, 11],
+        source="test",
+        tensor=torch.ones(2, BLOCK_SIZE, 2, 3),
+        rank_tag="dp0_tp1_pp0_cp0",
+        num_kv_heads=2,
+        tp_rank=1,
+    )
+    s = stitch_tp_heads([b, a], tp_size=2)  # unsorted on purpose
+    assert s.tensor.shape == (2, BLOCK_SIZE, 4, 3)
+    assert s.num_kv_heads == 4
+    assert torch.allclose(s.tensor[:, :, :2], torch.zeros(2, BLOCK_SIZE, 2, 3))
+    assert torch.allclose(s.tensor[:, :, 2:], torch.ones(2, BLOCK_SIZE, 2, 3))
+
+
+def test_stitch_kv_dir_stitches_tp(tmp_path: Path):
+    wave = tmp_path / "wave_2"
+    _write_rank_pt(wave / "dp0_tp0_pp0_cp0", tag="dp0_tp0_pp0_cp0", tp=0, fill=0.0)
+    _write_rank_pt(wave / "dp0_tp1_pp0_cp0", tag="dp0_tp1_pp0_cp0", tp=1, fill=1.0)
+    stitched = stitch_kv_dir(wave, tp_size=2)
+    assert set(stitched) == {"L0"}
+    t = stitched["L0"].tensor
+    assert t.shape == (2, BLOCK_SIZE, 4, 3)
+    assert stitched["L0"].num_kv_heads == 4
+    assert torch.allclose(t[:, :, :2], torch.zeros(2, BLOCK_SIZE, 2, 3))
+    assert torch.allclose(t[:, :, 2:], torch.ones(2, BLOCK_SIZE, 2, 3))
+
+
+def test_compare_stitched_kv_pp_partial(tmp_path: Path):
+    target = tmp_path / "target"
+    ref = tmp_path / "ref"
+    _write_rank_pt(target / "dp0_tp0_pp1_cp0", tag="dp0_tp0_pp1_cp0", tp=0, layer="L0", fill=0.5)
+    _write_rank_pt(ref / "dp0_tp0_pp0_cp0", tag="dp0_tp0_pp0_cp0", tp=0, layer="L0", fill=0.5)
+    _write_rank_pt(ref / "dp0_tp0_pp0_cp0", tag="dp0_tp0_pp0_cp0", tp=0, layer="L1", fill=0.5)
+    cmp = compare_stitched_kv(target_dir=target, ref_dir=ref)
+    assert cmp.missing_in_target == ["L1"]
+    assert cmp.extra_in_target == []
+    assert cmp.all_clean is True
+    assert len(cmp.layers) == 1
+    assert cmp.layers[0].cos >= 0.9999
+
+
+def test_stitch_kv_cli_dump_verify(tmp_path: Path, capsys):
+    wave = tmp_path / "wave_2"
+    _write_rank_pt(wave / "dp0_tp0_pp0_cp0", tag="dp0_tp0_pp0_cp0", tp=0)
+    _write_rank_pt(wave / "dp0_tp1_pp0_cp0", tag="dp0_tp1_pp0_cp0", tp=1)
+    rc = stitch_kv.main(["--dump-dir", str(wave), "--tp-size", "2"])
+    assert rc == 0
+    assert "OK" in capsys.readouterr().out

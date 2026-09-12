@@ -142,6 +142,30 @@ def assert_block_capacity(n_blocks: int, n_tokens: int, block_size: int) -> None
         raise ValueError(f"block capacity {cap} < num_tokens {n_tokens} (blocks={n_blocks} size={block_size})")
 
 
+_RANK_TAG_RE = re.compile(r"^dp(\d+)_tp(\d+)_pp(\d+)_cp(\d+)$")
+
+
+def parse_rank_tag(tag: str) -> dict[str, int] | None:
+    """Parse ``dp<d>_tp<t>_pp<p>_cp<c>`` into ``{dp,tp,pp,cp}`` ints (None on mismatch)."""
+    m = _RANK_TAG_RE.match(str(tag).strip())
+    if not m:
+        return None
+    return {"dp": int(m.group(1)), "tp": int(m.group(2)), "pp": int(m.group(3)), "cp": int(m.group(4))}
+
+
+def _rank_component(rank_tag: str, payload_val: Any, key: str) -> int:
+    """Prefer the explicit payload field; fall back to parsing ``rank_tag``."""
+    try:
+        if payload_val is not None:
+            return int(payload_val)
+    except (TypeError, ValueError):
+        pass
+    parsed = parse_rank_tag(rank_tag)
+    if parsed is not None:
+        return parsed[key]
+    return 0
+
+
 @dataclass
 class NativeLayerDump:
     path: Path
@@ -152,6 +176,10 @@ class NativeLayerDump:
     tensor: Any  # torch.Tensor
     rank_tag: str = ""
     num_kv_heads: int | None = None
+    tp_rank: int = 0
+    pp_rank: int = 0
+    cp_rank: int = 0
+    dp_rank: int = 0
 
 
 def load_native_pt(path: Path) -> NativeLayerDump:
@@ -161,6 +189,7 @@ def load_native_pt(path: Path) -> NativeLayerDump:
     if not isinstance(obj, dict) or "tensor" not in obj:
         raise ValueError(f"{path}: expected dump_kv dict with 'tensor'")
     n_heads = obj.get("num_kv_heads")
+    rank_tag = str(obj.get("rank_tag") or "")
     return NativeLayerDump(
         path=path,
         layer=str(obj.get("layer") or path.stem),
@@ -168,8 +197,12 @@ def load_native_pt(path: Path) -> NativeLayerDump:
         block_ids=[int(x) for x in (obj.get("block_ids") or [])],
         source=str(obj.get("source") or ""),
         tensor=obj["tensor"],
-        rank_tag=str(obj.get("rank_tag") or ""),
+        rank_tag=rank_tag,
         num_kv_heads=int(n_heads) if n_heads is not None else None,
+        tp_rank=_rank_component(rank_tag, obj.get("tp_rank"), "tp"),
+        pp_rank=_rank_component(rank_tag, obj.get("pp_rank"), "pp"),
+        cp_rank=_rank_component(rank_tag, obj.get("cp_rank"), "cp"),
+        dp_rank=_rank_component(rank_tag, obj.get("dp_rank"), "dp"),
     )
 
 
@@ -185,6 +218,161 @@ def load_kv_dir(kv_dir: Path) -> dict[str, NativeLayerDump]:
     if not out:
         raise FileNotFoundError(f"no .pt files under {kv_dir}")
     return out
+
+
+def discover_rank_dirs(wave_dir: Path) -> dict[str, Path]:
+    """Map ``rank_tag -> dir`` for every ``{rank_tag}/*.pt`` shard under a wave dir.
+
+    Config layout is ``<wave_N>/<rank_tag>/{req_id}_{layer}_req.pt``. A
+    single-rank (TP=DP=PP=CP=1) dump still lands under ``dp0_tp0_pp0_cp0``.
+    """
+    if not wave_dir.is_dir():
+        return {}
+    out: dict[str, Path] = {}
+    for child in sorted(wave_dir.iterdir()):
+        if child.is_dir() and any(child.glob("*.pt")):
+            out[child.name] = child
+    return out
+
+
+def stitch_tp_heads(dumps: list[NativeLayerDump], *, tp_size: int | None = None) -> NativeLayerDump:
+    """Concatenate per-TP-rank KV head shards along the head dim (``dim=-2``).
+
+    Each TP rank holds a contiguous slice of ``num_kv_heads``; ascending
+    ``tp_rank`` order reconstructs the natural head order. The result is
+    ``[n_blocks, block_size, H, head_dim]`` with ``H`` the total heads.
+    """
+    import torch
+
+    if not dumps:
+        raise ValueError("no dumps to stitch")
+    ordered = sorted(dumps, key=lambda d: d.tp_rank)
+    if tp_size is not None and len(ordered) != tp_size:
+        present = [d.tp_rank for d in ordered]
+        raise ValueError(f"expected tp_size={tp_size} shards, got tp_ranks={present}")
+    base = ordered[0]
+    if base.tensor.dim() < 3:
+        raise ValueError(f"layer={base.layer}: tensor has no head dim (dim={base.tensor.dim()})")
+    for d in ordered[1:]:
+        if d.layer != base.layer:
+            raise ValueError(f"layer mismatch in stitch: {base.layer} vs {d.layer}")
+        if list(d.block_ids) != list(base.block_ids):
+            raise ValueError(f"layer={base.layer}: block_ids differ across TP ranks")
+        if d.tensor.shape[:2] != base.tensor.shape[:2]:
+            raise ValueError(
+                f"layer={base.layer}: block dims differ across TP ranks "
+                f"({tuple(d.tensor.shape[:2])} vs {tuple(base.tensor.shape[:2])})"
+            )
+        if d.tensor.dim() != base.tensor.dim() or d.tensor.shape[3:] != base.tensor.shape[3:]:
+            raise ValueError(f"layer={base.layer}: head_dim/trailing dims differ across TP ranks")
+    stitched = torch.cat([d.tensor for d in ordered], dim=-2)
+    return NativeLayerDump(
+        path=base.path,
+        layer=base.layer,
+        req_id=base.req_id,
+        block_ids=list(base.block_ids),
+        source=base.source,
+        tensor=stitched,
+        rank_tag=base.rank_tag,
+        num_kv_heads=int(stitched.shape[-2]),
+        tp_rank=0,
+        pp_rank=base.pp_rank,
+        cp_rank=base.cp_rank,
+        dp_rank=base.dp_rank,
+    )
+
+
+def stitch_kv_dir(wave_dir: Path, *, tp_size: int | None = None) -> dict[str, NativeLayerDump]:
+    """Stitch all ``{rank_tag}/*.pt`` shards under a wave dir into per-layer tensors.
+
+    Groups ``.pt`` files by ``layer`` across rank dirs, then concatenates TP
+    head shards (``stitch_tp_heads``). Layers present on exactly one rank (e.g.
+    TP=1, or a rank-local source) pass through unchanged.
+    """
+    rank_dirs = discover_rank_dirs(wave_dir)
+    if not rank_dirs:
+        raise FileNotFoundError(f"no rank dirs with *.pt under {wave_dir}")
+    by_layer: dict[str, list[NativeLayerDump]] = {}
+    for _tag, rdir in rank_dirs.items():
+        for layer, dump in load_kv_dir(rdir).items():
+            by_layer.setdefault(layer, []).append(dump)
+    stitched: dict[str, NativeLayerDump] = {}
+    for layer, dumps in by_layer.items():
+        if len(dumps) == 1:
+            stitched[layer] = dumps[0]
+        else:
+            stitched[layer] = stitch_tp_heads(dumps, tp_size=tp_size)
+    return stitched
+
+
+@dataclass
+class LayerCompare:
+    layer: str
+    cos: float
+    maxdiff: float
+    shape_target: tuple[int, ...]
+    shape_ref: tuple[int, ...]
+
+
+@dataclass
+class StitchedCompare:
+    target_dir: Path
+    ref_dir: Path
+    common_layers: list[str]
+    missing_in_target: list[str]
+    extra_in_target: list[str]
+    layers: list[LayerCompare]
+    cos_thresh: float
+
+    @property
+    def all_clean(self) -> bool:
+        return bool(self.layers) and all(cos_is_clean(l.cos, self.cos_thresh) for l in self.layers)
+
+
+def compare_stitched_kv(
+    *,
+    target_dir: Path,
+    ref_dir: Path,
+    cos_thresh: float = 0.9999,
+) -> StitchedCompare:
+    """Stitch two dump dirs and compare per-layer (full-tensor cosine + maxdiff).
+
+    ``missing_in_target`` / ``extra_in_target`` surface PP partial coverage:
+    a PP>1 dump only has the last stage's layers, so it will be a strict subset
+    of a PP=1 reference.
+    """
+    target = stitch_kv_dir(target_dir)
+    ref = stitch_kv_dir(ref_dir)
+    t_set = set(target)
+    r_set = set(ref)
+    common = sorted(t_set & r_set, key=_natural_key)
+    missing = sorted(r_set - t_set, key=_natural_key)
+    extra = sorted(t_set - r_set, key=_natural_key)
+    layers: list[LayerCompare] = []
+    for name in common:
+        t = target[name].tensor
+        r = ref[name].tensor
+        if t.shape != r.shape:
+            layers.append(LayerCompare(name, float("nan"), float("inf"), tuple(t.shape), tuple(r.shape)))
+            continue
+        layers.append(
+            LayerCompare(
+                name,
+                cosine(t, r),
+                maxdiff(t, r),
+                tuple(t.shape),
+                tuple(r.shape),
+            )
+        )
+    return StitchedCompare(
+        target_dir=target_dir,
+        ref_dir=ref_dir,
+        common_layers=common,
+        missing_in_target=missing,
+        extra_in_target=extra,
+        layers=layers,
+        cos_thresh=cos_thresh,
+    )
 
 
 def cosine(a: Any, b: Any) -> float:

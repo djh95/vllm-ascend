@@ -59,6 +59,7 @@ python -m vllm_ascend.runtime_guard.analysis.scripts.<name> ...
 | `inspect_kv_dump` | 单文件抽查 |
 | `prepare_ref_inputs` / `request_from_report` | force-feed |
 | `compare_kv_similarity` / `locate_first_divergence` / `compare_per_layer` | buggy vs ref |
+| `stitch_kv` | 多 rank TP 头维拼接 + DP/TP/PP 覆盖检查 + 跨 TP/PP 对比 |
 
 落盘约定（config 产品）：
 

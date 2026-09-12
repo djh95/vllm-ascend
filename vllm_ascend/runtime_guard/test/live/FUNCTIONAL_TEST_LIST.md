@@ -565,6 +565,8 @@ python -m vllm_ascend.runtime_guard.analysis.scripts.verify_request_kv \
 python -m vllm_ascend.runtime_guard.analysis.scripts.inspect_kv_dump --path <one.pt>
 python -m vllm_ascend.runtime_guard.analysis.scripts.correlate_incident \
   --report-dir <root> --req-id <id>
+python -m vllm_ascend.runtime_guard.analysis.scripts.stitch_kv \
+  --dump-dir <wave_N> [--tp-size N]
 ```
 
 | ID | 检查 | 预期 |
@@ -573,6 +575,10 @@ python -m vllm_ascend.runtime_guard.analysis.scripts.correlate_incident \
 | K-11 | `.pt` schema | 关键键齐全；`verify_request_kv` PASS |
 | K-12 | block 容量 | `len(block_ids)*block_size >= N_tokens`（有 ids 时） |
 | K-13 | 与 report 一致 | `req_id` / `block_ids` / `dump_dir` 可对上 |
+| K-14 | TP 完整性 | 多 TP 时所有 tp_rank 的 `.pt` 都在；`stitch_kv --dump-dir` 报 tp_size 完整、拼接后 heads=全量 |
+| K-15 | PP 部分覆盖 | PP>1 仅 last stage dump；`compare_stitched_kv` 报 missing 层 = 非 last 段层，符合预期 |
+| K-16 | DP 分请求 | 多 DP 时同一 req 只在所属 dp rank dump（rank_tag 的 dp 唯一），不同 req 落各自 dp |
+| K-17 | TP+PP+DP 组合 | 全开时每个 req 在所属 dp 上 tp 齐全、pp 部分覆盖，拼接后与标杆一致 |
 
 ### 15.3 生成标杆并对比
 
@@ -592,6 +598,7 @@ vllm_ascend/runtime_guard/test/live/golden/
 | K-22 | KV 对比 | 同请求 ref：`compare_kv_similarity` / `locate_first_divergence`；  
 | | | 健康路径：与自身/ref 高余弦；注入坏路径：首分歧落在预期阶段 |
 | K-23 | 清理 | 对比结束后删临时全量 dump（§0.4）；golden 保留 |
+| K-24 | TP/PP 拼接对比标杆 | `stitch_kv --target <wave> --ref <baseline>`：TP=2/4 拼接 vs TP=1 标杆 cos≥阈值、shape 一致；PP>1 的 missing 层 = 非 last 段层 |
 
 ### 15.4 与「初步定位」的衔接
 
