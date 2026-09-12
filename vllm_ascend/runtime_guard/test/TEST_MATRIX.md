@@ -37,17 +37,18 @@ Priorities: **P0** every PR / smoke; **P1** full suite; **P2** env-dependent.
 | D1–D5 | dump_kv scope=request, quota, cooldown | Files only for armed req; quota respected |
 | C1–C4 | v1 vs v2 runner hook parity | Same report fields / detector hits |
 
-## P1 — performance (live NPU; see dfx-perf-bench rotation)
+## P1 — performance (live NPU → **analysis 旁支**)
+
+实卡吞吐 / 开销对比（T0–T3、C1–C6、交叉轮换、**ModelRunner v1+v2**）已迁到：
+
+`feat/runtime-guard-analysis` → `vllm_ascend/runtime_guard/test/perf/README.md`
+
+本产品分支 **不再维护** NPU perf 脚本与结果文档。CPU 热路径微基准若需，见 analysis 同目录
+`test_refresh_config_cost.py`（可选）。
 
 | Label | Config | Claim |
 |-------|--------|-------|
-| A | No additional-config | Baseline TPS |
-| B' | Framework on, reload=0, detectors off | ≈ A |
-| B | reload>0, detectors off, dump off | ≈ A (hot-reload only) |
-| B+det | one light detector (token_repeat) | small CPU overhead |
-| B+dump | dump_kv armed rarely | amortized; spike only on hit |
-
-Pass: mean TPS(B)/TPS(A) ≥ 0.98 (or within measured noise on that SKU); A vs pre-PR A' within noise.
+| A / B / B+det / B+dump | （见 analysis perf README） | 以 analysis 旁支验收为准 |
 
 ## P2 — stress / DP / MTP
 
@@ -60,13 +61,13 @@ Pass: mean TPS(B)/TPS(A) ≥ 0.98 (or within measured noise on that SKU); A vs p
 
 | Experiment | In this repo UT? | How |
 |------------|------------------|-----|
-| **A0** Hook present, reload=0, detectors/dump off → `refresh_config` ≪ 1 ms | **Yes** (opt-in) | `vllm_ascend/runtime_guard/test/perf/test_refresh_config_cost.py` |
-| **A1** reload&gt;0, detectors/dump off → bounded CPU | **Yes** | same |
+| **A0** Hook present, reload=0, detectors/dump off → `refresh_config` ≪ 1 ms | **Moved** | analysis `test/perf/test_refresh_config_cost.py` |
+| **A1** reload&gt;0, detectors/dump off → bounded CPU | **Moved** | same |
 | **A2** Empty `block_ids` never full-cache D2H | **Yes** | `test_detectors_and_kv.py` |
 | **A3** Soft-fail bad JSON | **Yes** | `test_runtime_config_core.py` |
-| **E1** Live NPU: **no PR code** (main / without bind) vs **PR + no additional-config** | **No (needs NPU + two builds)** | See `vllm_ascend/runtime_guard/test/perf/README.md` |
-| **E2** Live: PR + reload=0 vs PR + reload&gt;0 detectors off | **No (needs live server)** | same README + skills/test `dfx-perf-bench` |
-| **E3** Live: output tokens identical temp=0 across A/B | **No (needs live server)** | curl + compare |
+| **E1** Live NPU: **no PR code** vs **PR + no additional-config** | **No (NPU)** | analysis `test/perf/README.md`（须 v1+v2） |
+| **E2** Live: PR + reload=0 vs PR + reload&gt;0 detectors off | **No (NPU)** | same |
+| **E3** Live: output tokens identical temp=0 across A/B | **No (NPU)** | analysis `test/live/` + curl |
 
 CI proves **CPU hot-path bounds** and **functional isolation**.  
 **Throughput parity with/without the patch** is **E1/E2** only — not runnable in this Mac/CI env without Ascend.
