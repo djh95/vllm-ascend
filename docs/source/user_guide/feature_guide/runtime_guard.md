@@ -51,6 +51,7 @@ Configure through `--additional-config` (or `LLM(..., additional_config=...)`):
 | `runtime_config_reload_interval` | float | Hot-reload period in seconds. `0` = static after startup (default) |
 | `runtime_config` | dict | Startup overlay merged into JSON defaults |
 | `runtime_report_dir` | str | Override report root (default `<cwd>/runtime/report`) |
+| `runtime_dump_dir` | str | Seed KV dump root `dump.dump_dir` (default derived from report root). Hot-reload of `dump.dump_dir` in JSON wins after startup |
 
 See [Additional Configuration](../configuration/additional_config.md#runtime_guard) and the full [runtime_config reference](../configuration/runtime_config.md).
 
