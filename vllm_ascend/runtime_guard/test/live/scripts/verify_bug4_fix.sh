@@ -4,7 +4,7 @@
 # Cases: manual_dump v2 TP=1, manual_dump v2 TP=2, auto nan v2 TP=1, manual v1 TP=1 (control).
 set -uo pipefail
 
-PRODUCT=/data0/test-mrv2-cann91/rg-config-review
+PRODUCT=/data0/test-mrv2-cann91/vllm-ascend
 CFGDIR=/data0/test-mrv2-cann91/vllm-ascend/vllm_ascend/runtime_guard/test/live/configs
 PY=/opt/slime/venv/bin/python
 MODEL=/data0/weights/Qwen2.5-0.5B-Instruct

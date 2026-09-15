@@ -4,7 +4,7 @@
 # (mooncake AdxlEngine "Device 1 transport init error: network port is down").
 # Validates mooncake NPU wheel + proxy + P2P KV transfer end-to-end.
 set -uo pipefail
-PRODUCT=/data0/test-mrv2-cann91/rg-config-review
+PRODUCT=/data0/test-mrv2-cann91/vllm-ascend
 PROXY_DIR=/data0/test-mrv2-cann91/vllm-ascend/examples/disaggregated_prefill_v1
 PY=/opt/slime/venv/bin/python
 MODEL=/data0/weights/Qwen2.5-0.5B-Instruct

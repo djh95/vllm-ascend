@@ -3,7 +3,7 @@
 # P(card0, kv_producer) + D(card2, kv_consumer) + proxy. nan inject on D (decode samples).
 # Expect: both boot (hooks no crash), request OK, D report>=1 + dump>=1, P report=0 + dump=0.
 set -uo pipefail
-PRODUCT=/data0/test-mrv2-cann91/rg-config-review
+PRODUCT=/data0/test-mrv2-cann91/vllm-ascend
 PROXY_DIR=/data0/test-mrv2-cann91/vllm-ascend/examples/disaggregated_prefill_v1
 CFGDIR=/data0/test-mrv2-cann91/vllm-ascend/vllm_ascend/runtime_guard/test/live/configs
 PY=/opt/slime/venv/bin/python

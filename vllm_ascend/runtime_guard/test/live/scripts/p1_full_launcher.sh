@@ -8,7 +8,7 @@ set -uo pipefail
 #   PY / MODEL / SERVED_MODEL_NAME
 #   NPU_DEV          two NPU ids for TP=2 (e.g. "0,1")
 # Results -> $RG_OUT_ROOT/summary.txt
-PRODUCT="${RG_PRODUCT_ROOT:-/data0/test-mrv2-cann91/rg-config-review}"
+PRODUCT="${RG_PRODUCT_ROOT:-/data0/test-mrv2-cann91/vllm-ascend}"
 ANALYSIS="${RG_ANALYSIS_ROOT:-/data0/test-mrv2-cann91/vllm-ascend}"
 CFGDIR="${RG_CFGDIR:-$ANALYSIS/vllm_ascend/runtime_guard/test/live/configs}"
 PY="${PY:-/opt/slime/venv/bin/python}"

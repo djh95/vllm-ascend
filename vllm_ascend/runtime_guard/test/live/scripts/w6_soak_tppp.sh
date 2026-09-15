@@ -10,7 +10,7 @@
 set -uo pipefail
 
 PY=/opt/slime/venv/bin/python
-PRODUCT=/data0/test-mrv2-cann91/rg-config-review
+PRODUCT=/data0/test-mrv2-cann91/vllm-ascend
 ROOT=/tmp/rg_soak_tppp
 NAME=s7_tppp
 CARDS="0,1,2,3"

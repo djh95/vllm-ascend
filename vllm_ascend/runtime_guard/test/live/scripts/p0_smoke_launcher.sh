@@ -10,7 +10,7 @@ set -uo pipefail
 #   PORT             api port
 #   RG_OUT_ROOT      output root (summary.txt + per-case report/dump/log)
 # Results -> $RG_OUT_ROOT/summary.txt
-PRODUCT="${RG_PRODUCT_ROOT:-/data0/test-mrv2-cann91/rg-config-review}"
+PRODUCT="${RG_PRODUCT_ROOT:-/data0/test-mrv2-cann91/vllm-ascend}"
 CFGDIR="${RG_CFGDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../configs" && pwd)}"
 PY="${PY:-/opt/slime/venv/bin/python}"
 MODEL="${MODEL:-/data0/weights/Qwen2.5-0.5B-Instruct}"

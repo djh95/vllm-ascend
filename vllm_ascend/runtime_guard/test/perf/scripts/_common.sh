@@ -11,7 +11,7 @@ PORT="${PORT:-8017}"
 CARD="${CARD:-0}"   # card 1 RDMA/HCCS port is down; default single-instance card 0
 TP="${TP:-1}"
 
-PRODUCT_ROOT="${RG_PRODUCT_ROOT:-/data0/test-mrv2-cann91/rg-config-review}"
+PRODUCT_ROOT="${RG_PRODUCT_ROOT:-/data0/test-mrv2-cann91/vllm-ascend}"
 T0_ROOT="${RG_T0_ROOT:-/data0/test-mrv2-cann91/rg-perf-t0}"   # merge-base 37e382498, no runtime_guard
 ANALYSIS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 PERF_DIR="$ANALYSIS_ROOT/vllm_ascend/runtime_guard/test/perf"

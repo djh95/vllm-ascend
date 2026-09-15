@@ -11,7 +11,7 @@
 set -uo pipefail
 
 PY=/opt/slime/venv/bin/python
-PRODUCT=/data0/test-mrv2-cann91/rg-config-review
+PRODUCT=/data0/test-mrv2-cann91/vllm-ascend
 ROOT=/tmp/rg_soak
 mkdir -p "$ROOT"
 MASTER_LOG="$ROOT/master.log"
