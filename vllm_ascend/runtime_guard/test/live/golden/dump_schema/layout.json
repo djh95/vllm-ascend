@@ -1,0 +1,6 @@
+{
+  "layout": "kv_cache/<type>/<req_id>/wave_N/<rank_tag>/*.pt",
+  "pt_required_keys": ["req_id", "block_ids", "layer", "rank_tag", "tensor"],
+  "tensor_layout": "[n_blocks, block_size, num_kv_heads, head_dim]",
+  "notes": "Shape numbers are model-specific; verify with inspect_kv_dump on lab"
+}

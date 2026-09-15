@@ -1,0 +1,35 @@
+{
+  "reload_interval_seconds": 3,
+  "dump": {
+    "auto_max_times": 0,
+    "manual_dump": true
+  },
+  "actions": {
+    "defaults": {
+      "on_trigger": ["report", "dump_kv"]
+    }
+  },
+  "detector": {
+    "logits_finite": { "enabled": true },
+    "token_repeat": {
+      "enabled": true,
+      "window": 32,
+      "repeat_sum_threshold": 64,
+      "min_tokens": 8,
+      "consecutive_hits": 1
+    },
+    "output_substring": {
+      "enabled": true,
+      "patterns": ["李白"],
+      "match_prefix": false
+    },
+    "spec_acceptance": {
+      "enabled": true,
+      "window": 10,
+      "low_threshold": 0.3,
+      "len_low_threshold": 1.4,
+      "high_threshold": 0.96,
+      "len_high_threshold": 2.8
+    }
+  }
+}
