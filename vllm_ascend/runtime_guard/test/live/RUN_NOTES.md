@@ -4,6 +4,21 @@
 > P0 冒烟 + P1 全量的结果、发现的问题（BUG），以及环境绕法。
 > 对应启动脚本：`scripts/p0_smoke_launcher.sh`、`scripts/p1_full_launcher.sh`。
 
+## 2026-09-16 rebase 后回归（vllm 0.27.1→0.28.0 + vllm-ascend main 200+ commits）
+
+| 项 | 内容 |
+|----|------|
+| 背景 | config 分支 rebase 到最新 main（714dd1d1b）成单 commit baec54437；vllm 升 **v0.28.0**（release 28）；两仓重编 |
+| 编译 | vllm 用 VLLM_TARGET_DEVICE=empty + --no-build-isolation；vllm-ascend 用 --no-build-isolation --no-deps（aliyun 源 cmake/numpy 大 wheel 间歇停滞，绕法） |
+| 产品 UT | runtime_config 18 + wiring/regression 75 + detector/wave/inject 36 = **129 passed / 0 fail** |
+| P0 冒烟 | **6 用例 × v2/v1 = 12/12 PASS**（guard_off 0/0、inject_nan/inf_logits/forbidden/token_loop 各 1 report、manual_dump 768 .pt + report 字段 K-13 契约对齐） |
+| 结论 | rebase 未破坏功能；feature 自有路径与 rebase 前字节一致（git diff d872b9819..baec54437 feature 路径为空），差异只在 wiring 且 UT/实卡均过 |
+| 产物 | rg_p0_smoke_rebase28/summary.txt；dump 已按 §0.4 清理；卡 0 已释放 |
+| 顺手修 | config：文档补 runtime_dump_dir（068e847ed）；analysis：脚本 PRODUCT 默认改指 vllm-ascend 主 checkout（d5c56689d） |
+
+注意：perf T0 基线 worktree（rg-perf-t0，旧 merge-base 37e382498）已删；重跑 C1-C6 前需按新 main 重建
+（git -C vllm-ascend worktree add /data0/test-mrv2-cann91/rg-perf-t0 714dd1d1b）并重编。
+
 ## 环境要点（本机，非 165）
 
 - 源码：`/data0/test-mrv2-cann91/`；产品代码 `rg-config-review`（config 分支），
