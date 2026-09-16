@@ -486,7 +486,7 @@ def test_queue_kv_dump_dedupes_req_id_same_step(caplog):
     from vllm_ascend.runtime_guard.processor import RuntimeGuardProcessor
 
     proc = SimpleNamespace(_kv_dump_jobs=[])
-    with caplog.at_level(logging.INFO, logger="vllm_ascend.runtime_guard.processor"):
+    with caplog.at_level(logging.INFO, logger="vllm_ascend.runtime_guard.processor_dump"):
         assert RuntimeGuardProcessor.queue_kv_dump(proc, {"req_id": "r1", "arm_id": "a", "wave": 1}) is True
         assert RuntimeGuardProcessor.queue_kv_dump(proc, {"req_id": "r1", "arm_id": "b", "wave": 1}) is False
     assert any("already pending" in r.message for r in caplog.records)
