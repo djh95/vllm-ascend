@@ -1247,12 +1247,12 @@ def test_v19a2_manual_trigger_handle_consumes_one_count():
     p.wave_tracker = MagicMock()
     p.wave_tracker.current_wave.return_value = 3
     with patch(
-        "vllm_ascend.runtime_guard.processor.is_action_leader_rank",
+        "vllm_ascend.runtime_guard.processor_report.is_action_leader_rank",
         return_value=True,
     ), patch(
-        "vllm_ascend.runtime_guard.processor.RequestIoSnapshotManager"
+        "vllm_ascend.runtime_guard.processor_report.RequestIoSnapshotManager"
     ) as io_cls, patch(
-        "vllm_ascend.runtime_guard.processor.block_ids_for_request",
+        "vllm_ascend.runtime_guard.processor_report.block_ids_for_request",
         return_value=[0],
     ):
         io = MagicMock()
@@ -1286,12 +1286,12 @@ def test_v19a3_manual_trigger_consumes_even_when_dump_not_armed():
     p.wave_tracker = MagicMock()
     p.wave_tracker.current_wave.return_value = 1
     with patch(
-        "vllm_ascend.runtime_guard.processor.is_action_leader_rank",
+        "vllm_ascend.runtime_guard.processor_report.is_action_leader_rank",
         return_value=True,
     ), patch(
-        "vllm_ascend.runtime_guard.processor.RequestIoSnapshotManager"
+        "vllm_ascend.runtime_guard.processor_report.RequestIoSnapshotManager"
     ) as io_cls, patch(
-        "vllm_ascend.runtime_guard.processor.block_ids_for_request",
+        "vllm_ascend.runtime_guard.processor_report.block_ids_for_request",
         return_value=[],
     ):
         io = MagicMock()
@@ -1651,12 +1651,12 @@ def test_v23d_manual_handle_writes_one_report_per_req(tmp_path: Path):
     p.wave_tracker = MagicMock()
     p.wave_tracker.current_wave.return_value = 5
     with patch(
-        "vllm_ascend.runtime_guard.processor.is_action_leader_rank",
+        "vllm_ascend.runtime_guard.processor_report.is_action_leader_rank",
         return_value=True,
     ), patch(
-        "vllm_ascend.runtime_guard.processor.RequestIoSnapshotManager"
+        "vllm_ascend.runtime_guard.processor_report.RequestIoSnapshotManager"
     ) as io_cls, patch(
-        "vllm_ascend.runtime_guard.processor.block_ids_for_request",
+        "vllm_ascend.runtime_guard.processor_report.block_ids_for_request",
         side_effect=lambda _r, rid, *_a, **_k: [10] if rid == "cmpl-a" else [20],
     ):
         p.runtime_config.report_include_block_ids = lambda: True  # type: ignore[method-assign]
