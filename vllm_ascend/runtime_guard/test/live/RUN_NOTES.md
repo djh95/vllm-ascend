@@ -16,8 +16,12 @@
 | 产物 | rg_p0_smoke_rebase28/summary.txt；dump 已按 §0.4 清理；卡 0 已释放 |
 | 顺手修 | config：文档补 runtime_dump_dir（068e847ed）；analysis：脚本 PRODUCT 默认改指 vllm-ascend 主 checkout（d5c56689d） |
 
-注意：perf T0 基线 worktree（rg-perf-t0，旧 merge-base 37e382498）已删；重跑 C1-C6 前需按新 main 重建
-（git -C vllm-ascend worktree add /data0/test-mrv2-cann91/rg-perf-t0 714dd1d1b）并重编。
+perf T0 基线语义：**T0 = 当前产品分支去掉 runtime_guard 的基座** = config 分支与 main 的 merge-base
+（派生值，随产品分支 rebase 而变，不是固定 commit；本次为 baec54437 的父提交 714dd1d1b）。
+重建命令（每次重跑 C1-C6 前执行，用派生值而非写死 hash）：
+  BASE=$(git -C /data0/test-mrv2-cann91/vllm-ascend merge-base origin/main feat/runtime-guard-config)
+  git -C /data0/test-mrv2-cann91/vllm-ascend worktree add /data0/test-mrv2-cann91/rg-perf-t0 $BASE
+然后在该树内编译出 .so（--no-build-isolation --no-deps），编完把 venv editable 指回产品树。
 
 ## 环境要点（本机，非 165）
 
