@@ -413,11 +413,8 @@ class RuntimeGuardProcessor:
                 changed = False
             if changed:
                 self._apply_config_cascade()
-        # Previous-wave auto jobs: TP drain now; D2H deferred to end-of-wave
-        # via the same deferred list when possible. For file mode we drain into
-        # deferred by running the bus then stashing — simplest: drain at end
-        # still for file (one-wave delay vs broadcast). Keep file drain at head
-        # into deferred:
+        # Previous-wave auto jobs: claim via TP bus into deferred; D2H at
+        # end-of-wave (same path as broadcast merged bus).
         self._claim_dump_jobs_to_deferred_via_tp()
         logger.debug(
             "[runtime_guard sync] leave stage=wave_head_task_bus changed=%s file_or_solo",
