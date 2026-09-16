@@ -1026,7 +1026,7 @@ def test_v18f_merged_bus_idle_one_ar_zero_bcast():
     )
     with (
         patch(
-            "vllm_ascend.runtime_guard.processor.should_dump_kv_on_rank",
+            "vllm_ascend.runtime_guard.processor_bus.should_dump_kv_on_rank",
             return_value=True,
         ),
         patch("torch.distributed.all_reduce") as ar,
@@ -1065,7 +1065,7 @@ def test_v18g_merged_bus_both_lanes_two_bcasts():
     )
     with (
         patch(
-            "vllm_ascend.runtime_guard.processor.should_dump_kv_on_rank",
+            "vllm_ascend.runtime_guard.processor_bus.should_dump_kv_on_rank",
             return_value=True,
         ),
         patch("torch.distributed.all_reduce"),

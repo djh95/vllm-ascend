@@ -30,10 +30,6 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar
 from vllm.distributed.parallel_state import get_pp_group
 from vllm.v1.outputs import AsyncModelRunnerOutput
 
-from vllm_ascend.runtime_config._dist import (
-    SYNC_BROADCAST,
-    _runtime_config_sync_group_or_none,
-)
 from vllm_ascend.runtime_guard.incident import Incident
 from vllm_ascend.runtime_guard import inject
 from vllm_ascend.runtime_guard.detector.base import AnomalyDetector
@@ -45,6 +41,7 @@ from vllm_ascend.runtime_guard.manual_trigger import (
     TriggerEvent,
     iter_local_request_rows,
 )
+from vllm_ascend.runtime_guard.processor_bus import RuntimeGuardBusMixin
 from vllm_ascend.runtime_guard.processor_dump import RuntimeGuardDumpMixin
 from vllm_ascend.runtime_guard.rank_gate import (
     is_action_leader_rank,
@@ -88,7 +85,7 @@ class SamplePhaseResult:
     spec_decode_metadata: Any = None
 
 
-class RuntimeGuardProcessor(RuntimeGuardDumpMixin):
+class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin):
     """Process-wide singleton: config sync → detect → report / dump_kv.
 
     Create / attach a runner with :meth:`bind` (or ``RuntimeGuardProcessor(runner)``).
@@ -251,30 +248,6 @@ class RuntimeGuardProcessor(RuntimeGuardDumpMixin):
         finally:
             self._scheduler_output_for_step = prev_so
 
-    def _refresh_config_body(
-        self,
-        *,
-        allow_arm: bool,
-        scheduler_output: Any | None,
-    ) -> bool:
-        # Wave-head: 1×AR([config_due, dump_due]) + per-lane bcasts.
-        # Config apply here so this wave's detectors see new JSON.
-        # Auto dump jobs from *previous* wave are bcast into deferred D2H;
-        # same-wave detector arms stay queued until the next head (+1 wave).
-        del allow_arm, scheduler_output
-        return self._wave_head_task_bus()
-
-    def _apply_config_cascade(self) -> None:
-        """Re-bind dependents after a successful wave-head config apply."""
-        self.action_executor.apply_runtime_config()
-        self.runtime_config.apply_ascend_log_level()
-        self.detectors.apply_runtime_config()
-        self.report_writer.save_sensitive_info = self.runtime_config.report_save_sensitive_info()
-        self.report_writer.max_prompt_token_ids = self.runtime_config.report_max_prompt_token_ids()
-        self.report_writer.max_output_token_ids = self.runtime_config.report_max_output_token_ids()
-        self.report_writer.decode_token_ids = self.runtime_config.report_decode_token_ids()
-        self.report_writer.max_per_req = self.runtime_config.report_max_per_req()
-
     def sync_for_step(
         self,
         *,
@@ -345,118 +318,6 @@ class RuntimeGuardProcessor(RuntimeGuardDumpMixin):
         if allow_arm:
             return
         self.end_of_wave_sync(allow_arm=False)
-
-    def _wave_head_task_bus(self) -> bool:
-        """Wave-head config+dump gate. Returns whether config content changed."""
-        cfg = self.runtime_config
-        use_broadcast = cfg.hot_reload_enabled and cfg.sync_mode == SYNC_BROADCAST
-        group = _runtime_config_sync_group_or_none() if use_broadcast else None
-        if group is not None and int(getattr(group, "world_size", 1) or 1) > 1:
-            return self._wave_head_merged_bus(group)
-        # File / PP>1 / no group: local config; auto dump drain (prev-wave jobs).
-        changed = False
-        if cfg.hot_reload_enabled:
-            try:
-                changed = cfg.sync_runtime_config()
-            except Exception as exc:
-                logger.warning(
-                    "[runtime_guard sync] wave-head local config soft-failed error=%s",
-                    exc,
-                )
-                changed = False
-            if changed:
-                self._apply_config_cascade()
-        # Previous-wave auto jobs: claim via TP bus into deferred; D2H at
-        # end-of-wave (same path as broadcast merged bus).
-        self._claim_dump_jobs_to_deferred_via_tp()
-        logger.debug(
-            "[runtime_guard sync] leave stage=wave_head_task_bus changed=%s file_or_solo",
-            changed,
-        )
-        return changed
-
-    def _wave_head_merged_bus(self, sync_group: Any) -> bool:
-        """1 AR([config_due, dump_due]) + separate bcasts; stash dump for end D2H."""
-        from vllm_ascend.runtime_config._task_bus import (
-            broadcast_when_due,
-            sync_due_bits,
-        )
-
-        cfg = self.runtime_config
-        config_due_local = bool(cfg.hot_reload_enabled and cfg.config_due_local())
-
-        dump_jobs: list[dict[str, Any]] = []
-        dump_due_local = False
-        can_dump = should_dump_kv_on_rank(self.runner)
-        if can_dump:
-            dump_jobs = list(getattr(self, "_kv_dump_jobs", None) or [])
-            if hasattr(self, "_kv_dump_jobs"):
-                self._kv_dump_jobs.clear()
-            try:
-                is_src = int(sync_group.rank_in_group) == 0
-            except Exception:
-                is_src = bool(getattr(sync_group, "is_first_rank", False))
-            dump_due_local = bool(is_src and dump_jobs)
-        elif hasattr(self, "_kv_dump_jobs"):
-            self._kv_dump_jobs.clear()
-
-        config_due, dump_due = sync_due_bits(
-            sync_group, [config_due_local, dump_due_local]
-        )
-
-        changed = False
-        leader_changed = [False]
-
-        def _build_config() -> dict[str, Any]:
-            payload, ch = cfg.build_config_sync_payload()
-            leader_changed[0] = ch
-            return payload
-
-        if cfg.hot_reload_enabled:
-            config_payload = broadcast_when_due(
-                sync_group,
-                due=config_due,
-                build_payload=_build_config if sync_group.is_first_rank else None,
-                src=0,
-            )
-            if config_due and isinstance(config_payload, dict):
-                try:
-                    changed = cfg.apply_config_sync_payload(
-                        config_payload,
-                        is_leader=bool(sync_group.is_first_rank),
-                        leader_changed=leader_changed[0],
-                    )
-                    if changed:
-                        self._apply_config_cascade()
-                except Exception as exc:
-                    logger.warning(
-                        "[runtime_guard sync] config apply soft-failed error=%s",
-                        exc,
-                    )
-                    changed = False
-
-        try:
-            src_rank = int(sync_group.rank_in_group)
-        except Exception:
-            src_rank = 0 if bool(getattr(sync_group, "is_first_rank", False)) else 1
-
-        jobs = broadcast_when_due(
-            sync_group,
-            due=dump_due,
-            payload=dump_jobs if src_rank == 0 else None,
-            src=0,
-        )
-        if dump_due and can_dump and jobs:
-            self._deferred_kv_dump_jobs.extend(list(jobs))
-
-        logger.debug(
-            "[runtime_guard sync] leave stage=wave_head_merged_bus "
-            "config_due=%s dump_due=%s changed=%s",
-            config_due,
-            dump_due,
-            changed,
-        )
-        return changed
 
     def _maybe_fire_manual_local(self, *, allow_arm: bool) -> None:
         """Fire ``manual_dump`` locally on each last-PP TP (no job bcast).
