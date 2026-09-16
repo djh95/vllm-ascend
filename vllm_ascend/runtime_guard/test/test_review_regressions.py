@@ -941,7 +941,7 @@ def test_v18b_kv_drain_dumps_on_tp_ranks(tmp_path: Path, tp_rank: int):
         }
     ]
     with patch(
-        "vllm_ascend.runtime_guard.processor.block_ids_for_request",
+        "vllm_ascend.runtime_guard.processor_dump.block_ids_for_request",
         return_value=[0],
     ):
         RuntimeGuardProcessor._run_kv_dumps(proc, jobs)
@@ -965,11 +965,11 @@ def test_v18e_file_mode_claim_skips_object_broadcast_when_empty():
     tp.broadcast_object = MagicMock()
     with (
         patch(
-            "vllm_ascend.runtime_guard.processor.should_dump_kv_on_rank",
+            "vllm_ascend.runtime_guard.processor_dump.should_dump_kv_on_rank",
             return_value=True,
         ),
         patch(
-            "vllm_ascend.runtime_guard.processor.get_tp_group",
+            "vllm_ascend.runtime_guard.processor_dump.get_tp_group",
             return_value=tp,
         ),
         patch("torch.distributed.all_reduce"),
