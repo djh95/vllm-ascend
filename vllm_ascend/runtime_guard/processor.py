@@ -516,9 +516,6 @@ class RuntimeGuardProcessor:
                         exc,
                     )
                     changed = False
-        elif config_due:
-            # hot_reload off but due bit set — should not happen; no-op bcast skip
-            pass
 
         try:
             src_rank = int(sync_group.rank_in_group)
