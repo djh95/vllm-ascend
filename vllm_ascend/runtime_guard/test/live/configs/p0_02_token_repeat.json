@@ -1,0 +1,28 @@
+{
+  "reload_interval_seconds": 3,
+  "dump": {
+    "auto_max_times": 0,
+    "manual_dump": false
+  },
+  "report": {
+    "max_per_req": 1,
+    "save_sensitive_info": true
+  },
+  "actions": {
+    "defaults": {
+      "on_trigger": ["report"]
+    }
+  },
+  "detector": {
+    "token_repeat": {
+      "enabled": true,
+      "window": 32,
+      "repeat_sum_threshold": 64,
+      "min_tokens": 8,
+      "consecutive_hits": 1
+    },
+    "logits_finite": { "enabled": false },
+    "output_substring": { "enabled": false },
+    "spec_acceptance": { "enabled": false }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "reload_interval_seconds": 3,
+  "dump": {
+    "auto_max_times": 1,
+    "manual_dump": false
+  },
+  "actions": {
+    "defaults": {
+      "on_trigger": ["report"]
+    }
+  },
+  "detector": {
+    "logits_finite": { "enabled": true },
+    "token_repeat": { "enabled": false },
+    "output_substring": { "enabled": false },
+    "spec_acceptance": { "enabled": false }
+  }
+}

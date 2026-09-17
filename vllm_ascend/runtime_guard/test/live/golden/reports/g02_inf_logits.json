@@ -1,0 +1,6 @@
+{
+  "incident_type": "logits_finite",
+  "dump_attempted": false,
+  "ill_type": "nan",
+  "notes": "G-02 inf inject; refresh kind/ill_type from lab (pos_inf/neg_inf)"
+}

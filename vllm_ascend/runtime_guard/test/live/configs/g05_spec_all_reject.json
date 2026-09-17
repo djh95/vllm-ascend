@@ -1,0 +1,18 @@
+{
+  "reload_interval_seconds": 3,
+  "dump": { "auto_max_times": 0, "manual_dump": false },
+  "actions": { "defaults": { "on_trigger": ["report"] } },
+  "detector": {
+    "spec_acceptance": {
+      "enabled": true,
+      "window": 10,
+      "low_threshold": 0.3,
+      "len_low_threshold": 1.4,
+      "high_threshold": 0.96,
+      "len_high_threshold": 2.8
+    },
+    "logits_finite": { "enabled": false },
+    "token_repeat": { "enabled": false },
+    "output_substring": { "enabled": false }
+  }
+}

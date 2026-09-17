@@ -1,0 +1,6 @@
+{
+  "incident_type": "logits_finite",
+  "dump_attempted": false,
+  "ill_type": "nan",
+  "notes": "Refresh from real G-01 run; floating req_id/timestamp ignored by diff_report_golden.py"
+}

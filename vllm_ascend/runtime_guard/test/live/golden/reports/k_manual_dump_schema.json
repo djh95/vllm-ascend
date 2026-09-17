@@ -1,0 +1,5 @@
+{
+  "incident_type": "manual_trigger",
+  "dump_attempted": true,
+  "notes": "Schema-only golden for P0-3/P0-7; refresh dump_attempted from lab"
+}

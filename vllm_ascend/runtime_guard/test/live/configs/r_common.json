@@ -1,0 +1,24 @@
+{
+  "reload_interval_seconds": 3,
+  "dump": { "auto_max_times": 0, "manual_dump": false },
+  "report": {
+    "save_sensitive_info": true,
+    "decode_token_ids": false,
+    "max_prompt_token_ids": 1000,
+    "max_output_token_ids": 1000,
+    "max_per_req": 1
+  },
+  "actions": { "defaults": { "on_trigger": ["report"] } },
+  "detector": {
+    "logits_finite": { "enabled": true },
+    "token_repeat": {
+      "enabled": true,
+      "window": 32,
+      "repeat_sum_threshold": 64,
+      "min_tokens": 8,
+      "consecutive_hits": 1
+    },
+    "output_substring": { "enabled": false },
+    "spec_acceptance": { "enabled": false }
+  }
+}
