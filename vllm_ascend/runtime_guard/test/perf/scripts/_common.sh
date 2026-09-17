@@ -91,18 +91,31 @@ stop_own(){
 }
 
 wait_idle(){
-  local card="${1:-$CARD}" i out
+  # Accepts a single card id or a comma list ("2,3"); npu-smi prints one
+  # "No running processes found in NPU <id>" row per card, so every card in
+  # the list must be checked separately (grepping "NPU 2,3" never matches).
+  local cards="${1:-$CARD}" i out c ok
   for i in $(seq 1 60); do
     # Capture first, then grep the string — a `npu-smi | grep -q` pipeline under
     # `set -o pipefail` returns SIGPIPE (141) when grep exits early, so the `if`
     # would always be false. Here-string avoids that pipe entirely.
     out=$(npu-smi info 2>/dev/null || true)
-    if grep -q "No running processes found in NPU $card" <<< "$out"; then
+    ok=1
+    IFS=',' read -ra _cards <<< "$cards"
+    for c in "${_cards[@]}"; do
+      c="${c//[[:space:]]/}"
+      [ -n "$c" ] || continue
+      if ! grep -q "No running processes found in NPU $c" <<< "$out"; then
+        ok=0
+        break
+      fi
+    done
+    if [ "$ok" = 1 ]; then
       return 0
     fi
     sleep 2
   done
-  log "WARN: card $card still busy after wait_idle"
+  log "WARN: card $cards still busy after wait_idle"
   return 1
 }
 

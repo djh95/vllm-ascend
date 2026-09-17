@@ -474,3 +474,26 @@ skip 证据：`skip: free=11639758004224 needed=50000001572864 (payload=1572864 
 - #7 层数去重（`layers=24 kv_files=192`）。
 - #8 README/SKILL 坑位提示（glob 方括号、阈值、`--kv-dir` 语义）。
 - `k_bench_tp_dump.sh` overlay 补 `report.save_sensitive_info:true`，标杆起步即带 id lists，§15.3 链路（`prepare_ref_inputs` → compare）不再断链。
+
+## 2026-09-17 晚 — rebase 后回归收官 + “首请求挂起”根因定案
+
+### 远端分支重写验证（config@6e22d331a / analysis@d6c9ee60f）
+
+- config squash 为单笔提交，基=内部主仓 main 最新（50283947d，09-17 21:06）；产品内容与 21d24c892 **逐字节一致**（16547 行 patch 零 diff，仅 hunk 行号随上游平移）。
+- analysis 单笔叠 config tip，工具箱全保留；5 个 test 文件 +132/-35 为 base 适配（import 回 `token_utils` + 补 v2 staged-tensor 回归测试）；旧分支上的 util.py 合并重构经确认为有意丢弃（旧代码）。
+- 两 checkout 已 reset 到新 tip 并复验：产品 UT 130 passed / 75%，与旧 base 一致。
+
+### 回归结论（21d24c892，内容等同 6e22d331a）
+
+- P0 smoke 12/12；P1 5/5：p0_04 v1 ✅ / p0_04 v2 ✅（retry，见下）/ p0_07 ✅ / g06 ✅ / p0_08 ✅。
+- C3（Qwen2.5-0.5B TP=2 eager，交叉轮换 B/A×3）：**v1 T3/T2=1.01120 ✅，v2 T3/T2=0.99980 ✅**（v2 首跑 0.98657 为运行间噪声）。rank_gate 收敛后 detector 开销双 runner 均 ≤1%，过线（≥0.990）。
+
+### “v1/v2 首请求 900s 挂起”根因 = 宿主机外部杀进程（非产品 bug）
+
+- serve 日志铁证：`[shutdown] API server: shutdown triggered [launcher.py:114,signal_handler]` → abort 模式（timeout=0s）瞬杀 EngineCore，在途请求变孤儿，client 干等 900s 才 TimeoutError。被杀时引擎完全健康（10.8 tok/s、持续 200 OK）。
+- 真凶：共享宿主机用户 computin 的 DeepSeek-V2-Lite + Mooncake PD 测试（ports 13700/13701），~30min 周期清理（观测 20:45 / 21:14 / 21:43）。p0_04 v2 首跑 HEALTH TIMEOUT 同因（启动握手期收 SIGTERM，`KeyboardInterrupt: terminated`）。
+- 诊断要点：client 900s 超时 ≠ 产品挂起，先翻 serve 日志找 `signal_handler`；py-spy 无效（进程已死非卡死）。长跑前 `last -10` 确认 computin 是否活跃，或避开其周期窗口。
+
+### 其他
+
+- `_common.sh` `wait_idle` 多卡 bug 修复：`CARD=2,3` 时 grep "NPU 2,3" 永不匹配 → 逐卡拆分检查（npu-smi 每卡一行 "No running processes"）。
