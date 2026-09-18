@@ -497,3 +497,19 @@ skip 证据：`skip: free=11639758004224 needed=50000001572864 (payload=1572864 
 ### 其他
 
 - `_common.sh` `wait_idle` 多卡 bug 修复：`CARD=2,3` 时 grep "NPU 2,3" 永不匹配 → 逐卡拆分检查（npu-smi 每卡一行 "No running processes"）。
+
+## 2026-09-18 补测收官 + RG_INJECT 双门禁
+
+### 补测队列结果（新 base，queue_c6c5_soak.sh）
+
+- **C1 v1 重测 ✅ 关闭**：T1/T0=1.00291（N=6 交叉轮换，.so 已同步）；09-14 的 0.98466 判为旧 base/跨 session 噪声。C1 双 runner 全绿（v2=1.00411）。
+- **C6 v1 ✅ 干净过线**：300s leakback 残余 rss_delta=76KB（阈值 30MB），优于 v2 的 136KB；此前"v1 部分污染"确认为环境残留。
+- **C5 v1 ✅**：T3DUMP/T3=1.01760（dump_kv on_trigger 开启，3 轮 geom；≈噪声级，门槛 ≥0.990 过）。
+- **C5 v2 ⚠️ 环境阻塞（非分支缺陷）**：boot 即 `TypeError: GPUModelRunner.initialize_kv_cache() got an unexpected keyword argument 'kv_cache_allocation_context'`。隔离实验：裸 base 50283947d（T0 worktree，无分支代码）+ v2 复现同一 TypeError —— 新内部 base 的 worker.py 无条件传该 kwarg，而本容器 vllm（公开 0.28.0@2cf0a6915c，08-24）尚无此参数；v1 runner 自行消费该 kwarg 故不受影响。时间线也吻合：全部 v2 历史证据（C1/C3/C4/P0/P1）采集于 21d24c892 谱系（其 base 无此 kwarg），squash 重置（09-17 14:17 UTC）后今天首次 v2 活体启动。分支 patch 不涉这些行（diff 0 命中）。需配对 vllm≥含该 kwarg 的内部版本方可复测。
+- **soak 补时进行中**：cards 2,3（A=v1/0.5B/token_repeat 8090，B=v2/7B/logits_finite 8091），目标有效 10.28h 补足 24h；含服务死亡检测/有效时间记账/外部 kill 签名记录/自动重启（w5_soak_topup.sh）。
+
+### RG_INJECT 双门禁（shipped 安全）
+
+- `inject.py` 增加 `_INJECT_MASTER_SWITCH = False`（源码级总开关）：出厂构建完全忽略 `RG_INJECT`；启用需改源码翻转 + 设置环境变量。
+- 回归：产品 UT **153 passed / 75%**（+5 gate 测试；scenario 测试 helper 改为 reload 后武装）；e2e 冒烟（card 0, v1, 0.5B）：NEG（shipped+RG_INJECT=token_loop）0 注入日志/0 report；POS（翻转后）40 条 [INJECT] + token_repeat report 落盘。
+- 分支 tip 前进：config 6e22d331a → **03a6ad89d**（amend 合入，单笔不变，基 50283947d）；analysis rebase 至其上（d0681cc03 + d46d6c75c）。C1/C6/C5 数字采集于 6e22d331a 内容（与 03a6ad89d 仅差 inject 双门禁 3 行 + 测试，热路径 `if inject.ENABLED:` 语义不变）。
