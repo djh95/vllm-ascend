@@ -513,3 +513,12 @@ skip 证据：`skip: free=11639758004224 needed=50000001572864 (payload=1572864 
 - `inject.py` 增加 `_INJECT_MASTER_SWITCH = False`（源码级总开关）：出厂构建完全忽略 `RG_INJECT`；启用需改源码翻转 + 设置环境变量。
 - 回归：产品 UT **153 passed / 75%**（+5 gate 测试；scenario 测试 helper 改为 reload 后武装）；e2e 冒烟（card 0, v1, 0.5B）：NEG（shipped+RG_INJECT=token_loop）0 注入日志/0 report；POS（翻转后）40 条 [INJECT] + token_repeat report 落盘。
 - 分支 tip 前进：config 6e22d331a → **03a6ad89d**（amend 合入，单笔不变，基 50283947d）；analysis rebase 至其上（d0681cc03 + d46d6c75c）。C1/C6/C5 数字采集于 6e22d331a 内容（与 03a6ad89d 仅差 inject 双门禁 3 行 + 测试，热路径 `if inject.ENABLED:` 语义不变）。
+
+## 2026-09-19 soak 补时收官(24h 证据达成)
+
+- w5_soak_topup.sh(tip 03a6ad89d,cards 2/3,A=0.5B/token_repeat、B=7B/logits_finite,双 v1):
+  09-18 11:02 -> 09-19 05:20 UTC,18.3h 墙钟,有效记账 cum=37000s(10h16m)精确达标。
+- 质量指标:2792 心跳 0 次不健康;热更 555 轮 0 失败;10 个 attempt 全部为墙钟预算
+  自然到期(服务死亡检测从未触发);kill_sig=none x10(全程无外部 SIGTERM);无 hang/crash。
+- 24h 累计:原 soak 13.8h(09-14,含 v2 覆盖)+ 补时 10.28h = 24.06h 有效 > 24h。
+- TEST_REPORT.md §1/§4 已回填收官结论。
