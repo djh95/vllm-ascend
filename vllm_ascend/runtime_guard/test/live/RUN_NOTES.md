@@ -559,3 +559,28 @@ skip 证据：`skip: free=11639758004224 needed=50000001572864 (payload=1572864 
   python=/usr/local/python3.12.13/bin/python）；两容器的 rg-rebase-verify worktree 均已拷入
   `_cann_ops_custom`。
 - task_spec 侧 PR 描述 / 汇总报告已同步更正（09-19/09-20）。
+
+## 2026-09-20 C5/C6 方法论重构 + 162 环境部署(执行暂停)
+
+**方法论重设(用户定案)**:
+- C5 不再用吞吐比,改为直接测 dump 时的 D2H 时间与 save 时间,多档 KV 大小各测 2 次。
+- C6 改为对照组差分:裸 base(50283947d,无 runtime_guard)同压测后对比 RSS/HBM 变化,detectors 全开、dump 之后看残留,替代绝对 30MB 基线。
+- 长 prompt 档 1k-128k 用真实公开数据(LongBench);每个请求带唯一序号前缀([c56-%06d])防 prefix-cache 复用 KV。
+- C5+C6 合并一次跑:armA 先做 dump 计时(1k/4k/16k/64k/128k,manual_dump 逐档触发),再与 armB 同时压测,最后双臂 leakback 采样;dump 残留天然落进 armA 采样窗口。
+
+**资产(analysis d1cf1fb6a,已 push)**:
+- scripts/run_c56_ab.sh:双臂编排(boot->C5->stress->settle 30s->sample 300s->差分 verdict:RSS diff<10MB / HBM diff<512MB 为 PASS)。
+- scripts/c56_driver.py:c5/stress/sample 三个子命令;corpus prompt 用 served 模型 tokenizer 按目标 token 数精确切割拼接;sample 走 /proc 进程树 RSS + npu-smi HBM。
+- scripts/c5_shim/sitecustomize.py:RG_C5_TIMING=1 时经 builtins.__import__ 挂钩,包装 KvCacheReader.iter_request_snapshots(逐层 D2H 计时)与 write_snapshots(save 计时),JSONL 事件含 rank_tag/req_id/bytes,全防御式失败不影响产品路径。
+- data/longbench_corpus.jsonl:21 docs / 2.6M chars(hf-mirror zai-org/LongBench data.zip,各源文件取最长 context:narrativeqa x6 / gov_report x4 / passage_count x3 / dureader x4 / multifieldqa_zh x4)+ README。
+
+**162 环境要点(192.168.13.162,800I A3:8 NPU x 2 die x 64GB,逻辑设备=die 0-15,TP2=同 NPU 双 die,与 09-15 会话同款)**:
+- 访问:pexpect 建 ControlMaster(本机 /tmp/r162_sync.py,d00824595@192.168.13.162),之后 rsync/tar-over-ssh 免密;裸 python3.12 已不在,须容器。
+- 容器三要素:必须 --privileged(非特权新容器 dcmi init 报 -8020 "device is used",旧容器占位,特权绕过;--device 逐个映射无效)、--shm-size=16g(TP2 shm_broadcast 需 160MB,默认 64MB 直接 boot 失败,首跑即栽此坑)、挂 /usr/local/Ascend/driver 整目录 + npu-smi + hccn.conf。
+- 镜像 quay.nju.edu.cn/ascend/vllm-ascend:nightly-main-a3(vllm 0.28.0;privileged 下 torch_npu 可见 16 die;产品树/裸 base 树均可 import,Qwen3-Coder-30B-A3B max_seq_len=262144)。
+- 已部署待恢复:~/rg162_env/{product=03a6ad89d 全包含 vendors+.so, base=50283947d 裸对照, scripts, data} + ~/rg162_weights/Qwen3-Coder-30B-A3B-Instruct(57G/17 shards,该机共享库 /mnt/weight 无此模型;DSV4-Flash-bf16=546G 超 4 卡不适用)。二跑启动后按用户指示暂停,容器已删、NPU 无残留进程、文件保留。
+- 恢复步骤:重建 privileged 容器(命令在会话记录)后,docker exec -d 容器 bash -c "cd /home/d00824595/rg162_env && nohup bash scripts/run_c56_ab.sh > /tmp/rg_c56_launch.log 2>&1 &";总时长约 1-1.5h(boot ~6min + C5 25-40min + stress 5min + sample 5.5min)。
+
+**其他回填**:
+- C4 执行计数已写入 PR 描述 §4:v1 完整 1 轮(T0-T3 x3 prompts=12 输出)、v2 完整 1 轮另补采 T0/T1 一轮(18 行),全部 bit-identical;原始档案在产品树 rg_perf/logs/{v1,v2}/c4_identity.jsonl + results/c4_v{1,2}.txt。
+- PR 描述 §4 的 C5/C6 行待新方法学数字落地后改写(旧数字 C5 v1=1.01760 / C6 76KB 保留至替换)。
