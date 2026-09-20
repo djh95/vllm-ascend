@@ -38,6 +38,9 @@ perf T0 基线规则（两条，重跑 C1-C6 前必读）：
   拷入的 `vllm_ascend_C.so` 编译自更老/不同 CANN；不设则 EngineCore 起不来
   （`RuntimeError: aclnnAddRmsNormBias ... not in libopapi.so`）。该开关使
   `enable_custom_op()` 返回 False，layernorm 回退 `torch_npu.npu_add_rms_norm`。
+  > **2026-09-20 更正**：此诊断有误——符号不在 CANN，在 `_cann_ops_custom` 构建产物的
+  > vendor 包里；BI=1 在当前两 tip 上实测**不能**绕过（forward_oot residual 路径无视
+  > `enable_custom_op()` 返回值直接调 op）。正确解法见「2026-09-20 更正」章。
 
 ## 功能测试最终结论（P0 + P1 已收口）
 
@@ -522,3 +525,37 @@ skip 证据：`skip: free=11639758004224 needed=50000001572864 (payload=1572864 
   自然到期(服务死亡检测从未触发);kill_sig=none x10(全程无外部 SIGTERM);无 hang/crash。
 - 24h 累计:原 soak 13.8h(09-14,含 v2 覆盖)+ 补时 10.28h = 24.06h 有效 > 24h。
 - TEST_REPORT.md §1/§4 已回填收官结论。
+
+## 2026-09-20 更正：aclnnAddRmsNormBias 根因 + 1ae55b060 活体 boot 验证
+
+### 根因更正（推翻 09-18「需更新 CANN」结论）
+
+- `aclnnAddRmsNormBias` 不在 CANN，而在 vllm-ascend **构建产物**
+  `vllm_ascend/_cann_ops_custom/vendors/custom_transformer/op_api/lib/libcust_opapi.so`
+  （`pip install -e`（COMPILE_CUSTOM_KERNELS=1）时生成，gitignore 不入库）。
+- `bootstrap_custom_op_env()`（utils.py）按 `_CUSTOM_OP_BASE_DIR`（= utils.py 所在包目录）
+  查找 vendors 目录；**裸 git worktree 无此目录 → 直接 return → 运行时 dlsym 失败** →
+  `RuntimeError: aclnnAddRmsNormBias ... not in libopapi.so`。
+- 09-18 判别实验（03a6ad89d health=200、1ae55b060 同帧死）**变量混杂**：旧 tip 跑在带
+  构建产物的主树，新 tip 跑在裸 worktree rg-rebase-verify。两 tip 的 utils.py /
+  layernorm.py 逐字节一致，.so 同为镜像/主树构建。
+- **解法（无需重编）**：`cp -r <带产物树>/vllm_ascend/_cann_ops_custom <worktree>/vllm_ascend/`。
+  该目录是运行时算子注册数据；`vllm_ascend_C.so` 为运行时 dlsym 的 stub，主树 09-16
+  构建直接可用。前提：两树该算子 csrc 未变（03a6ad89d 产物配 1ae55b060 已实测安全）。
+
+### 1ae55b060 活体 boot 验证（09-19，四格全绿）
+
+| 环境 | runner（端口） | boot | completions |
+|---|---|---|---|
+| 老容器 test-mrv2-cann91（CANN 9.1.0，card 2） | v1（8063） | health 200 | 正常（" Paris..."） |
+| 老容器 | v2（8064） | health 200 | 正常；**零 `kv_cache_allocation_context` TypeError（版本门禁生效）** |
+| rg-verify-919（`quay.io/ascend/vllm-ascend:nightly-main`，CANN 9.1.0_20260731131545） | v1（8060） | health 200 | 正常；runtime_guard action worker 启动 |
+| rg-verify-919 | v2（8061） | health 200 | 正常（首请求慢过 60s 超时，重试 OK） |
+
+- 均以 `PYTHONPATH=<worktree>:...` + `--additional-config`（logits_finite detector）启动；
+  serve 日志零 aclnnAddRmsNormBias 命中。
+- 结论：**新 tip 活体 boot/功能无阻塞**；C5 v2 复测的 boot 前置解除（perf 复测经决策暂不执行）。
+- 验证容器 rg-verify-919 保留备用（挂物理卡 2 = /dev/davinci0，
+  python=/usr/local/python3.12.13/bin/python）；两容器的 rg-rebase-verify worktree 均已拷入
+  `_cann_ops_custom`。
+- task_spec 侧 PR 描述 / 汇总报告已同步更正（09-19/09-20）。
