@@ -127,7 +127,7 @@ def cmd_stress(args):
                 (name, None, mt) for name, _, mt in LB_TIERS]
             name, prompt, mt = tiers[idx % len(tiers)]
             if prompt is None:
-                tt = dict(LB_TIERS)[name]
+                tt = {n: t for n, t, _ in LB_TIERS}[name]
                 prompt = corpus_prompt(tt, n)
             else:
                 prompt = "[c56-%06d] %s" % (n, prompt)
@@ -257,7 +257,7 @@ def _rss_tree_kb(root):
     return int(total)
 
 
-_HBM_RE = re.compile(r"^(\d+)\s+/(\d+)$")
+_HBM_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 
 
 def _hbm_mb(cards):
@@ -268,14 +268,18 @@ def _hbm_mb(cards):
         return {}
     res = {}
     want = {str(c) for c in cards}
-    for line in out.splitlines():
-        toks = [t.strip() for t in line.split("|")]
-        if len(toks) >= 2 and toks[1] in want:
-            for t in toks:
-                m = _HBM_RE.match(t)
-                if m:
-                    res[int(toks[1])] = int(m.group(1))
-                    break
+    lines = out.splitlines()
+    for i, line in enumerate(lines):
+        head = [t.strip() for t in line.split("|")]
+        # npu-smi 25.5: col-1 cell holds "NPU Name" together; the NPU-id row
+        # carries no HBM — the chip row below it packs "AICore Mem/MB HBM/MB"
+        # into one cell -> take the last X / Y pair of that row.
+        if len(head) >= 2 and head[1].split() and head[1].split()[0] in want \
+                and i + 1 < len(lines):
+            pairs = _HBM_RE.findall(lines[i + 1])
+            if pairs:
+                nid = int(head[1].split()[0])
+                res[nid] = int(pairs[-1][0])
     return res
 
 
