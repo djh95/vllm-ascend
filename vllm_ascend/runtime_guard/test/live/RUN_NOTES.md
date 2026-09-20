@@ -636,3 +636,46 @@ stress+leakback;裸 base 臂 stress+leakback;差分判决)。
 - dump 产物 19GB 在 /data0/test-mrv2-cann91/rg_c56/run/A/dump(重跑会被
   rm -rf;磁盘 11T 充裕,暂留)。
 - 162 侧执行恢复配方见上一章(容器三要件:privileged / shm≥1g / driver 整目录)。
+
+
+## 2026-09-20 (III) C5 v2 直接计时补测(1ae55b060 worktree)+ 远端 tip 第 4 次重写发现
+
+背景:v1 数字采集于 03a6ad89d(无 0.28 版本门禁,v2 在本容器 vllm 0.28.0 起不来);
+v2 补测在 `rg-rebase-verify` worktree(1ae55b060,vendors 已拷,09-19 验证 v2 可 boot)。
+
+### 远端 tip 第 4 次 force 重写:1ae55b060 → bc0629421
+
+- 新 tip 为单笔 squash 形态("[Feature] Add runtime_guard control plane"),相对
+  1ae55b060 diff 270 文件(+4772/−3958),全部在 base main(v2 spec_decode 重构等)。
+- **runtime_guard 内容与 1ae55b060 零 diff**(`git diff 1ae55b060 FETCH_HEAD --
+  vllm_ascend/runtime_guard/` 为空)→ 在 1ae55b060 上采集的数字对 MR tip 仍有效。
+- **0.28 版本门禁被删**:bc0629421 的 worker/v2/model_runner initialize_kv_cache
+  无条件转发 kv_cache_allocation_context(base main 已进 vllm 0.29 时代,
+  `vllm_version_is("0.29.0")` 分支出现)。本机容器 vllm 0.28.0(2cf0a69)上
+  bc0629421 的 v2 无法 boot——未来在 0.28 容器上跑新 tip v2 前需重新加门禁或换
+  vllm 0.29 镜像(162 nightly-a3 也是 0.28.0,同样受限)。
+
+### C5 v2 结果(results/c5_v2_1ae55b060_20260920/,DSV2-Lite TP2 cards 2,3)
+
+10 组 × 2 rank 全部成功,与 v1 同量级(v2 的 StagedWriteTensor/UvaBufferWrapper
+无宿主镜像、走 .gpu 按需拷贝,不构成额外开销):
+
+| tier(prompt tok) | D2H ms/rank(v2) | save ms/rank(v2) | v1 参照 D2H/save |
+|---|---|---|---|
+| 1024 (1036) | 156-310 | 102-105 | 150-219 / 101-112 |
+| 4096 (4108) | 158-358 | 182-230 | 160-413 / 180-233 |
+| 16384 (16396) | 156-336 | 303-728 | 157-716 / 331-769 |
+| 65536 (65548) | 181-865 | 807-2659 | 200-881 / 790-2817 |
+| 131072 (131083) | 392-1624 | 2674-5521 | 639-1140 / 2692-5359 |
+
+boot 用 gpu-memory-utilization 0.80(v1 用 0.85):共享卡上邻居任务反复起落,
+worker 初始快照 free 12.16/29.49GiB < 0.85×29.49=25.07 → ValueError。0.85 时
+干净卡余量本就只有 ~1.4GB,撞车即挂。
+
+### 脚本资产
+
+- 新增 `run_c5_v2_only.sh`(arm-A-only C5,PRODUCT 指向 verify worktree,RUNNER=1,
+  等卡判据 = 卡 2/3 HBM<5GB——**进程表清空 ≠ 显存已释放**,邻居任务周期性
+  起落时必须按 HBM 判)。
+- 途中又踩一次共享卡竞态:08:35 boot 与邻居任务回撞(free 12.16GB),加 HBM
+  闸门 + 0.80 后 08:58 重跑一次通过。

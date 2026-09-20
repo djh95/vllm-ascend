@@ -1,0 +1,21 @@
+== C5 dump timing (v2 runner, 1ae55b060) ==
+tier=   1024 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=1036 D2H=172.439ms save=104.91100000000002ms layers=54 bytes=34MiB files=54
+tier=   1024 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=1036 D2H=156.173ms save=102.33699999999999ms layers=54 bytes=34MiB files=54
+tier=   1024 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=1036 D2H=310.463ms save=102.06300000000002ms layers=54 bytes=34MiB files=54
+tier=   1024 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=1036 D2H=156.603ms save=101.74000000000001ms layers=54 bytes=34MiB files=54
+tier=   4096 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=4108 D2H=244.121ms save=185.107ms layers=54 bytes=91MiB files=54
+tier=   4096 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=4108 D2H=164.027ms save=182.406ms layers=54 bytes=91MiB files=54
+tier=   4096 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=4108 D2H=358.33ms save=225.896ms layers=54 bytes=125MiB files=54
+tier=   4096 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=4108 D2H=158.37ms save=230.417ms layers=54 bytes=125MiB files=54
+tier=  16384 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=16396 D2H=336.23ms save=379.57499999999993ms layers=54 bytes=182MiB files=54
+tier=  16384 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=16396 D2H=155.743ms save=302.8610000000001ms layers=54 bytes=182MiB files=54
+tier=  16384 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=16396 D2H=191.724ms save=715.4550000000002ms layers=54 bytes=490MiB files=54
+tier=  16384 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=16396 D2H=176.757ms save=728.3329999999999ms layers=54 bytes=490MiB files=54
+tier=  65536 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=65548 D2H=583.781ms save=809.3790000000001ms layers=54 bytes=547MiB files=54
+tier=  65536 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=65548 D2H=181.459ms save=807.2089999999997ms layers=54 bytes=547MiB files=54
+tier=  65536 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=65548 D2H=864.763ms save=2600.668ms layers=54 bytes=1948MiB files=54
+tier=  65536 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=65548 D2H=310.418ms save=2658.9110000000005ms layers=54 bytes=1948MiB files=54
+tier= 131072 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=131083 D2H=496.009ms save=2709.0029999999997ms layers=54 bytes=2005MiB files=54
+tier= 131072 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=131083 D2H=391.752ms save=2673.8270000000007ms layers=54 bytes=2005MiB files=54
+tier= 131072 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=131083 D2H=1373.453ms save=5521.029999999998ms layers=54 bytes=3892MiB files=54
+tier= 131072 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=131083 D2H=1624.309ms save=5382.715000000001ms layers=54 bytes=3892MiB files=54
