@@ -51,7 +51,7 @@ kill_arm(){ kill -- -"${1:-0}" 2>/dev/null || true; sleep 3; kill -9 -- -"${1:-0
 
 boot_guard(){
   mkdir -p "$ROOT/A/report" "$ROOT/A/dump"
-  ( cd "$PRODUCT" &&
+  ( cd "$PRODUCT";
     PYTHONPATH="$SCRIPTS/c5_shim:$PRODUCT:${PYTHONPATH:-}" \
     RG_C5_TIMING=1 RG_C5_TIMING_OUT=$ROOT/c5_timing.jsonl \
     ASCEND_RT_VISIBLE_DEVICES="$CARDS" \
@@ -64,7 +64,7 @@ boot_guard(){
 }
 boot_base(){
   mkdir -p "$ROOT/B"
-  ( cd "$BASE" &&
+  ( cd "$BASE";
     PYTHONPATH="$BASE:${PYTHONPATH:-}" \
     ASCEND_RT_VISIBLE_DEVICES="$CARDS" \
     VLLM_BATCH_INVARIANT=1 VLLM_USE_V2_MODEL_RUNNER="$RUNNER" \

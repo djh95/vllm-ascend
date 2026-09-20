@@ -43,7 +43,7 @@ wait_health(){
 
 boot_a(){
   mkdir -p "$ROOT/A/report" "$ROOT/A/dump"
-  ( cd "$PRODUCT" &&
+  ( cd "$PRODUCT";
     PYTHONPATH="$SCRIPTS/c5_shim:$PRODUCT:${PYTHONPATH:-}" \
     RG_C5_TIMING=1 RG_C5_TIMING_OUT=$ROOT/c5_timing.jsonl \
     ASCEND_RT_VISIBLE_DEVICES="$A_CARDS" \
@@ -57,7 +57,7 @@ boot_a(){
 
 boot_b(){
   mkdir -p "$ROOT/B"
-  ( cd "$BASE" &&
+  ( cd "$BASE";
     PYTHONPATH="$BASE:${PYTHONPATH:-}" \
     ASCEND_RT_VISIBLE_DEVICES="$B_CARDS" \
     VLLM_BATCH_INVARIANT=1 VLLM_USE_V2_MODEL_RUNNER="$RUNNER" \
