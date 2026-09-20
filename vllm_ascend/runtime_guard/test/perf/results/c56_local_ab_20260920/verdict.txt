@@ -1,0 +1,28 @@
+== C6 leakback (differential, sequential arms) ==
+A: rss 17157MB -> 17158MB (delta +0.2MB), hbm 60499MB -> 60498MB (delta -0.7MB), n=27
+B: rss 10037MB -> 10037MB (delta +0.0MB), hbm 61090MB -> 61091MB (delta +1.3MB), n=27
+guard-vs-base differential: rss +0.1MB hbm -2.0MB -> PASS
+(bar: dump+detector residue within +10MB RSS / +512MB HBM of bare base)
+
+== C5 dump timing ==
+tier=   1024 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=1036 D2H=150.569ms save=105.364ms layers=54 bytes=34MiB files=54
+tier=   1024 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=1036 D2H=203.295ms save=109.69000000000001ms layers=54 bytes=34MiB files=54
+tier=   1024 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=1036 D2H=157.34ms save=99.3ms layers=54 bytes=34MiB files=54
+tier=   1024 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=1036 D2H=189.699ms save=104.072ms layers=54 bytes=34MiB files=54
+tier=   4096 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=4108 D2H=180.704ms save=181.99499999999998ms layers=54 bytes=91MiB files=54
+tier=   4096 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=4108 D2H=179.099ms save=179.43300000000002ms layers=54 bytes=91MiB files=54
+tier=   4096 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=4108 D2H=154.757ms save=231.04500000000007ms layers=54 bytes=125MiB files=54
+tier=   4096 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=4108 D2H=188.501ms save=230.65000000000006ms layers=54 bytes=125MiB files=54
+tier=  16384 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=16396 D2H=145.926ms save=301.15199999999993ms layers=54 bytes=182MiB files=54
+tier=  16384 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=16396 D2H=312.514ms save=306.47200000000004ms layers=54 bytes=182MiB files=54
+tier=  16384 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=16396 D2H=175.585ms save=726.1310000000002ms layers=54 bytes=490MiB files=54
+tier=  16384 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=16396 D2H=221.449ms save=720.1610000000002ms layers=54 bytes=490MiB files=54
+tier=  65536 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=65548 D2H=282.343ms save=806.0980000000001ms layers=54 bytes=547MiB files=54
+tier=  65536 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=65548 D2H=199.695ms save=781.592ms layers=54 bytes=547MiB files=54
+tier=  65536 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=65548 D2H=548.933ms save=2602.4900000000002ms layers=54 bytes=1948MiB files=54
+tier=  65536 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=65548 D2H=309.575ms save=2621.1740000000004ms layers=54 bytes=1948MiB files=54
+tier= 131072 rep=1 rank=dp0_tp0_pp0_cp0 prompt_tok=131083 D2H=300.241ms save=2748.612ms layers=54 bytes=2005MiB files=54
+tier= 131072 rep=1 rank=dp0_tp1_pp0_cp0 prompt_tok=131083 D2H=689.11ms save=2691.709999999999ms layers=54 bytes=2005MiB files=54
+tier= 131072 rep=2 rank=dp0_tp0_pp0_cp0 prompt_tok=131083 D2H=1140.263ms save=5358.763ms layers=54 bytes=3892MiB files=54
+tier= 131072 rep=2 rank=dp0_tp1_pp0_cp0 prompt_tok=131083 D2H=997.719ms save=5249.076000000001ms layers=54 bytes=3892MiB files=54
+19G	/data0/test-mrv2-cann91/rg_c56/run/A/dump
