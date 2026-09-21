@@ -1,0 +1,132 @@
+2026-09-21 09:51:40 === tip5 smoke start PRODUCT=/data0/test-mrv2-cann91/rg-tip5-verify vllm029 tip=f849eae4f ===
+2026-09-21 10:00:52 cards idle
+2026-09-21 10:00:52 [v1] boot pid=1699100
+2026-09-21 10:09:59 === tip5 smoke start PRODUCT=/data0/test-mrv2-cann91/rg-tip5-verify vllm029 tip=f849eae4f ===
+2026-09-21 10:14:52 [v1] attempt 1: cards idle
+2026-09-21 10:14:52 [v1] boot pid=1701781
+2026-09-21 10:29:54 [v1] health=0
+2026-09-21 10:29:54 [v1] HEALTH TIMEOUT; serve.log tail:
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/async_llm.py", line 227, in from_vllm_config
+(APIServer pid=1701781)     return cls(
+(APIServer pid=1701781)            ^^^^
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/async_llm.py", line 156, in __init__
+(APIServer pid=1701781)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=1701781)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1701781)     return func(*args, **kwargs)
+(APIServer pid=1701781)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 139, in make_async_mp_client
+(APIServer pid=1701781)     return AsyncMPClient(*client_args)
+(APIServer pid=1701781)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1701781)     return func(*args, **kwargs)
+(APIServer pid=1701781)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 991, in __init__
+(APIServer pid=1701781)     super().__init__(
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 609, in __init__
+(APIServer pid=1701781)     with launch_core_engines(
+(APIServer pid=1701781)          ^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1701781)   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 144, in __exit__
+(APIServer pid=1701781)     next(self.gen)
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/utils.py", line 1240, in launch_core_engines
+(APIServer pid=1701781)     wait_for_engine_startup(
+(APIServer pid=1701781)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/utils.py", line 1320, in wait_for_engine_startup
+(APIServer pid=1701781)     raise RuntimeError(
+(APIServer pid=1701781) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+(APIServer pid=1701781) [ERROR] 2026-09-21-10:16:44 (PID:1701781, Device:-1, RankID:-1) ERR99999 UNKNOWN applicaiton exception
+/usr/local/python3.12.13/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+2026-09-21 10:29:57 [v1] attempt 1 failed
+2026-09-21 10:31:04 [v1] attempt 2: cards idle
+2026-09-21 10:31:04 [v1] boot pid=1703484
+2026-09-21 10:46:05 [v1] health=0
+2026-09-21 10:46:05 [v1] HEALTH TIMEOUT; serve.log tail:
+(APIServer pid=1703484)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=1703484)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/async_llm.py", line 227, in from_vllm_config
+(APIServer pid=1703484)     return cls(
+(APIServer pid=1703484)            ^^^^
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/async_llm.py", line 156, in __init__
+(APIServer pid=1703484)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=1703484)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1703484)     return func(*args, **kwargs)
+(APIServer pid=1703484)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 139, in make_async_mp_client
+(APIServer pid=1703484)     return AsyncMPClient(*client_args)
+(APIServer pid=1703484)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1703484)     return func(*args, **kwargs)
+(APIServer pid=1703484)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 991, in __init__
+(APIServer pid=1703484)     super().__init__(
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 609, in __init__
+(APIServer pid=1703484)     with launch_core_engines(
+(APIServer pid=1703484)          ^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1703484)   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 144, in __exit__
+(APIServer pid=1703484)     next(self.gen)
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/utils.py", line 1240, in launch_core_engines
+(APIServer pid=1703484)     wait_for_engine_startup(
+(APIServer pid=1703484)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/utils.py", line 1320, in wait_for_engine_startup
+(APIServer pid=1703484)     raise RuntimeError(
+(APIServer pid=1703484) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+(APIServer pid=1703484) [ERROR] 2026-09-21-10:32:49 (PID:1703484, Device:-1, RankID:-1) ERR99999 UNKNOWN applicaiton exception
+2026-09-21 10:46:08 [v1] attempt 2 failed
+2026-09-21 10:58:35 [v2] attempt 1: cards idle
+2026-09-21 10:58:35 [v2] boot pid=1705995
+2026-09-21 11:13:37 [v2] health=0
+2026-09-21 11:13:37 [v2] HEALTH TIMEOUT; serve.log tail:
+(APIServer pid=1705995)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=1705995)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/async_llm.py", line 227, in from_vllm_config
+(APIServer pid=1705995)     return cls(
+(APIServer pid=1705995)            ^^^^
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/async_llm.py", line 156, in __init__
+(APIServer pid=1705995)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=1705995)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1705995)     return func(*args, **kwargs)
+(APIServer pid=1705995)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 139, in make_async_mp_client
+(APIServer pid=1705995)     return AsyncMPClient(*client_args)
+(APIServer pid=1705995)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=1705995)     return func(*args, **kwargs)
+(APIServer pid=1705995)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 991, in __init__
+(APIServer pid=1705995)     super().__init__(
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/core_client.py", line 609, in __init__
+(APIServer pid=1705995)     with launch_core_engines(
+(APIServer pid=1705995)          ^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=1705995)   File "/usr/local/python3.12.13/lib/python3.12/contextlib.py", line 144, in __exit__
+(APIServer pid=1705995)     next(self.gen)
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/utils.py", line 1240, in launch_core_engines
+(APIServer pid=1705995)     wait_for_engine_startup(
+(APIServer pid=1705995)   File "/data0/test-mrv2-cann91/vllm029_pkgs/vllm/v1/engine/utils.py", line 1320, in wait_for_engine_startup
+(APIServer pid=1705995)     raise RuntimeError(
+(APIServer pid=1705995) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}
+(APIServer pid=1705995) [ERROR] 2026-09-21-11:00:21 (PID:1705995, Device:-1, RankID:-1) ERR99999 UNKNOWN applicaiton exception
+2026-09-21 11:13:40 [v2] attempt 1 failed
+2026-09-21 11:34:44 [v2] attempt 2: cards idle
+2026-09-21 11:34:44 [v2] boot pid=1709164
+2026-09-21 11:37:04 [v2] health=1
+2026-09-21 11:37:18 [v2] completion resp_len=653
+2026-09-21 11:37:39 [v2] manual_dump files=108
+2026-09-21 11:38:55 [v2] long resp_len=1724
+2026-09-21 11:38:59 [v2] guard_log_lines=119
+Traceback (most recent call last):
+Traceback (most recent call last):
+2026-09-21 11:39:05 [v2] HBM released
+2026-09-21 11:39:05 === DONE ===
+2026-09-21 12:06:35 === tip5 smoke start PRODUCT=/data0/test-mrv2-cann91/rg-tip5-verify vllm029 tip=f849eae4f ===
+2026-09-21 12:06:37 [v1] attempt 1: cards idle
+2026-09-21 12:06:37 [v1] boot pid=1713474
+2026-09-21 12:08:48 [v1] health=1
+2026-09-21 12:08:54 [v1] completion resp_len=653
+2026-09-21 12:09:15 [v1] manual_dump files=108
+2026-09-21 12:10:27 [v1] long resp_len=1724
+2026-09-21 12:10:31 [v1] guard_log_lines=119
+Traceback (most recent call last):
+Traceback (most recent call last):
+2026-09-21 12:10:38 [v1] HBM released
+2026-09-21 12:10:38 === DONE ===

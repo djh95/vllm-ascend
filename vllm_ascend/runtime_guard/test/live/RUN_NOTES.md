@@ -679,3 +679,40 @@ worker 初始快照 free 12.16/29.49GiB < 0.85×29.49=25.07 → ValueError。0.8
   起落时必须按 HBM 判)。
 - 途中又踩一次共享卡竞态:08:35 boot 与邻居任务回撞(free 12.16GB),加 HBM
   闸门 + 0.80 后 08:58 重跑一次通过。
+
+## 2026-09-21 远端 tip 第 5 次重写(f849eae4f)+ vLLM 0.29 本机验证收口
+
+### 远端变化
+
+- origin force 重写:bc0629421 → **f849eae4f** = feature squash `0052bdcd6`(runtime_guard/
+  runtime_config 与 1ae55b060 **零 diff**,`git diff 1ae55b060 0052bdcd6 -- <guard dir>` 为空)
+  + 新 commit "[Fix] Remove anomaly inject hooks from production path"(作者本人,Cursor 协作):
+  RG_INJECT 整体移除(inject.py + processor 3 调用点 + 2 测试文件 + 文档,−717)。
+- base 升 **vLLM 0.29.0**(c173a64a4),worker.py 残余 0.28 门禁全删 → 新 tip 只能配 vllm 0.29
+  (0.28 容器 UT collection 即挂:attention_v1.py 导入 `vllm.v1.attention.ops.pcp` 不存在)。
+
+### 本机 vLLM 0.29 隔离环境(不动钉住的 /opt/slime/venv)
+
+- `pip install vllm==0.29.0 --no-deps --target /data0/test-mrv2-cann91/vllm029_pkgs`;
+  容器原 vllm 是 /data0/test-mrv2-cann91/vllm 源码 checkout,PYTHONPATH 前插 pkgs 即遮蔽。
+- tip5 worktree `/data0/test-mrv2-cann91/rg-tip5-verify`(vendors 已拷)。
+
+### 验证结果(全绿)
+
+- **UT 135/135**(runtime_guard/test 117 + runtime_config 18;注入相关 18 个测试随注入面移除)。
+  注入残留 grep 干净(余下 inject_manual_dump_kv 旗标与 RG_INJECT 无关)。
+- **v1/v2 活体冒烟各一轮**(run_tip5_smoke.sh,DSV2-Lite TP2 cards 2,3,gmu 0.80):
+  boot health=1、completions 200(v1/v2 响应同长 653B)、长请求 OK、二次热更写无错、HBM 干净释放。
+- **dump_kv 内容逐项校验**(v1+v2 各 108 文件 = 2 rank × 54 层;torch.load 抽查):
+  tp_rank 0/1 按 rank 目录正确、num_kv_heads=1、block_ids=[1]、tensor (1,128,1,512) bf16
+  (1 block × 128 tok × kv_heads × head_dim,DSV2-Lite GQA 布局)、incident_type=manual_trigger。
+  v2 走 StagedWriteTensor `.gpu` 兜底,0.29 下完好。
+
+### 坑(已修入资产)
+
+- **npu-smi 5 位数 HBM 格式**:20228/ 32768(斜杠前无空格,4 位数时才有空格)→ 旧正则
+  `[0-9]+ / 32768` 匹配不到;run_tip5_smoke.sh / run_c5_v2_only.sh 已改 `[0-9]+[ ]*/[ ]*32768`。
+- **共享卡竞态三连**:boot 前判空(HBM<5GB)后 1-2 分钟内邻居抢回 ~17GB → worker
+  `_init_worker` 快照 free 12.x GiB < 0.8×29.49 → ValueError。v1 连续 2 轮、v2 第 1 轮均撞,
+  加"每臂 wait_idle + 失败重试 ×2"后 12:06/11:34 各一次通过。判空与快照窗口无法完全闭合,
+  重试是当前唯一解;冒烟窗口尽量避开邻居 ~15min 周期。
