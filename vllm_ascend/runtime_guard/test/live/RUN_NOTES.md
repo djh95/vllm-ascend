@@ -716,3 +716,21 @@ worker 初始快照 free 12.16/29.49GiB < 0.85×29.49=25.07 → ValueError。0.8
   `_init_worker` 快照 free 12.x GiB < 0.8×29.49 → ValueError。v1 连续 2 轮、v2 第 1 轮均撞,
   加"每臂 wait_idle + 失败重试 ×2"后 12:06/11:34 各一次通过。判空与快照窗口无法完全闭合,
   重试是当前唯一解;冒烟窗口尽量避开邻居 ~15min 周期。
+
+## 2026-09-22 远端 tip 第 6 次推进(9e314a780)+ 本机验证收口
+
+- 新 3 笔:`26fbefb25`/`5fa99e057` 两笔纯文档(design 时序图补 hook 门控与 sync 路径启动冻结、
+  UCM 排障移 ops §2.5)+ `9e314a780` import hoist(v1/v2 runner 函数内延迟 import 提到模块顶,
+  行为等价;processor/runner_bridge 不反向依赖 worker,无循环 import 风险)。
+- **runtime_guard/runtime_config 相对 f849eae4f 零 diff**(git diff 为空)。
+- 验证(rg-tip6-verify worktree,vllm029 PYTHONPATH):
+  - UT 117+18=135/135 全绿;
+  - v1/v2 boot 冒烟(DSV2-Lite TP2 卡 2,3,eager,0.80):双 runner health=1、completions 653B、
+    manual_dump 108 文件(2 rank × 54 层)、二次热更写入干净、HBM 释放;
+  - dump payload 双 runner 双 rank 逐项:tp_rank 0/1 随 rank dir 正确、num_kv_heads=1、
+    block_ids=[1]、tensor (1,128,1,512) bf16——与 tip5 结果一致。
+- 坑(复发确认):**裸 worktree 缺 `vllm_ascend/_cann_ops_custom/vendors`(63MB,gitignored)** →
+  boot 报 `aclnnAddRmsNormBias not in libopapi.so`,与 09-20 章结论一致;从旧 worktree cp -r 即解。
+  v2 attempt 1 因此失败,拷贝后 attempt 2 一次通过。另:直接 `import vllm_ascend.worker.*` 作首导入
+  会触发 base 代码 device_op↔ops 循环 import(tip5 同样复现),系探针顺序伪影,真实 boot 走插件
+  注册顺序无此问题——以真实 boot 冒烟为权威判据。
