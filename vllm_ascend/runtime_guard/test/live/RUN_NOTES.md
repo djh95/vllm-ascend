@@ -734,3 +734,30 @@ worker 初始快照 free 12.16/29.49GiB < 0.85×29.49=25.07 → ValueError。0.8
   v2 attempt 1 因此失败,拷贝后 attempt 2 一次通过。另:直接 `import vllm_ascend.worker.*` 作首导入
   会触发 base 代码 device_op↔ops 循环 import(tip5 同样复现),系探针顺序伪影,真实 boot 走插件
   注册顺序无此问题——以真实 boot 冒烟为权威判据。
+
+
+## 2026-09-24 远端 tip 快速演进（→tip12 1992d6b71）+ 双服务器验证轮（进行中）
+
+- 远端一日多笔推进，本轮两笔关键：
+  - **tip10 = 基线臂**：无 v2 异步 dump 接线，预期矩阵 DUMP_CHECK=0（用于与 tip12 对照）；
+  - **tip12 = 1992d6b71**（force rewrite）：3a479639a BugFix（dump prepare 异常退还 auto 配额、
+    runner_tp_rank 打印去重、僵尸请求强制回收）、b0903c3b2 目录重构（runtime_guard 迁入
+    `vllm_ascend/observability/`，import 全量更新无旧路径残留）、1992d6b71 删 82 行兼容垫片；
+    tip11 的 v2 异步输出接线修复（`maybe_wrap_v2_async_output`，TP0 包装 AsyncOutput 使
+    `check_after_sample` 在 D2H trim 后触发）完整保留。白盒审查通过。
+  - tip8/tip11 未及落地即被同日后继取代，脚本未同步。
+- **脚本同步 analysis（§0.3 缺则必补）**：`test/perf/scripts/` 新增 run_tip7/9/10/12 的
+  smoke+matrix、run_tip7/9 perf（含 tip7 perf_v2 干净重跑）、chain_tip10/chain_tip12 编排器。
+- 关键脚本修复（tip9 矩阵一脉）：`measure()` 覆盖写 → 追加写（此前 matrix.jsonl 只剩最后状态）；
+  manual dump 翻转后等 6s 轮询生效再发长请求（此前翻转即发导致 dump 不触发）。
+- **residual_check 新增**（用例见 FUNCTIONAL_TEST_LIST §16）：每 case/状态结束后查 VLLM::
+  孤儿进程并留证，用于定责「残留是否 guard 修改引起」。白盒侧：guard 后台线程均
+  `daemon=True`，理论上不残留；客观结论待 T0 对照实验。
+- C1/T0 全局对照沿用 tip7 perf_v2 干净重跑结论；本轮矩阵为单轮 T1→T2→T3 换位（103 起不了
+  T0），聚焦 C2/C3、DUMP_CHECK 与 residual 证据。
+- 103 编排：chain_tip10（smoke → 矩阵 6 组合：Qwen2.5-7B tp2/pp2/dp2、DSV2-Lite tp2、
+  Qwen3-8B tp2、Qwen3-32B tp4；m1-m5 用卡 0,3，m6 加 4,5）→ 完成后 chain_tip12 自动接力
+  同矩阵做对照。
+- 162：大模型臂（Qwen3.5-122B / DSV4-Flash）+ T0 定责；当前全卡被他人 DSV32 任务（11:46 起）
+  占满，看门狗等释放自动续跑；已通知将验证目标从过时 tip11 切到 tip12（1992d6b71）。
+- **结果待补录**：tip10/tip12 DUMP_CHECK 对照、C2/C3 数值、residual 证据、dump 元信息与产物路径。

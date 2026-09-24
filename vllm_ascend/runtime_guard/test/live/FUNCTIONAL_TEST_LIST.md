@@ -609,3 +609,25 @@ vllm_ascend/runtime_guard/test/live/golden/
 4. 结论写入笔记；**更新 skill**（§10.3）；删盘  
 
 脚本占位（缺则补 analysis）：`live/scripts/k_*_*.sh`、`live/golden/`。
+
+
+## 16. 残留进程检查（residual_check · 每轮每状态必做）
+
+背景：实卡测试曾出现杀主进程后 VLLM:: 孤儿进程占卡过夜；tip12 BugFix 3a479639a 同期新增
+僵尸请求强制回收。需要用例把「测试残留」与「guard 修改」的因果关系说清楚。
+
+- **执行点**：smoke 每个 case（正常结束与 health 失败两条路径）结束后；matrix 每个状态结束后。
+  脚本内置 `residual_check` 函数，tip12 起强制。
+- **步骤**：sleep 5 → `ps -eo pid,ppid,pgid,nlwp,etime,args` 过滤 `VLLM::|vllm.entrypoints.openai.api_server|EngineCore`
+  → 无残留记 `RESIDUAL_AFTER <label>: none`；有残留先原样落日志（pgid/nlwp/etime 供定责），随后
+  `pkill -9 -f`（EngineCore / DPCoordinator / Worker / api_server 四类）复检：清干净记
+  `RESIDUAL_CLEARED`，仍存活记 `RESIDUAL_STUCK`（人工介入清理并留证）。
+- **判据**：
+  - R-01 T1/T2/T3 各臂均无残留 → 残留与本笔修改无关，关闭议题；
+  - R-02 仅产品臂（T1/T2/T3）有残留、T0 干净 → 疑似 guard 引起：白盒复查后台线程 `daemon=True`
+    属性与进程组归属，并在 162 复现闭环；
+  - R-03 T0 同样残留 → vllm/平台既有问题，与本笔修改无关，单独立 issue 跟踪。
+- **定责对照**：T0（merge-base，无 guard 产品绑定）是唯一定责对照。103 的 T0 树（rg-tip9-t0）
+  在本容器起不来（见 `run_tip9_matrix.sh` 头注），T0 定责实验放 162（新镜像）。
+- **实现**：`test/perf/scripts/run_tip12_smoke.sh`、`run_tip12_matrix.sh` 内置；后续 smoke/matrix/launcher
+  脚本必须继承该函数（§0.3 缺则必补约定）。
