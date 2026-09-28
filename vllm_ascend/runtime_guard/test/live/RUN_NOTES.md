@@ -761,3 +761,74 @@ worker 初始快照 free 12.16/29.49GiB < 0.85×29.49=25.07 → ValueError。0.8
 - 162：大模型臂（Qwen3.5-122B / DSV4-Flash）+ T0 定责；当前全卡被他人 DSV32 任务（11:46 起）
   占满，看门狗等释放自动续跑；已通知将验证目标从过时 tip11 切到 tip12（1992d6b71）。
 - **结果待补录**：tip10/tip12 DUMP_CHECK 对照、C2/C3 数值、residual 证据、dump 元信息与产物路径。
+
+---
+
+## 2026-09-28 C2 劣化二分定位 + 根因插桩 + 历史基线考古（因果链固化）
+
+### 现象
+tip14 (696b81d34 + V030) 交叉轮换校准（N=3, m1 组合 Qwen2.5-7B TP2）:
+C1 = 1.00523 PASS, C2 = 0.98274 FAIL (>=0.999)。
+C2 破线 = t2(热更新轮询)比 t1 慢 ~1.7%。
+
+### 二分五点（全部 m1 组合，t1->t2 交叉轮换 N=2，几何均值）
+
+| 点 | 提交 | 环境 | t1 gm | t2 gm | C2 | 判定 |
+|----|------|------|-------|-------|-----|------|
+| A | tip12 1992d6b71 | V029 | 9.076 | 9.091 | 1.00156 | PASS |
+| C | 39f115097 control plane 重挂 | V030 | 8.988 (低 2%) | 9.076 | 1.00987 | 假 PASS(被掩蔽) |
+| E | 36821945f claim bus 门控修复 | V030 | 9.250 | 9.005 | 0.97346 | FAIL |
+| D | 8b205863d hooks 解耦 | V030 | 9.144 | 9.037 | 0.98829 | FAIL |
+| B | tip13 6e4284483 | V030 | 9.183 | 9.008 | 0.98092 | FAIL |
+
+### 掩蔽机制（两幕剧）
+1. 劣化本体 = t2 每步 due-bit all_reduce (`_task_bus.sync_due_bits`, caller
+   `_wave_head_merged_bus`)。同一份代码 V029 开销~0、V030 开销 ~1.7% (环境放大)。
+2. 39f115097 rebase 时丢失 claim bus 的 `should_dump_kv_on_rank()` 门控
+   (tip12 原有, 见 processor_dump.py) -> t1 也每步做 claim AR, t1 被拖慢 2%,
+   C2 比值被同类开销相消 -> 假 PASS。
+3. 36821945f "[Performance] Skip TP dump claim bus when dump is inactive"
+   修复 t1 (9.25 恢复) 同时揭露 t2 的 config AR -> C2 从 ~1.0 暴露为 ~0.98。
+   该提交是"揭露者"不是"引入者"。
+
+### C1 可证伪检验（用户质疑驱动）
+质疑: 若 t1 在 39f115097..36821945f 窗口被拖慢, C1=T1/T0 应该破线, 但历史 C1 全达标?
+答案: 历史 C1 (tip13 矩阵 1.0077-1.0087, tip14 矩阵 0.99-1.02, tip14 校准 1.00523)
+全部测于 36821945f 之后的树, t1 已修复 -> 达标自洽。该窗口从未测过 C1。
+实测 (T0=5a84871b2 vs T1=39f115097, 交叉轮换 N=2):
+  T0 gm=9.153 (spread +0.08%), T1 gm=9.000 (spread +0.30%),
+  **C1(39f115097) = 0.98329 FAIL** -- 预测 0.988 命中, 掩蔽模型端到端闭环。
+
+### 插桩结果 (patch_ar_instrument.py, rg-instr-tip14/rg-instr-tip12)
+两树 t2 各 3x256 tok, 每 100 次调用输出 [RG-AR] 行:
+- gate 后端: 两环境均为 ProcessGroup/gloo, device=cpu (HCCL/NPU 假设被否定)
+- .item() 耗时: 两环境均 ~40us (host-device 同步假设被否定)
+- **all_reduce 耗时: V029 ~1100us, V030 ~1500us (慢 30%), 尾部 max 14ms**
+- 调用频率: 每步 1 次 (n 与 decode 步数一致), caller=_wave_head_merged_bus
+结论: 真凶是每步 1-2ms 的阻塞 AR 本身。V029 靠 runner 步结构把 1.1ms 重叠掩盖;
+V030 (v2 runner 关键路径更紧) 暴露 ~1.7%。注: AR 计时大部分是对端等待
+(同步点强制对齐), 优化 Gloo 本身无意义, 必须消除/降频同步点。
+
+### 历史基线考古 (git log -S / fsck / reflog)
+- README 基线 C2 v2=0.99920 的测量 = **09-17 13:02-14:16, 产品树 21d24c892**
+  (V029, runtime_config-only 时代, sync_due_bits 当已存在)。
+- 原始提交链 (dangling, 对象完好, 可 git worktree add 检出复测):
+  21d24c892 [Fix] MRV2 token reads (09-17 测量版)
+  cef550d2b [Test] RUN_NOTES: 8 toolbox findings (当轮记录)
+  d5c404f42 [Test] 09-17 regression wrap-up
+  03a6ad89d [Feature] control plane 原始 amend (09-18 12:16)
+  bb9def9a2 [Feature] Add runtime_guard control plane (原始诞生, 1ae55b060 链)
+  1ae55b060 [Fix] Tolerate unbound runtime_guard (09-18 重写链 tip, C5/C6 于 09-20 在此测)
+- 39f115097 (09-24) 是 control plane 重挂 V030 的产物, 不是 1ae55b060 后代。
+- 历史 0.99920 (V029) 与 A 点 1.00156 (V029) 同性质: 每步 AR 存在但 V029
+  测不出。不存在"达标代码被某笔提交改坏"。
+
+### 修复方向 (目标: 开销 <=0.1%)
+方案 A (推荐): 文件轮询替代每步 AR -- config 源头是共享文件, 各 rank 每步
+  本地 stat mtime (~2us), mtime 变化才 reload+AR 一次。无变更时每步开销
+  <0.01%, C2 预期恢复 >=0.999。PP>1 本就设计为文件轮询。
+  风险: mtime 粒度 (用 mtime+size+inode 联合判定), 跨节点 FS 属性缓存。
+方案 B: AR 降频 (每 N=30 步一次, 1.7%/30~0.06%), 一致性窗口拉长 ~1.5s,
+  与 3s reload 节流量级匹配, 可接受。
+方案 C: 优化 Gloo 传输本身 -- 不可行, AR 耗时主要是对端等待, 同步点不消除无解。
+C1 无需优化: 36821945f 之后 t1 基础设施开销 ~0 (1.00523, 在噪声内)。
