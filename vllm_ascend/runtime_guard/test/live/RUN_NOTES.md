@@ -865,3 +865,108 @@ C1 无需优化: 36821945f 之后 t1 基础设施开销 ~0 (1.00523, 在噪声�
 
 **旁支代码树注意：**  
 `vllm_ascend/runtime_config|runtime_guard` 仍是旧 fork（含 `sync_mode`）；analysis 本地 UT（如 V6 sync_mode freeze）**不**代表产品 tip。跑产品行为请挂 **config worktree**；本旁支只维护 live/perf 清单与脚本。`test_refresh_config_cost.py` 已去掉 `sync_mode=` 传参以便跟新产品 ctor。
+---
+
+## 2026-09-28 (III) 方案 D async due-bus：v1 死锁 postmortem + v2 双阶段实现 + 验证
+
+### 方案 D（async due-bus）设计思路
+A（文件轮询）/B（AR 降频）之外的第三条路：把每步阻塞 AR 移出主推理线程，
+由 per-group 后台 daemon 线程串行执行；主线程只做 queue.put + 读上一轮结果槽
+（~us 级），同步点不再落在关键路径。
+- config 信道 one-step-delayed：本轮提交 bits，返回上一轮已合并结果，
+  各 rank 锚定一致（+1 wave），语义与 tip12 文件轮询的"下一轮生效"等价。
+- dump 信道不能延迟（dump 决策要用本轮 bits），消费时机决定成败——见 v1/v2。
+
+### v1 死锁 postmortem（rg-async-tip14，2026-09-28 早，rg_c2_async_verify）
+v1：head 提交本轮 bits、config 信道返回上轮结果（异步保持），但 dump 信道在
+head 阻塞等本轮 AR 完成后立即 broadcast_object 投递。
+现象：t1 两轮正常（gm=9.218/9.219）；t2 两轮第一次 warmup 请求全部 900s 超时
+挂死，无 C2 结果，master.log 永远停在 "health=200, measuring" 后无 ROUND_GM。
+根因：v1 允许后台 worker 线程做 AR 的同时，主线程在同一 gloo group 上发起
+broadcast_object。不同 rank 上两个线程进入 collectives 的相对顺序不一致
+（一端先 AR 后 bcast，对端相反）→ gloo 集合通信序列错位 → 全员死锁。
+只在 t2 触发：t2 有 config reload due → head 需要 quiesce+等待+两次 bcast，
+并发窗口被拉宽；t1 无 due 不进 bcast 分支。教训：**同一 ProcessGroup 上
+任何时刻只允许一个线程发起 collective，跨线程换序即死锁**。
+
+### v2 双阶段拆分 + 显式 quiesce（现行实现）
+1. wave-head：仅提交 1×AR([config_due, dump_due])。config 信道消费上一轮
+   （one-step-delay 保持）；dump 信道**不消费**，仅 stash
+   (group, seq, local_bits) 到 _due_bus_wave。config_due 时先
+   `quiesce_due_bus()` 再 broadcast_object——主线程任何 collective 前必须
+   等 worker 清空队列，根除并发。
+2. end-of-wave（forward 结束、进入 dump D2H 前，processor_dump.py
+   end_of_wave_sync 开头钩子）：`poll_due_bits(group, seq)` 检查本轮 AR 是否
+   完成——正常情况下整个 forward 足够 AR 落地，零延迟消费本轮合并 bits；
+   未完成时打 warning（30s 限流，"[RG-DUE-BUS] wave_end: due-bus AR seq=%s
+   NOT finished at forward end ..."）再阻塞等待——即"forward 结束检查同步
+   是否完成"的健康检查（用户需求，融入设计）。随后 dump jobs broadcast 投递。
+3. 错误语义转移：head 阶段 collective 失败**不再丢 jobs**（未交接，仍留 TP0
+   _kv_dump_jobs，下轮 wave-end 再投）；wave-end 投递失败才 refund 已交接
+   arms。
+公开 API：sync_due_bits（提交+返回上轮）/ last_due_seq / poll_due_bits
+（wave-end 消费本轮+告警）/ quiesce_due_bus（主线程 collective 前屏障）。
+补丁落盘：rg_v2_patch/{_task_bus.py, processor_bus.py, patch_async_v2.py,
+patch_ut_v2.py}，幂等脚本一次应用，backup_v1/ 保留现场。
+
+### UT 结果（rg-async-tip14，V030 PYTHONPATH）
+- test_review_regressions.py：**81 passed**。v18g 改写为
+  test_v18g_merged_bus_config_bcast_head_dump_bcast_wave_end（head 只 config
+  bcast、jobs 留 TP0；wave-end poll+bcast+deferred）；v28d 改写为
+  test_v28d_head_collective_failure_keeps_jobs_pending（head 失败 jobs 保持
+  pending、stash 清空）；新增 wave-end 告警路径
+  test_v2_poll_due_bits_warns_when_ar_unfinished + 尾段投递失败 refund
+  test_v2_wave_end_delivery_failure_refunds_handed_off_jobs。
+- 全套 runtime_guard + runtime_config：**169 passed**；observability：9 passed。
+- 测试工程注意点（踩坑记录）：
+  (1) 告警断言必须 leaf logger 捕获
+      （vllm_ascend.observability.runtime_config._task_bus，root 捕不到）；
+  (2) 必须重置 worker["warn_ts"]——bootstrap 的阻塞等待会合法消耗 30s
+      限流窗口，把 wave-end 健康检查告警吞掉（产品语义：启动后前 30s 的
+      wave-end 告警会被 bootstrap "due-bus behind" 限流——已知无害）；
+  (3) wave-end 路径 UT 必须 patch should_dump_kv_on_rank，否则走到
+      _drop_pending_dump_jobs 分支。
+
+### C2 验证（async2_696b81d34_vllm030，rg_c2_async2_verify，N=2 交叉轮换）
+t1 gm=9.120（r1:9.11, r2:9.13, spread +0.29%）；t2 gm=8.996
+（r1:9.05, r2:8.94, spread +1.19%）；
+**C2 = 0.98645 FAIL**（目标 >=0.999）。
+- **死锁修复确认**：t2 两轮全部正常测完并干净退出（v1 两轮均在第一次
+  warmup 请求 900s 挂死）。残余清理全绿（RESIDUAL_LIVE none）。
+- 对照：stock tip14 C2=0.98274（N=3）；bisect E/D/B 0.973-0.988。
+  v2 相对 stock +0.4pp，但 N=2 噪声（t2 spread +1.19%，r2 t2=8.94 为低尾）
+  无法分辨真实开销——**按协议 C2 结论需 N>=3 复测**。
+- live due-bus 告警语义验证（t2 serve log，共 8 行，全良性）：
+  bootstrap 2 行（每 rank 启动一次，预期）；quiesce 6 行（~33s 一次
+  config_due 事件，主线程等在飞 AR 完成——防死锁屏障的正确代价，
+  1.5ms/33s ≈ 0.005% 可忽略）；**wave_end 0 行**——性能轮中 AR 全部在
+  forward 内落地，poll 零等待。
+- t2 seq 速率 ~9.2/s 与解码步速一致，确认 due-bus 每步提交、异步消费。
+
+### dump 功能 sanity（manual_dump flip，v2 wave-end 信道端到端）— PASS
+- 流程：boot（manual_dump=false）→ 2048 tok 长请求在跑 → 第 8s 翻转
+  config manual_dump=true → 25s 后统计。
+- **SANITY_DUMP files=7672**，布局符合既有 schema
+  （manual_trigger/cmpl-*/wave_NN/dp0_tp0_pp0_cp0/*.pt）——config 信道
+  bcast + wave-end dump 信道投递 + D2H dump 全链路工作。
+- **wave_end 告警 live 触发 1 次**（TP0 seq=30，flip 落地那波）：
+  "[RG-DUE-BUS] wave_end: due-bus AR seq=30 NOT finished at forward end
+  (done=29 backlog=1); waiting before dump lane"——用户要求的 forward-end
+  完成检查在真实环境命中了一次真实的未完成事件，告警→等待→投递成功，
+  该功能端到端验证通过。
+- 已知日志盲区（记录在案）：wave_end 等待告警 30s 限流，若每波都等只有
+  第一条可见；本轮 0 条 wave_end 告警说明性能轮 poll 未等待，但严谨结论
+  需计数器（poll_wait/wave_total）而非仅靠限流日志。
+
+### 结论与后续
+1. v2 修复了 v1 死锁（并发 collective 根除），功能全通（UT 259 + sanity），
+   用户要求的 forward-end 健康检查实现并 live 验证。
+2. C2=0.98645 (N=2)：较 stock +0.4pp 但未达 0.999，且受 r2 t2 低尾影响，
+   统计上不可下结论——需 N=3 交叉轮换复测（协议要求）。
+3. 若 N=3 复测仍 ~0.986-0.99：说明异步化只消除了主线程阻塞，per-wave 的
+   锁/GIL/线程唤醒开销仍在（worker 9.2 AR/s × 1.5ms ≈ 14ms/s 跨线程活动，
+   GIL 敏感的 eager 主循环可能被拖累）——届时转向方案 A（文件轮询 mtime，
+   无变更时不做任何 AR，同步点彻底消失），v2 的 due-bus/quiesce/wave-end
+   基础设施可保留给"有变更"的稀有路径复用。
+4. 建议补丁（低成本）：poll_due_bits 增加计数器（waits/total，周期性
+   debug 输出），消除限流日志盲区。
