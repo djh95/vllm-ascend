@@ -970,3 +970,80 @@ t1 gm=9.120（r1:9.11, r2:9.13, spread +0.29%）；t2 gm=8.996
    基础设施可保留给"有变更"的稀有路径复用。
 4. 建议补丁（低成本）：poll_due_bits 增加计数器（waits/total，周期性
    debug 输出），消除限流日志盲区。
+
+---
+
+## 2026-09-28 tip15 (8f5e3cad8) DueBitsBusWorker 正式实现：冒烟 PASS + C2 N=3 = 0.99308 FAIL
+
+### 对象与环境
+- 提交：`8f5e3cad8 [Perf] Overlap PP==1 merged due-bus AR with forward via
+  DueBitsBusWorker`（rebased tip14 lineage），worktree `rg-tip15-8f5e3`
+- 环境：V030 (vllm 0.30.0) + CANN 9.1.0，Qwen2.5-7B-Instruct TP2，卡 4,5，
+  v2 runner，eager，与 bisect 系列同测量协议（perf_lib, 交叉 t1->t2）
+- 设计要点：depth-1 daemon `DueBitsBusWorker` **独占** group 上全部
+  collectives（due-AR + config bcast + dump bcast）；主线程仅 wave-head
+  `submit` + end-of-wave `drain`（`warn_if_pending=True` 保留用户要求的
+  forward-end 未完成告警）。结构上根除 v1 跨线程乱序死锁。
+- UT：185 passed（含新增 test_bus_worker 6 例），lastfailed 空。
+
+### 工程坑（worktree 复用必踩，重要）
+- 新 worktree 检出后 EngineCore 初始化必崩：
+  `aclnnAddRmsNormBias ... not in libopapi.so`。DeepSeek-V2-Lite 与
+  Qwen2.5-7B 同报错，与模型无关、与 8f5e3cad8 代码无关。
+- 根因：该算子**非 CANN 内置**，属 `vllm_ascend/_cann_ops_custom/`
+  （63MB **untracked 编译产物**，含 libcust_opapi.so）。`git worktree add`
+  不携带 untracked 文件；`bootstrap_custom_op_env()` 找不到包时**静默
+  return**，native rms_norm 路径 dlsym 失败。
+- 修复：`cp -a rg-async-tip14/vllm_ascend/_cann_ops_custom rg-tip15-8f5e3/vllm_ascend/`
+  即恢复（boot 2 分钟 health=200）。**以后任何新 worktree 必须手工补包。**
+- 曾误诊为模型选型问题（第一次失败时换模型，第二次同错才转向环境归因）。
+
+### 冒烟（rg_tip15_smoke，TIP15_SMOKE_VERDICT PASS）
+- boot 2min health=1；短请求 658B / 长请求 2368B 正常生成。
+- `bus_worker_started=2`（TP0/TP1 各一），worker 生命周期正常。
+- manual_dump 热翻转后 15s 内 `dump_dir` 产出 **112 个 .pt**
+  （每步落盘节奏与 decode 步数吻合）——正式实现 manual dump 落
+  `dump.dump_dir`，**不再**是 v2 原型的 `report/kv_cache/manual_trigger`
+  （冒烟脚本 glob 路径未对准导致 manual_pt=0 的假象，功能本身正常）。
+- end-of-wave 未完成告警 live 触发（功能端到端工作）。
+- 清理干净：RESIDUAL none、HBM released。
+- **发现 bug：告警限流失效**——60s 窗口 132 条，同一 rank 同一秒 2 条，
+  30s rate-limit 未生效（v2 原型 15 分钟仅 8 条）。刷屏不影响功能与性能，
+  但干扰后续测量观察，建议修复。
+
+### C2 交叉轮换 N=3（rg_c2_tip15，Qwen2.5-7B TP2）
+- t1 gm=**9.139** tok/s（r1 9.196 / r2 9.137 / r3 9.086，spread +1.25%）
+- t2 gm=**9.075** tok/s（r1 9.078 / r2 9.039 / r3 9.110，spread +0.77%）
+- **C2_TIP15 T2/T1 = 0.99308 (>=0.999) FAIL** —— t2 开销 0.69%，未达 <=0.1% 目标。
+- 三代对照（同协议同模型）：
+
+| 实现 | C2 | t2 每步开销 |
+|------|-----|------------|
+| tip14 stock（wave-head 阻塞 AR） | 0.98274 (N=3) | ~1.7% |
+| v2 原型（head submit / wave-end poll / quiesce） | 0.98645 (N=2) | ~1.35% |
+| **8f5e3cad8（DueBitsBusWorker 独占）** | **0.99308 (N=3)** | **~0.69%** |
+
+异步化方向正确（改善 56%），但与上轮预判一致：异步化只消除了主线程
+阻塞等待，**per-wave 跨线程成本（锁/线程唤醒/queue depth-1 串行化）仍在**。
+
+### 机理取证
+- t1 与 t2 **都**每波提交 merged-bus（两侧 serve log `bus worker
+  started`=2 各在），即 t1 也每波做 [false,false] due-AR。
+- 告警分布：**T1=0、T2=216**。同样每波 AR，t1 三个 arm 全部在 forward
+  内完成；t2 有 216 波 end-of-wave 时未完成（~3% 波）。
+- 粗算：216 波 × 全额等待 ~2ms / 总步数 ≈ 0.06%——**未完成波全额等待
+  不是主要开销**；0.69% 主体仍是每波 submit/drain 的跨线程固定成本
+  （叠加 t2 特有 reload 检查路径）。
+- t2 未完成波与 reload 3s 节奏的关联、submit→AR 启动延迟（GIL/调度）、
+  rank 间步伐不齐的贡献，需计数器插桩归因（当前限流失效，
+  216 是下限而非精确计数）。
+
+### 后续选项（按优先级）
+1. 修告警限流 bug（30s 间隔未生效），否则任何观察都被刷屏污染。
+2. 补计数器插桩：poll_ready 命中率、submit→完成时延分解、
+   per-wave submit/drain 固定成本——归因 0.69% 构成后再选 3/4。
+3. 方案 A（推荐，上轮已预判）：文件轮询 mtime 替代每步 due-AR，
+   无变更时每步开销 <0.01%，同步点彻底消失；现有 bus 基础设施
+   保留给"有变更"的稀有路径。
+4. 方案 B 备选：AR 降频每 N=30 步（0.69%/N≈0.02%），一致性窗口 ~1.5s
+   与 3s reload 节流同量级。
