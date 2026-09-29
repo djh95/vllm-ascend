@@ -1,25 +1,34 @@
-# runtime_guard 方案说明（vllm-ascend）
+# Runtime Guard Design (vllm-ascend)
 
-> 运行时异常检测与 incident 处置控制面。  
-> 代码根目录：`vllm_ascend/runtime_guard/`  
-> 配置模块：`vllm_ascend/runtime_config/`
+> **Hosting:** analysis branch only (`feat/runtime-guard-analysis`). Product PR ships
+> feature guide + `runtime_config` reference; keep this file in sync with product tip.
+>
+> Runtime anomaly detection and incident response control plane.  
+> Code root: `vllm_ascend/observability/runtime_guard/`  
+> Config module: `vllm_ascend/observability/runtime_config/`
 
-## 1. 组件与流程
+## 1. Components and Flow
 
-| 组件 | 模块 | 职责 |
+| Component | Module | Responsibility |
 |------|------|------|
-| Runtime Config | `runtime_config/config.py`（`RuntimeConfig`） | 一份 JSON；可选热更新（启动项控制周期） |
-| Detector | `detector/` | 异常检测，产出 `Incident` |
-| Action | `action/` | 异步处置：`report`、`dump_kv`、`set_log_level` |
-| Report | `report.py`（`ReportWriter`） | 异常短报告落盘到 `runtime/report/` |
-| KV dump | `kv_cache_reader.py`（`KvCacheReader`） | 按请求 block 做 native D2H，异步写 `.pt` |
-| Processor | `processor.py`（`RuntimeGuardProcessor`） | runner 侧编排：bind / `sync_for_step` / sample hooks / `_handle_alert` → ActionExecutor；`[SamplingMeta]` 在 after-sample 以 DEBUG 输出（靠日志级别，无 JSON 开关） |
-| Request state | `request_state.py`（`RequestGuardStore`） | per-req 共享态；`mark_finished` 后延迟 `clear` |
-| I/O snapshot | `io_snapshot.py`（`RequestIoSnapshotManager`） | report I/O 视图（normalize→Store + `snapshot`） |
-| Quota | `quota.py`（`DumpQuota`） | 自动 dump 次数上限与 cooldown |
-| Rank gate | `rank_gate.py` | 检测 / report：last-PP TP0；dump：last-PP 全部 TP |
+| Runtime Config | `runtime_config/config.py` (`RuntimeConfig`) | Single JSON file; optional hot reload (interval set at startup) |
+| Detector | `detector/` | Anomaly detection; produces `Incident` |
+| Action | `action/` (`executor`, `queue`, `actions`) | Async handling: `report`, `dump_kv`, `set_log_level` |
+| Report | `report.py` (`ReportWriter`) | Short incident reports written under `runtime/report/` |
+| KV dump | `kv_cache_reader.py` (`KvCacheReader`) | Native D2H per request blocks; async `.pt` writes |
+| Processor | `processor.py` (+ bus/dump/report mixins) | Runner-side orchestration: bind / `sync_for_step` / sample hooks / `_handle_alert` → ActionExecutor |
+| SamplingMeta DEBUG | `sampling_meta_debug.py` | Log-level-only `[SamplingMeta]` dump (no JSON switch); no dedicated UT — manual DEBUG smoke |
+| Request state | `request_state.py` (`RequestGuardStore`) | Per-request shared state; delayed `clear` after `mark_finished` (drain probe / cpu_jobs / max deferred waves) |
+| I/O snapshot | `io_snapshot.py` (`RequestIoSnapshotManager`) | Report I/O view (normalize→Store + `snapshot`) |
+| Quota | `quota.py` (`DumpQuota`) | Auto dump count cap and cooldown |
+| Rank gate | `rank_gate.py` | Detection / report: last-PP TP0; dump: all TP on last PP |
+| Wave tracker | `wave_tracker.py` | Per-req sample-wave FIFO stamps |
+| Merged due-bus | `bus_worker.py` (`DueBitsBusWorker`) | Async config+dump TP0 due-broadcast overlapped with forward |
+| Manual trigger | `manual_trigger.py` | Control-plane dump/report outside detector pipeline |
+| KV block meta | `kv_block_meta.py` | Resolve local `block_ids` (v1/v2 paths) |
+| Token utils | `token_utils.py` | Normalize / trim / accepted-count helpers |
 
-对外入口：`from vllm_ascend.runtime_guard import RuntimeGuardProcessor`
+Public entry: `from vllm_ascend.observability.runtime_guard import RuntimeGuardProcessor`
 
 ```text
 additional_config
@@ -28,165 +37,186 @@ additional_config
          │
 Worker: RuntimeGuardProcessor.bind(runner)
 
-  ① execute_model（本调用内）
-  │  sync_for_step()                    # 波头：配置热更 + dump 名单 due bus
-  │  │  ├─ broadcast∧PP==1：1×AR([config_due,dump_due]) + 按需各 lane bcast
-  │  │  └─ file / PP>1：本地 poll JSON；dump 名单走 last-PP TP bus
+  ① execute_model (this call)
+  │  sync_for_step()                    # wave head: config hot reload + dump list due bus
+  │                                      # static idle (reload=0, no detectors/print/manual):
+  │                                      #   skip config bus; claim TP dump bus only if dump_enabled
+  │  │  ├─ last-PP×TP>1: 1×TP0 due-bcast([wave_idx,config_due,dump_due]) + per-lane bcast as needed
+  │  │  └─ file / non-last-PP: local poll JSON; dump list via last-PP TP bus
   │  try:
   │    prepare → forward
-  │      · 非 last PP：常只传 IntermediateTensors，本调用结束无 sample
-  │      · last PP 且需采样：留下 execute_model_state，返回后由引擎再调 ②
+  │      · non-last PP: often only IntermediateTensors; this call ends with no sample
+  │      · last PP and sampling needed: leave execute_model_state; engine invokes ② after return
   │  finally:
   │    if dummy_run or execute_model_state is None:
-  │      end_of_wave_sync(allow_arm=False)   # 无后续 sample 时的波尾兜底（与 ② 互斥）
+  │      end_of_wave_sync(allow_arm=False)   # wave tail when no follow-up sample (mutually exclusive with ②)
+  │    # last-PP TP: drain async merged due-broadcast here (submitted at wave head;
+  │    # ideally finished during forward; warn+wait if still pending)
   │
-  ② sample_tokens（另一次调用；仅当 ① 留下了 execute_model_state）
+  ② sample_tokens (separate call; only when ① left execute_model_state)
   │  run_sample_phase(sample_fn=…)
-  │    ├─ sample_fn()（原采样）
+  │    ├─ sample_fn() (original sampling)
   │    │    └─ if need_pre_sample_hook [= logits_finite.enabled ∧ last-PP∧TP0]
-  │    │         then wrap compute_logits → check_before_sample（grammar 之前）
+  │    │         then wrap compute_logits → check_before_sample (before grammar)
   │    ├─ if not needs_sample_phase_hooks:
-  │    │     sample_fn →（可选 routed_experts）→ end_of_wave_sync → return
-  │    │     （仍进波尾：flush 波头 deferred；波尾无 collective）
+  │    │     sample_fn → (optional routed_experts) → end_of_wave_sync → return
+  │    │     (still enters wave tail: flush wave-head deferred; no collective at wave tail)
   │    └─ else:
   │         sample_fn → mark_finished
   │         → if spec ∧ should_check_after_spec → check_after_spec
   │         → if sync∨(async∧TP0) → record_sample_waves
   │         → if NOT (use_async ∨ AsyncModelRunnerOutput)
-  │              then 同波 check_after_sample
-  │                   · leader(last-PP TP0)：substring/repeat → report / queue dump_kv
-  │                   · else：不 detect
-  │              else 延后 AscendAsync*.get_output（D2H+trim 后）再 check_after_sample
-  │         → end_of_wave_sync(allow_arm=True)   # 有 sample 时的波尾（与 ① finally 互斥）
+  │              then same-wave check_after_sample
+  │                   · leader (last-PP TP0): substring/repeat → report / queue dump_kv
+  │                   · else: no detect
+  │              else defer to AscendAsync*.get_output (after D2H+trim) then check_after_sample
+  │         → end_of_wave_sync(allow_arm=True)   # drain async bus + dump D2H (mutually exclusive with ① finally)
   │
-  ③ （可选，延后）executor 在 output rank 调 get_output → check_after_sample
+  ③ (optional, deferred) executor calls get_output on output rank → check_after_sample
   │
-  同波末尾 end_of_wave_sync 做什么（无论①还是②触发，每波只一次）：
-    ├─ deferred 非空且 last-PP TP → 各 rank 本地 D2H（名单已在波头同步）
-    └─ allow_arm ∧ manual_dump → 各 last-PP TP 本地 D2H
+  end_of_wave_sync at same wave end (whether triggered by ① or ②, once per wave):
+    ├─ deferred non-empty and last-PP TP → each rank local D2H (list synced at wave head)
+    └─ allow_arm ∧ manual_dump → each last-PP TP local D2H
 ```
 
-### Report / dump_kv 流水线
+### Report / dump_kv pipeline
 
-同一 incident 的 `on_trigger` 含 `report` 与 `dump_kv` 时，executor **先 enqueue report、再排队 dump_kv**（本步不 D2H）。  
-`dump_kv` 默认只 dump 该请求占用的 **paged block**（`block_ids`），不是整池 KV。  
-成功排队后 last-PP TP0 在 `{dump_root}/<type>/<req_id>/wave_<N>/request_info.json` 写请求元信息（字段策略与 report 一致：counts 必有，token ids 受 `report.save_sensitive_info` 控制）。  
-`.pt` 保持 `[n_sel_blocks, block_size, …]`。
+When `on_trigger` for one incident includes both `report` and `dump_kv`, the executor **enqueues report first, then queues dump_kv** (no D2H in this step).  
+By default `dump_kv` dumps only the **paged blocks** the request occupies (`block_ids`), not the full KV pool.  
+After successful queue, last-PP TP0 writes request metadata to `{dump_root}/<type>/<req_id>/wave_<N>/request_info.json` (field policy matches report: counts always; token ids gated by `report.save_sensitive_info`).  
+`.pt` tensors stay `[n_sel_blocks, block_size, …]`.
 
-写盘前按 **leader 单卡估计 × `tp_size` + `dump.free_headroom_bytes`（默认 5GiB）** 查目标目录空闲空间（last-PP 全 TP 都会写盘），不足则跳过排队（不扣 auto quota）。`try_consume` 成功后若 queue 失败或 drain 整 arm 未 D2H 会 **refund**（还次数并清除 cooldown）。  
-after-sample CPU 检测在 ActionQueue 上稍后才告警。任意路径上若请求已 `finished` 或已 reap，**一律跳过 dump**（KV 可能已释放/复用）。`logits_finite` 在 before-sample 已 `.item()` 并（hit 时）解析入队；`check_deferred` 仍在 `get_output` / after-sample drain。
+Before write, free space on the target directory is checked using **leader single-GPU estimate × `tp_size` + `dump.free_headroom_bytes` (default 5GiB)** (all last-PP TP ranks write). Insufficient space skips queue (does not consume auto quota). After successful `try_consume`, if queue fails or the whole arm drains without D2H, **refund** (restore count and clear cooldown).  
+After-sample CPU detection alerts slightly later on the ActionQueue. On any path, if the request is already `finished` or reaped, **always skip dump** (KV may be freed/reused). `logits_finite` already `.item()`’d at before-sample when `item_sync=true`; with default async gate the wait completes at `get_output` / after-sample drain (`check_deferred`). On hit, parse and enqueue; `check_deferred` still runs at after-sample for dump timing.
 
-### dump_kv 的 rank 覆盖（last PP × 全部 TP）
+### dump_kv rank coverage (last PP × all TP)
 
-检测只在 last-PP TP0。其它 TP 没有 incident，不能独立决定 dump。用 last-PP **本 stage 的 TP 组** 把名单带过去。
+Detection runs only on last-PP TP0. Other TP ranks have no incident and cannot decide dump alone. The last-PP **TP group for this stage** carries the list.
 
-| 谁 | 做什么 |
+| Who | What |
 |----|--------|
-| last PP + TP0 | 检测、写 report、`queue_kv_dump` 记下 `{req_id, ...}`（本步不 D2H） |
-| last PP + 全部 TP（含 TP0） | **同波** `end_of_wave_sync`：收到 `req_id` 后各自 dump **本 rank** 分片 |
-| 其它 PP stage | **不 dump**（那些层的 KV 不在本覆盖里） |
-| 其它 DP replica | 不参与（没有这份请求的 KV） |
+| last PP + TP0 | Detect, write report, `queue_kv_dump` records `{req_id, ...}` (no D2H this step) |
+| last PP + all TP (incl. TP0) | **Same wave** `end_of_wave_sync`: after receiving `req_id`, each dumps **this rank’s** shard |
+| Other PP stages | **No dump** (those layers’ KV is out of scope) |
+| Other DP replicas | Not involved (no KV for this request) |
 
 ```text
-step N  波头：if broadcast∧PP==1 → 合并 AR+bcast；else file(+TP dump bus)
-        prepare → forward（if 非 last PP：常无 sample）
+step N  wave head: if last-PP×TP>1 → submit TP0 due-broadcast to DueBitsBusWorker
+                   (main thread returns; collectives run in background;
+                    payload carries wave_idx for receiver misalignment assert)
+                 else file(+TP dump bus, sync)
+        prepare → forward (overlaps BusWorker due-bcast on last-PP TP)
         → if need_pre_sample_hook → check_before_sample (logits_finite)
         → run_sample_phase:
              if not needs_sample_phase_hooks → sample_fn → end_of_wave
-               （无 after 钩子仍进波尾：flush 波头已下发的 deferred；波尾无 bus）
+               (no after hooks still enter wave tail: flush wave-head deferred; no bus at wave tail)
              else sample_fn → mark_finished
                   → if spec∧should_check_after_spec → check_after_spec
                   → if sync∨(async∧TP0) → record_sample_waves
-                  → if sync∧非 AsyncOutput → check_after_sample（leader detect/arm）
-                    else → AscendAsync.get_output 后再 check_after_sample
+                  → if sync∧non-AsyncOutput → check_after_sample (leader detect/arm)
+                    else → check_after_sample after AscendAsync.get_output
                   → end_of_wave_sync
-        → end_of_wave：本地 deferred/manual D2H（无 collective；名单同步只在波头）
-        （上一波 arm 的 dump 在本波头 bcast/claim，常 +1 wave 才 D2H）
+        → end_of_wave: drain BusWorker (warn+wait if due-bcast still pending) → apply config /
+                       stash deferred dump list → local deferred/manual D2H
+        (dump armed last wave often claimed this wave, typically +1 wave)
 ```
 
-sync 路径上 after-sample 已 arm 的 job 可同波 D2H；async `get_output` 与 ActionQueue CPU 告警仍常落到下一波 flush。本步已 `mark_finished` 的请求仍按 finished 门禁跳过 dump。  
-未产出完整 `.pt` 时各相关 rank 写 `{dump_root}/<type>/<req_id>/wave_<N>/[rank_tag/]dump_skipped.json`（`reason` + `stage=arm|drain`）。
+On the sync path, after-sample armed jobs can D2H in the same wave; async `get_output` and ActionQueue CPU alerts often land on the next wave flush. Requests already `mark_finished` this step still skip dump via the finished gate.  
+When a complete `.pt` is not produced, relevant ranks write `{dump_root}/<type>/<req_id>/wave_<N>/[rank_tag/]dump_skipped.json` (`reason` + `stage=arm|drain`).
 
-落盘：
+Cross-wave auto dump (+1) in one glance:
+
+```text
+wave N     detect (last-PP TP0) → queue dump job (no D2H yet)
+wave N+1   wave head: submit dump-list sync (TP0 due-bcast BusWorker / TP claim)
+           → prepare / forward (due-bcast overlaps forward)
+           → wave tail end_of_wave_sync: drain bus → each last-PP TP local D2H
+```
+
+Config hot-reload on last-PP TP is **submitted** at wave head and **applied at end-of-wave** after the due broadcast completes (so detectors on this wave may still see the previous JSON; the next wave sees the update — acceptable with `reload_interval_seconds` throttling). Non-last PP polls the JSON file. Manual dump skips the job bus and D2H's locally at that wave's tail.
+
+On disk:
 
 ```text
 {dump_root}/{incident_type}/{req_id}/wave_{N}/dp{D}_tp{T}_pp{P}_cp{C}/{req_id}_{layer}_req.pt
 ```
 
-拼 last-PP 下各 `tp*` 目录得到该 stage 的完整 head 切分；**没有**其它 `pp*` 目录是预期行为。
+Combine all `tp*` dirs under last PP for that stage’s full head split; **no** other `pp*` dirs is expected.
 
-代价：last-PP×TP 上 dump 与 config 共用一趟 **TP0 源** `broadcast([wave_idx, config_due, dump_due])`（`sync_due_bits_from_src`）；无 due 则不做 `broadcast_object`。非 last-PP / `tp_size≤1` 走 JSON poll。不改 `SchedulerOutput`，也不在 PP 组上 collective。产品 tip `d36597ee6` 已删除 `sync_mode`。
+Cost: on last-PP TP, dump and config share one TP0-sourced due `broadcast([wave_idx, config_due, dump_due])` on the background bus worker (inference thread only submits/drains); no `broadcast_object` when nothing is due. Receivers assert `wave_idx` so a skipped wave fails fast. Non-last PP / other processes poll JSON for config; dump always uses last-PP TP only. Does not change `SchedulerOutput` or use collectives on the PP group.
 
 ## 2. Runtime Config
 
-### 2.1 路径
+### 2.1 Paths
 
-| 项 | 说明 |
+| Item | Description |
 |----|------|
-| 默认文件 | `<cwd>/runtime/config/runtime_config.json` |
-| 显式路径 | `additional_config.runtime_config_path` |
-| 报告根目录 | 默认 `<cwd>/runtime/report`；可 `runtime_report_dir` 覆盖 |
-| 示例 | `vllm_ascend/observability/runtime_config/templates/runtime_config.example.jsonc` |
+| Default file | `<cwd>/runtime/config/runtime_config.json` |
+| Explicit path | `additional_config.runtime_config_path` |
+| Report root | Default `<cwd>/runtime/report`; override with `runtime_report_dir` |
+| Example | `vllm_ascend/observability/runtime_config/templates/runtime_config.example.jsonc` |
 
-### 2.2 同步传输（固定，无 JSON `sync_mode`）
+### 2.2 Sync transport (fixed)
 
-| Rank | 行为 |
+No JSON `sync_mode` knob. Transport is decided by rank role:
+
+| Rank | Behavior |
 |----|------|
-| **Last-PP × all TP**（`tp_size>1`） | 波头 TP0 due-broadcast + due-lane `broadcast_object`；波尾 drain/apply |
-| **其余** | 轮询 JSON；dump 仍仅 last-PP TP |
+| **Last-PP × all TP** (`tp_size>1`) | Submit one TP0 `broadcast([wave_idx, config_due, dump_due])` via `sync_due_bits_from_src` (+ due-lane `broadcast_object`) on `DueBitsBusWorker` at wave head; **drain/apply at end-of-wave**. |
+| **Everyone else** | Poll `runtime_config_path` (shared disk or per-node copy). Dump still uses last-PP TP only. |
 
-**注意**：配置热更 **不跨 DP replica 做全 world collective**。多 DP 时每个 EngineCore 各自维护可读 JSON。
+**Note**: Config hot reload does **not** use a full-world collective across DP replicas. With multiple DP, each EngineCore maintains its own readable JSON.
 
-### 2.3 热更新
+### 2.3 Hot reload
 
-- 生效开关：`additional_config.runtime_config_reload_interval > 0`（进程启动时设定；JSON 内 `reload_interval_seconds` 仅作展示）。
-- `interval = 0`：启动后配置静态，仅保留启动 overlay 与一次性 `manual_trigger`。
-- 热更失败（ malformed JSON）：保留旧配置，服务继续。
+- Enable: `additional_config.runtime_config_reload_interval > 0` (set at process start; `reload_interval_seconds` in JSON is display-only).
+- `interval = 0`: config is static after startup; only startup overlay and one-shot `manual_trigger` remain.
+- Hot reload failure (malformed JSON): keep old config; service continues.
 
-合并顺序：启动时 `defaults ← additional_config.runtime_config`（覆盖写盘）；热更 `defaults ← JSON`。
+Merge order: at startup `defaults ← additional_config.runtime_config` (overwrite on disk); on hot reload `defaults ← JSON`.
 
-### 2.3.1 启动落盘
+### 2.3.1 Startup persist
 
-启动只合成一次 effective（defaults + overlay + ctor seeds），writer 在 `_bootstrap(persist=True)` / `ensure_persisted()` 时**整份覆盖**已有 JSON。不再读盘合并、不再对显式路径 skip rewrite / dump_dir backfill。热更仍只读 JSON。
+Startup synthesizes effective config once (defaults + overlay + ctor seeds). The writer **fully overwrites** existing JSON on `_bootstrap(persist=True)` / `ensure_persisted()`. No read-merge from disk, no skip rewrite for explicit paths / dump_dir backfill. Hot reload still reads JSON only.
 
-### 2.4 JSON 顶层结构
+### 2.4 Top-level JSON structure
 
-| 段 | 作用 |
+| Section | Purpose |
 |----|------|
-| `actions.defaults.on_trigger` | 未指定时的默认 action 列表 |
-| `dump` | 自动 dump 配额、`manual_dump` |
-| `detector.*` | 各 detector 开关与阈值；可 per-type 覆盖 `on_trigger` |
-| `report` | 报告字段、敏感信息、block 元数据 |
-| `log` | 运维日志开关（不落 report JSON） |
-| `ascend_log` | Ascend 模块日志级别 |
+| `actions.defaults.on_trigger` | Default action list when unspecified |
+| `dump` | Auto dump quota, `manual_dump` |
+| `detector.*` | Per-detector switches and thresholds; optional per-type `on_trigger` override |
+| `report` | Report fields, sensitive info, block metadata |
+| `log` | Ops log switches (not written into report JSON) |
+| `ascend_log` | Ascend module log levels |
 
-字段详解见 [runtime_config 配置参考](../../user_guide/configuration/runtime_config.md)。
+Field details: [runtime_config reference](../../user_guide/configuration/runtime_config.md).
 
-## 2.5 日志与 UCM
+### 2.5 Logging switches and UCM
 
-Ascend 容器里 UCM 可能劫持 `vllm.logger.init_logger`，导致 `setLevel` / `ascend_log` 对经该入口创建的 logger 失效。runtime_guard 统一走 `init_logger_ascend`（stdlib `getLogger` + vLLM once 方法），绕过该劫持。
+In Ascend containers, UCM may hijack `vllm.logger.init_logger`, so `setLevel` / `ascend_log` may not affect loggers created through that entry. runtime_guard uses `init_logger_ascend` uniformly (stdlib `getLogger` + vLLM once methods), bypassing that hijack.
 
-排障步骤、现象对照见运维文档 [runtime_guard_ops.md §2.5](./runtime_guard_ops.md#25-日志开关与-ucm)。
+For troubleshooting steps and symptom mapping, see the ops doc [runtime_guard_ops.md §2.5](./runtime_guard_ops.md#25-logging-switches-and-ucm).
 
 ## 3. Detector
 
-检测在 **last PP + TP0** 上运行（与 `is_action_leader_rank` 同 rank）。  
-Async scheduling 的 `unique_reply_rank` 只把 output rank（TP0）的返回值送入 `enqueue_output` / `get_output`；在其它 TP rank 上强制 `get_output()` 会卡住下一步 `execute_model` 的 TP collective。  
-Report 只在 last PP + TP0 写。`dump_kv` 的 rank 覆盖见上一节（last PP × 全部 TP）。
+Detection runs on **last PP + TP0** (same rank as `is_action_leader_rank`).  
+Async scheduling’s `unique_reply_rank` only sends the output rank (TP0) return value into `enqueue_output` / `get_output`; forcing `get_output()` on other TP ranks blocks the next step’s `execute_model` TP collectives.  
+Reports are written only on last PP + TP0. `dump_kv` rank coverage is in the previous section (last PP × all TP).
 
-| incident_type | 钩子阶段 | 说明 |
+| incident_type | Hook phase | Description |
 |---------------|----------|------|
-| `spec_acceptance` | after spec | 投机解码接受率异常 |
-| `output_substring` | after sample | 输出 token 子序列匹配 |
-| `token_repeat` | after sample | 滑动窗口复读分数 |
-| `logits_finite` | before sample | logits NaN/Inf：每步 `isfinite` + `.item()`；仅 hit 时当场解析 bad row / indices / kind，入队 host `Incident`；`get_output` / after-sample 再 drain（便于 dump）。 |
+| `spec_acceptance` | after spec | Speculative decoding acceptance rate anomaly |
+| `output_substring` | after sample | Output token subsequence match |
+| `token_repeat` | after sample | Sliding-window repetition score |
+| `logits_finite` | before sample | Logits NaN/Inf: per-step `isfinite` + all-finite gate. Default **async** `.item()` (non-blocking D2H at pre-sample, wait at `get_output` / after-sample). **Logits may be mutated** afterward (grammar → `-inf`); gate uses precomputed `row_finite`, but `finite_kind` may see post-mutation values. Set `item_sync: true` for blocking pre-sample `.item()` + hit resolve on pristine logits. On hit, parse bad row / indices / kind and enqueue host `Incident`; drain again at after-sample. |
 
-共享行为：停检由 ``report.max_per_req`` 写满触发（默认 ``actions.defaults.on_trigger`` 含 ``report``）。  
-`output_substring` / `token_repeat` 在 `ActionQueue` 上跑；`logits_finite` 在 before-sample 做 `.item()` 门闩，hit 当场解析后入队，after-sample drain。
+Shared behavior: stop detection when ``report.max_per_req`` reports are full (default ``actions.defaults.on_trigger`` includes ``report``).  
+`output_substring` / `token_repeat` run on the `ActionQueue`; `logits_finite` defaults to async gate `.item()` (wait after-sample; see `item_sync`), parses and enqueues on hit, drains after-sample.
 
-> 在线 KV / position meta 检测器见后续 PR。
+> Online KV / position meta detectors are planned in a follow-up PR.
 
-各 detector 可通过 nested `on_trigger` 覆盖 action，例如：
+Each detector can override actions via nested `on_trigger`, for example:
 
 ```json
 "token_repeat": {
@@ -198,52 +228,54 @@ Report 只在 last PP + TP0 写。`dump_kv` 的 rank 覆盖见上一节（last P
 
 ## 4. Action
 
-| name | sync_only | 说明 |
+| name | sync_only | Description |
 |------|-----------|------|
-| `report` | 否 | 写 `runtime/report/<type>/report_*.json` |
-| `dump_kv` | 否 | last PP × 全部 TP：各写 `{dump_root}/<type>/<req_id>/wave_<N>/<rank_tag>/*.pt`（见「dump_kv 的 rank 覆盖」） |
-| `set_log_level` | 是 | 即时调整 Ascend 日志级别 |
+| `report` | no | Write `runtime/report/<type>/report_*.json` |
+| `dump_kv` | no | last PP × all TP: each writes `{dump_root}/<type>/<req_id>/wave_<N>/<rank_tag>/*.pt` (see “dump_kv rank coverage”) |
+| `set_log_level` | yes | Adjust Ascend log levels immediately |
 
-`dump_kv` 配置（per detector）：
+`dump_kv` config (per detector):
 
-| 字段 | 默认 | 说明 |
+| Field | Default | Description |
 |------|------|------|
-| `scope` | `request` | `request`：仅 incident 请求；`all_requests`：当前 batch 各请求（arm 自举 `iter_local_request_rows` + 每 req `block_ids_for_request`）。**`manual_trigger` 固定 `all_requests`，忽略配置。** |
+| `scope` | `request` | `request`: incident request only; `all_requests`: every request in current batch (arm bootstraps via `iter_local_request_rows` + per-req `block_ids_for_request`). **`manual_trigger` always uses `all_requests`, ignoring config.** |
 
-Quota：`dump.auto_max_times > 0` 启用自动 dump 配额；`dump.auto_cooldown_seconds` 控制冷却。  
-同一次 `dump_kv` prepare 共用一个 `arm_id`：drain 时该 arm 全部未 D2H 才 refund 一次（还次数并清 cooldown）；其后异步 `torch.save` 失败不退额度。  
-`manual_dump` / `manual_trigger` 不走 auto quota（见运维文档）。
+Quota: `dump.auto_max_times > 0` enables auto dump quota; `dump.auto_cooldown_seconds` controls cooldown.  
+One `arm_id` is shared per `dump_kv` prepare: refund once only if the entire arm drains without D2H (restore count and clear cooldown); async `torch.save` failures do not refund quota.  
+`manual_dump` / `manual_trigger` bypass auto quota (see ops doc).
 
 ## 5. Report
 
-落盘：`{report_dir}/<incident_type>/report_<timestamp毫秒>[_<req_id>]_pid<pid>.json`（仅 last-PP TP0）。
+On disk: `{report_dir}/<incident_type>/report_<timestamp_ms>[_<req_id>]_pid<pid>.json` (last-PP TP0 only).
 
-常见字段：`incident_type`、`req_id`、`rank`、`detail`、`dump_attempted`、`dump_arm_wave`、`dump_dir`、`dump_count` / `dump_max_times`。  
-同 `(incident_type, req_id)`：`report.max_per_req`（**默认 1**）限制份数；**写满后停止该 req 的全部检测**。多份之间按 **wave** 退避（首间隔 64，之后翻倍）。默认 `on_trigger` 含 `report`；若 detector 覆盖掉 `report`，则不会因写满而停检。  
-`report.save_sensitive_info=true` 时持久化 prompt/output token ids（可截断、`decode_token_ids` 控制是否解码文本）。
+Common fields: `incident_type`, `req_id`, `rank`, `detail`, `dump_attempted`, `dump_arm_wave`, `dump_dir`, `dump_count` / `dump_max_times`.  
+Same `(incident_type, req_id)`: `report.max_per_req` (**default 1**) caps report count; **after full, stop all detection for that req**. Multiple reports use **wave** backoff (first interval 64, then double). Default `on_trigger` includes `report`; if a detector overrides away `report`, detection does not stop on report cap.  
+With `report.save_sensitive_info=true`, persist prompt/output token ids (truncation; `decode_token_ids` controls text decode).
 
-## 6. Model Runner 接入
+## 6. Model Runner Integration
 
-| Runner | bind | 主要钩子 |
+| Runner | bind | Main hooks |
 |--------|------|----------|
-| v1 | `model_runner_v1.py` 构造 | `sync_for_step`、`run_sample_phase`（after_sample 等）、pre-sample wrap、async `AscendAsync*` |
-| v2 | `worker/v2/model_runner.py` 构造 | 同上 |
+| v1 | `model_runner_v1.py` ctor | `@runtime_guard_step` + `@runtime_guard_pre_sample_logits` on `execute_model`; sample still calls `run_sample_phase` inline; async wrap via `runner_bridge.build_v1_async_gpu_output` |
+| v2 | `worker/v2/model_runner.py` ctor | `@runtime_guard_step` + `@runtime_guard_sample_tokens`; the method bodies are the original functional logic unchanged — deleting the decorators restores the pre-guard methods (no `_rg_*` / `SamplePhaseResult` / hook split / runner-side stash; the spec-stats stash lives in the decorator's `wrap_postprocess_sampled`) |
 
-Idle DP：`worker.execute_dummy_batch` 调 `sync_for_step(allow_arm=False)`，与 busy rank 对齐配置热更。
+Shared decorators live in `observability/runtime_guard/hooks.py` (must sit **inside** `@torch.inference_mode()`). They own wave sync / sample-phase orchestration so v1/v2 worker diffs stay thin on upstream bumps.
 
-v1/v2 在 `compute_logits` 外包一层以插入 `check_before_sample`（`runner_bridge.wrap_compute_logits_for_pre_sample`）。
+Idle DP: `worker.execute_dummy_batch` calls `sync_for_step(allow_arm=False)` to align config hot reload with busy ranks.
 
-## 7. 进程角色与多 DP
+v1/v2 wrap `compute_logits` to insert `check_before_sample` (`runner_bridge.wrap_compute_logits_for_pre_sample`).
 
-- **`.bind(runner)`**：本进程创建/绑定 `RuntimeGuardProcessor` 单例到 ModelRunner（v1/v2 构造时调用一次）。之后 `sync_for_step` / `run_sample_phase` 都走该单例。
-- **Worker**：真正跑 NPU forward 的分布式 worker 进程；配置热更跟 `execute_model` / dummy batch 锁步（broadcast 或 file）。
-- **非 Worker**：例如 API server、EngineCore 前端进程——**没有** ModelRunner 热路径。若开了热更，`RuntimeConfig.start_non_worker_background_reload()` 起后台线程只 **file-poll JSON + 重应用 `ascend_log`**，不参与 worker collective。
-- **EngineCore**：vLLM V1 里调度/引擎侧进程；`data_parallel_size>1` 时通常 **每个 DP 一份 EngineCore（+ 其 worker 组）**。这就是文档说的「多 engine」——**现网多 DP 部署时就有多份**，不是另起一套 runtime_guard 产品；每份各自 bind、各自读自己的（或共享可读的）JSON。
-- **DP replica**：上述「一份 EngineCore + 该 DP 的 TP/PP workers」整体，持有完整模型副本的一份数据并行分片。跨 replica **不做** world collective 热更。
+## 7. Process Roles and Multi-DP
 
-## 8. 相关文档
+- **`.bind(runner)`**: This process creates/binds the `RuntimeGuardProcessor` singleton to ModelRunner (once in v1/v2 ctor). Later `sync_for_step` / `run_sample_phase` use that singleton.
+- **Worker**: Distributed worker process running NPU forward; config hot reload locksteps with `execute_model` / dummy batch (broadcast or file).
+- **Non-worker**: e.g. API server, EngineCore front-end — **no** ModelRunner hot path. With hot reload enabled, `RuntimeConfig.start_non_worker_background_reload()` starts a background thread that **file-polls JSON + reapplies `ascend_log` only**, no worker collectives.
+- **EngineCore**: vLLM V1 scheduler/engine process; with `data_parallel_size>1`, typically **one EngineCore per DP (+ its worker group)**. This is what the doc means by “multiple engines” — **present in production multi-DP**, not a separate runtime_guard product; each binds separately and reads its own (or shared-readable) JSON.
+- **DP replica**: One EngineCore + that DP’s TP/PP workers, holding one data-parallel shard of the full model replica. **No** world collective hot reload across replicas.
 
-- 运维与排障：[runtime_guard_ops.md](./runtime_guard_ops.md)
-- 用户功能指南：[runtime_guard.md](../../user_guide/feature_guide/runtime_guard.md)
-- 配置字段表：[runtime_config.md](../../user_guide/configuration/runtime_config.md)
-- 启动项：[additional_config.md](../../user_guide/configuration/additional_config.md)
+## 8. Related Documentation
+
+- Operations and troubleshooting: [runtime_guard_ops.md](./runtime_guard_ops.md)
+- User feature guide: [runtime_guard.md](../../user_guide/feature_guide/runtime_guard.md)
+- Config field table: [runtime_config.md](../../user_guide/configuration/runtime_config.md)
+- Startup options: [additional_config.md](../../user_guide/configuration/additional_config.md)
