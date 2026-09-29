@@ -1208,9 +1208,7 @@ def test_v18f_merged_bus_idle_one_bcast_zero_obj():
             ),
             patch("torch.distributed.all_reduce") as ar,
             patch("torch.distributed.broadcast") as bc,
-            patch(
-                "torch.distributed.get_process_group_ranks", return_value=[7, 8]
-            ),
+            patch("torch.distributed.get_process_group_ranks", return_value=[7, 8]),
         ):
             assert RuntimeGuardProcessor._wave_head_merged_bus(proc, group) is False
             deadline = time.time() + 2.0
@@ -1266,9 +1264,7 @@ def test_v18g_merged_bus_both_lanes_two_bcasts():
             ),
             patch("torch.distributed.all_reduce"),
             patch("torch.distributed.broadcast"),
-            patch(
-                "torch.distributed.get_process_group_ranks", return_value=[7, 8]
-            ),
+            patch("torch.distributed.get_process_group_ranks", return_value=[7, 8]),
         ):
             assert RuntimeGuardProcessor._wave_head_merged_bus(proc, group) is False
             deadline = time.time() + 2.0

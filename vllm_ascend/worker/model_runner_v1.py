@@ -111,17 +111,6 @@ from vllm.v1.worker.gpu_model_runner import (
     nans_to_dict,
 )
 
-from vllm_ascend.observability.runtime_guard.hooks import (
-    runtime_guard_pre_sample_logits,
-    runtime_guard_step,
-)
-from vllm_ascend.observability.runtime_guard.processor import RuntimeGuardProcessor, SamplePhaseResult
-from vllm_ascend.observability.runtime_guard.runner_bridge import (
-    build_v1_async_gpu_output,
-    is_async_output_rank,
-)
-from vllm_ascend.observability.runtime_guard.token_utils import accepted_token_counts
-
 from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
     maybe_create_ubatch_slices,
@@ -178,6 +167,16 @@ from vllm_ascend.models.deepseek_v41.cache_config import (
 )
 from vllm_ascend.models.glm5next.cache_views import view_glm5_next_cache
 from vllm_ascend.models.glm5next.kv_cache import is_glm5_next_cache_spec
+from vllm_ascend.observability.runtime_guard.hooks import (
+    runtime_guard_pre_sample_logits,
+    runtime_guard_step,
+)
+from vllm_ascend.observability.runtime_guard.processor import RuntimeGuardProcessor, SamplePhaseResult
+from vllm_ascend.observability.runtime_guard.runner_bridge import (
+    build_v1_async_gpu_output,
+    is_async_output_rank,
+)
+from vllm_ascend.observability.runtime_guard.token_utils import accepted_token_counts
 from vllm_ascend.ops.fused_moe.force_eplb import build_force_eplb_topk
 from vllm_ascend.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
 from vllm_ascend.ops.triton.spec_decode.ngram import triton_ngram_spec_decode

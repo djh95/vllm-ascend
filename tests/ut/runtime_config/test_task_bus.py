@@ -57,9 +57,7 @@ def _patch_dist(monkeypatch, fake_broadcast):
     import torch
 
     monkeypatch.setattr(torch.distributed, "broadcast", fake_broadcast)
-    monkeypatch.setattr(
-        torch.distributed, "get_process_group_ranks", lambda g: [7, 8]
-    )
+    monkeypatch.setattr(torch.distributed, "get_process_group_ranks", lambda g: [7, 8])
 
 
 def test_sync_due_bits_from_src_none_group_returns_local():

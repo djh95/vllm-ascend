@@ -133,9 +133,7 @@ class DueBitsBusWorker:
             if not self._started or self._stopping:
                 raise RuntimeError("DueBitsBusWorker is not started")
             if self._inflight is not None and not self._inflight.done.is_set():
-                raise RuntimeError(
-                    "DueBitsBusWorker queue depth is 1; drain the previous wave before submit"
-                )
+                raise RuntimeError("DueBitsBusWorker queue depth is 1; drain the previous wave before submit")
             slot = _Slot(request=request)
             self._inflight = slot
         self._queue.put(slot)

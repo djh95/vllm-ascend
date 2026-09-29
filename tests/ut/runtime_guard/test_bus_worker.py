@@ -163,9 +163,7 @@ def test_async_merged_bus_submit_then_drain_applies_config():
                 return_value=False,
             ),
             patch("torch.distributed.broadcast"),
-            patch(
-                "torch.distributed.get_process_group_ranks", return_value=[7, 8]
-            ),
+            patch("torch.distributed.get_process_group_ranks", return_value=[7, 8]),
         ):
             assert proc._wave_head_merged_bus(group) is False
             assert proc._merged_bus_inflight is True

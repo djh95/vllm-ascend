@@ -117,9 +117,7 @@ def sync_due_bits_from_src(
     device = "npu" if gate == getattr(group, "device_group", None) else "cpu"
     payload = torch.zeros(len(bits) + 1, dtype=torch.float32, device=device)
     if _group_rank(group, 0) == 0:
-        payload[0] = (
-            float(int(wave_idx) % _WAVE_IDX_MOD) if wave_idx is not None else -1.0
-        )
+        payload[0] = float(int(wave_idx) % _WAVE_IDX_MOD) if wave_idx is not None else -1.0
         for i, b in enumerate(bits):
             payload[i + 1] = 1.0 if b else 0.0
     torch.distributed.broadcast(
@@ -129,11 +127,7 @@ def sync_due_bits_from_src(
     )
     out = [float(payload[i + 1].item()) >= 0.5 for i in range(len(bits))]
     src_idx = int(payload[0].item())
-    if (
-        wave_idx is not None
-        and int(wave_idx) >= 0
-        and src_idx != int(wave_idx) % _WAVE_IDX_MOD
-    ):
+    if wave_idx is not None and int(wave_idx) >= 0 and src_idx != int(wave_idx) % _WAVE_IDX_MOD:
         raise RuntimeError(
             "[runtime_guard] merged-bus wave misalignment: source wave_idx="
             f"{src_idx} but local wave_idx={int(wave_idx)} "
