@@ -10,7 +10,6 @@ Usage:
 
 import argparse
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -22,10 +21,8 @@ FENCE_RE = re.compile(r"^(`{3,}|~{3,})", re.MULTILINE)
 INLINE_CODE_RE = re.compile(r"`[^`]+`")
 
 TIMEOUT = 20
-RETRY_COUNT = 5
+RETRY_COUNT = 3
 RETRY_DELAY = 5
-# Transient statuses: sleep and retry (ReadTheDocs rate-limits CI bots).
-RETRY_STATUS_CODES = {429, 502, 503, 504}
 ALIVE_STATUS_CODES = {200, 206, 301, 302, 307, 308, 401, 403, 405}
 IGNORE_PATTERNS = ["localhost", "127.0.0.1"]
 
@@ -70,7 +67,6 @@ def extract_urls(content: str) -> set[str]:
 
 def check_url(url: str) -> tuple[str, bool, str]:
     """Check a single URL. Returns (url, is_alive, message)."""
-    last_code = None
     for attempt in range(RETRY_COUNT):
         try:
             resp = requests.head(
@@ -79,7 +75,6 @@ def check_url(url: str) -> tuple[str, bool, str]:
                 allow_redirects=True,
                 headers={"User-Agent": "Mozilla/5.0 link-checker"},
             )
-            last_code = resp.status_code
             if resp.status_code in ALIVE_STATUS_CODES:
                 return (url, True, f"OK ({resp.status_code})")
             if resp.status_code == 405:
@@ -91,23 +86,15 @@ def check_url(url: str) -> tuple[str, bool, str]:
                         headers={"User-Agent": "Mozilla/5.0 link-checker"},
                         stream=True,
                     )
-                    last_code = resp.status_code
                     if resp.status_code in ALIVE_STATUS_CODES:
                         return (url, True, f"OK ({resp.status_code})")
                     resp.close()
                 except requests.RequestException:
                     pass
-            if last_code in RETRY_STATUS_CODES and attempt < RETRY_COUNT - 1:
-                # Exponential backoff: 5s, 10s, 20s, 40s …
-                time.sleep(RETRY_DELAY * (2**attempt))
-                continue
-            if last_code not in RETRY_STATUS_CODES:
-                break
         except requests.RequestException as exc:
             if attempt == RETRY_COUNT - 1:
                 return (url, False, str(exc))
-            time.sleep(RETRY_DELAY * (2**attempt))
-    return (url, False, f"HTTP {last_code}")
+    return (url, False, f"HTTP {resp.status_code}")
 
 
 def collect_files(paths: list[str], excludes: list[str]) -> list[Path]:
@@ -154,8 +141,7 @@ def main():
     print(f"Found {len(all_urls)} unique URL(s) to check.\n")
 
     failed = []
-    # Low concurrency: docs.vllm.ai / ReadTheDocs rate-limit parallel bots (HTTP 429).
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(check_url, url): url for url in all_urls}
         for future in as_completed(futures):
             url, is_alive, message = future.result()
