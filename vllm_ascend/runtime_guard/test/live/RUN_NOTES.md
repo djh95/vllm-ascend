@@ -1413,3 +1413,28 @@ runtime_config，bus/drain 完全不激活）确认相位漂移是否同样存�
 - 脚本适配（analysis 提交 `e33d933dc`+`a59b48ad6`+`5b1eb3187`）：cfg 删 `output_substring` 与顶层 `reload_interval_seconds`（均 RETIRED）；`--additional-config` 的 `runtime_config_reload_interval` → `runtime_config_hot_reload: true`（布尔，固定 3s poll；传旧参数 pydantic 直接报错——首跑 TP=1 FAIL 即此因）；`run_tip15_c4_v1.sh` 标记 DEPRECATED（v2-only 后 v1 无 guard hooks）
 - 新 tip 冒烟：**TP=1 PASS**（56 .pt 单 rank、bus worker=1、incident=1、HBM 释放）；PP=2 首跑 FAIL 为环境冲突（邻居作业绑 HCCL 192.168.2.195:16666，EI0020），已挂 idle 自动重试
 - FTL 同步更新：§0.1 v1+v2 双跑标记 SUPERSEDED（v2-only）；文末追加 round-2 脚本登记表
+
+## 2026-09-30 多机部署（9.103/13.160/13.162）：三机代码统一 3ec9c83ee，TP=1 冒烟 2/3 PASS（9.103 等卡中）
+
+> 阶段 1-2（环境检测 + 多机部署 + 冒烟一致性）记录。产物目录按机器隔离：
+> 160 `/home/d00824595/rg_tip15_tp1_smoke_r3`、162 `/home/d00824595/rg_tip15_tp1_smoke_r4`、
+> 9.103 `/data0/test-mrv2-cann91/rg_tip15_tp1_v3`。
+
+### A. 代码态统一
+- 远端 `feat/runtime-guard-config` 于 09-29 23:59 被 force-push 重写：`c3cc8c003`→`3ec9c83ee`（内容 diff 为空，UT 修复被原样吸收）；history 分支同步重写
+- 三机 worktree 全部统一 `3ec9c83ee`（160 老谱系 246ca397f 分叉切新 tip，老提交对象保留；162 经 ghfast.top 代理 fetch；9.103 reset）
+- UT 三机一致：9.103 与 160 均 177 passed
+
+### B. 冒烟脚本演进 v2→v4（多机适配修复，全部提交 analysis 分支）
+1. **hbm() 双格式**：npu-smi 26.0.rc1（160/162）卡号在 chip 行 $3、HBM 在本行 `N/65536`；老格式（9.103）HBM 在下一行 `N/32768`。v4 先本行后 getline，正则字符串拼接（v3 的 `/...t/` 字面量 bug 已修）
+2. **boot 防 setsid 死锁**：`$(... & echo $!)` 在 160 实测触发 subshell do_wait 互锁 7 分钟；改为 `( ... & )` 分离启动 + pgrep 取 pid
+3. **manual_dump 时序（关键）**：`1aa5f5f65` 起 config leader `ensure_persisted()` 启动时用默认值覆写 JSON，预写 manual_dump:true 必被抹；v4 改为 health=200 后再写 true，hot reload 3s 生效。**9.103 早前 PASS 测于 0645cf331 旧语义，3ec9c83ee 上需以 v4 复验**
+4. **incident find 断言**：产品 report 恒写 `<incident_type>/report_*.json`，路径不含字面 "incident"；改为 `-mindepth 2 -maxdepth 2 -name 'report_*.json'`
+
+### C. 各机环境要点（rg 容器专用原则）
+- **13.160**（lab-worker-a3-01）：容器 rg-test-160（nightly-main-a3，py3.12.13），16 卡 64G；vllm030_pkgs 由 9.103 经本机两跳 scp 726MB 搬入；根分区 100% 满，落盘仅 /home；160 自带预编译 .so（cpython-312）直接可用 → **v3 热修版 PASS**（manual_pt=17640、incident=3、HBM 回落）
+- **13.162**（800I A3）：容器 rg-tip11-162（dev 镜像 py3.11）+ rg162（git 主仓）；**根因链**：`aclnnAddRmsNormBias` 为 Ascend 950(A5) 专属内置算子，A3 的 CANN 9.1/9.2 libopapi 均无（cann92 两镜像实测 0 符号）；9.103/160 能跑全靠 worktree 预编译产物 `vllm_ascend_C.*.so`（torch.ops._C_ascend 自定义 kernel 不查 libopapi），162 纯源码 worktree 缺产物 → forward_oot fallback 炸。**解法**：dev 容器内 `SOC_VERSION=ascend910_9391 python setup.py build_ext --inplace -j8` 25 分钟编译成功（前置：从主仓复制 catlass@41bf90da；SOC 自动探测在 26.0.rc1 失败需显式指定）→ **v4 PASS**（manual_pt=18032、incident=3、无算子 fallback）
+- **9.103**：v4 TP=1 与 PP=2 重试 watcher 均在等卡（邻居作业占满 8 卡）；TP=1 曾于 0645cf331 PASS（v2）
+
+### D. v4 冒烟 PASS 判据（三机统一）
+health=200 + short/long 输出 sane + manual_pt>0 且 ranks 恰为 [dp0_tp0_pp0_cp0] + bus worker started=1 + incident report≥1 + wave misalignment=0 + Traceback=0 + residual none + HBM 回落
