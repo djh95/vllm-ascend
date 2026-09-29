@@ -1047,3 +1047,308 @@ t1 gm=9.120（r1:9.11, r2:9.13, spread +0.29%）；t2 gm=8.996
    保留给"有变更"的稀有路径。
 4. 方案 B 备选：AR 降频每 N=30 步（0.69%/N≈0.02%），一致性窗口 ~1.5s
    与 3s reload 节流同量级。
+
+## 2026-09-28 tip15 复测（限流修复 + [RG-BUS-STATS] 插桩）：C2=0.97995 FAIL，两轮合并 ~0.988；归因修正——开销主体是 TP1 end-of-wave 排空等待
+
+### 改动（rg-tip15-8f5e3，基于 8f5e3cad8 未提交）
+1. **限流修复**（processor_bus.py）：rebase 时丢失的 30s 告警间隔恢复
+   （实例级 `_merged_bus_warn_ts`）→ 冒烟告警 **132→4 条**（每 rank
+   每 30s ≤1，符合设计）。
+2. **插桩**（processor_bus.py + bus_worker.py）：`[RG-BUS-STATS]` 每
+   300 波输出 per-rank 分相位计数——主线程侧 head_due/submit/drain/
+   wait，worker 侧 sched/ar/bcast（ns 级计时，us 展示）。
+   - 插桩自身 bug：`_bus_stats` 静态方法与实例属性同名冲突 → 生产类
+     getattr 命中方法本身，boot 崩溃（`'function' object is not
+     subscriptable`）。SimpleNamespace UT mock 抓不到此类 bug——补真实
+     子类回归 UT `test_bus_stats_dict_survives_mixin_class_name_shadowing`
+     （属性改名 `_bus_stats_st`）。
+3. UT：**177 passed**（176+1）；插桩主线程开销 ~2us/波（≈0.002% 波长），
+   T1 侧早退零开销——不足以解释下述 run-to-run 差异。
+
+### C2 复测（rg_c2_tip15，Qwen2.5-7B TP2，N=3 交叉轮换）
+| 轮 | t1 (tok/s) | t2 (tok/s) | T2/T1 |
+|----|-----------|-----------|-------|
+| r1 | 9.205 | 9.076 | 0.98600 |
+| r2 | 9.274 | 9.088 | 0.97993 |
+| r3 | 9.177 | 8.940 | 0.97418 |
+
+gm(t1)=9.218（round_spread +1.06%），gm(t2)=9.033（round_spread +1.68%）
+**C2 = 0.97995 FAIL**（目标 ≥0.999）
+
+vs 首轮同 build 0.99308 → 0.97995，run-to-run 相差 1.3pp。两轮合计
+12 个 per-round 比值范围 **0.974–1.003**：N=3 的 run-to-run 方差
+~1.3% >> 0.1% 阈值分辨率。**两轮合并（6 round/状态）C2 ≈ 0.988**：
+与 v2 原型（0.98645）同档，优于 stock tip14（0.98274）约 0.5pp，
+距 0.999 目标仍差 ~1.2pp。
+
+### 归因数据（C2 t2 满载，300 波/窗口，波长约 110ms）
+| 指标 | TP0 | TP1 |
+|---|---|---|
+| not_ready（end-of-wave 未完成率） | 0.7–1.3% | 27–79% |
+| wait（end-of-wave 阻塞） | 15–21us | **1.4–3.3ms** |
+| ar（worker 侧 AR 耗时） | 1–21ms | 37–103ms |
+| 主线程固定（head_due+submit） | ~36us | ~36us |
+| sched / bcast | 250–320us / 82–140us | 250–260us / 83–155us |
+
+r3 t2=8.940（最低吞吐轮）恰对应 wait avg 3.3ms（两轮最高）——归因
+与吞吐方向一致。
+
+### 关键修正与结论
+1. **T1 serving 阶段完全不走 bus**：serve_t1.log 0 条 [RG-BUS-STATS]
+   （bus worker 仅在 boot profile_run 启动；`hot_reload_enabled=False`
+   时 wave-head 走本地路径）。上轮"t1 与 t2 都每波提交 merged-bus"是
+   误判——"bus worker started=2"只是 boot 期现象。C2 差值即 T2 独有
+   的 bus 开销。
+2. **开销主体 = TP1 end-of-wave 排空等待 1.4–3.3ms/波（1.3–3% 波长）**，
+   部分被 rank0 步间调度间隙吸收 → 净开销 ~1–2%，与合并 C2 吻合。
+   上轮"0.69% 主体是 submit/drain 跨线程固定成本"的推断**不成立**——
+   固定成本实测仅 ~36us/波（0.03%）。
+3. **AR rendezvous 偏斜约一整波**：TP1 worker submit 后等 TP0 侧
+   ~99ms（≈波长 110ms）AR 才完成。两侧 sched 均仅 ~300us（queue
+   pickup 不慢）→ 偏斜发生在两 rank 的 submit 时刻之间。根因待查
+   （rank0 调度/broadcast 结构或 worker 线程 GIL 饥饿）。
+4. 限流生效后 MERGED_BUS_UNFINISHED_T2=7——告警计数只是下限，
+   not_ready 率才是准确的未完成波指标。
+
+### 判定与下一步
+- **判定：C2 未达标**。DueBitsBusWorker 异步化方向有效（较 stock 改善
+  ~0.5pp）但不够：per-wave AR 的 rendezvous 尾部（TP1 等待约占一波
+  1.3–3%）构成 ~1pp 级开销，异步化只能隐藏其中被 forward 覆盖的部分。
+- **方案 A（文件轮询 mtime 替代 per-wave AR）为正解**：归因显示消除
+  per-wave AR 即回收全部 ~1pp；现有 bus 基础设施保留给"确有变更"的
+  稀有路径。
+- **测量方法学**：N=3 run-to-run 方差 ~1.3% 已超过阈值分辨率——后续
+  方案对比验收需 N≥5 或合并多轮统计；单轮结论（含首轮 0.99308）不可
+  作为达标依据。
+
+
+## 2026-09-28 tip15 根因复核：逐波时间戳插桩 + 双会话交叉验证（推翻 submit 偏斜旧解读）
+
+### 背景与质疑
+上节第 3 点"AR rendezvous 偏斜发生在两 rank submit 时刻之间"与 TP lockstep
+语义矛盾。本轮用逐波 wall-clock 插桩复核：每波记录 head/submit/AR 进入/AR 完成
+epoch 时间戳（[RG-BUS-WAVE]，300 波/组×8 条 recent），AR 内部拆分
+ar_call（collective）/ar_item（D2H），并运行时打印 gate 后端。
+
+### 采集
+- probe 会话（卡4,5, port8173, T2, 100s 稳态）：64 条 WAVE（TP0/TP1 各 32）
+  log: rg_probe_tip15/serve_t2.log
+- profiler 会话（卡4,5, port8174, T2, 40s）：48 条 WAVE + ascend_pt trace
+  log: rg_prof_tip15/serve_t2.log；trace: rg_prof_tip15/traces/rank0_*/rank1_*
+  （ascend 原始格式，msprof CLI 不支持离线导出，留待 MindStudio）
+
+### 实测（两轮会话互相印证）
+| 维度 | probe 会话 | prof 会话 |
+|---|---|---|
+| head/submit 相位（TP1−TP0） | ~2ms 齐步 | ~2ms 齐步 |
+| bus 进入 AR（head+0.4ms） | 双侧齐步 | 双侧齐步 |
+| 慢侧 AR 耗时 | TP0 挂 ~89–115ms/波 | TP1 挂 ~110–130ms/波 |
+| 快侧 AR 耗时 | TP1 ~0.6–8ms | TP0 ~0.9ms（7 波慢） |
+| 慢侧 drain wait | p50 9us, p90 2.84ms, max 3.6ms | p50 1.77ms, p90 3.69ms |
+| 快侧 drain wait | ~10us | ~10us, p90 1.03ms |
+| gate 后端 | cpu 64/64（Gloo） | cpu 48/48 |
+
+关键耦合指纹：慢侧 wave-k AR 的完成时刻 = 快侧 wave-(k+1) head+~1ms
+（例：TP0 head=131.225 AR 完成 131.3346；TP1 head=131.333 AR 完成 131.3346
+——两者在 TP1 进入后 1.2ms 内同时完成）。STATS 300 波窗口：慢侧
+ar avg=47.6ms / wait avg=569us/波（约 0.52% 波长）；快侧 ar max 出现一次
+233ms（约两波）——错位形成/翻转的化石证据。
+
+### 根因判定（按可信度）
+**实证根因 = Gloo collective 序号错位一格**：
+due-bit AR 的调用条件（due_locals 非空）在两侧非严格对称；历史上某波仅一侧
+进入 collective（另一侧 `if not bits: return` 早退），同一 ProcessGroup 的
+collective 序号从此永久错开一波。稳态下慢侧每波 AR 在波头 +0.4ms 进入后
+等满一整波——它等的不是"对端这次没来"，而是对端的**下一次**（快侧 wave-(k+1)
+AR 进入时双方 <1ms 完成交换）。forward 窗口内配对方根本不存在，AR 不可能
+完成；波末 forward 让出后，对端下一波进入恰落在 drain 窗口 → 慢侧主线程
+wait_result 暴露 p90 2.8–3.7ms（max 4.9ms；尾波 53ms）→ ~0.5–1pp 吞吐损失。
+**错位方向 per-boot 随机**（probe 慢侧=TP0，prof 慢侧=TP1）——与具体 rank
+无关，取决于 boot/warmup 早期哪侧先形成不对称。
+
+原三项假设判定：
+- R1（device_group/HCCL 被 forward 占住）**排除**：`_cpu_gate` 优先 cpu_group
+  且构造 assert 必存在；运行时 112/112 条 gate=cpu，全走 Gloo，无 HCCL 参与。
+- R2（GIL/调度推迟 bus）**方向性排除**：ar_in 显示双侧齐步进入（skew~2ms），
+  99ms 不是"进入晚"。但"纯 Gloo 解释不了 99ms"的直觉正确：99ms 的本质是
+  配对 collective 尚未被发起（序号错位），非 gloo 慢、非网络/争用。
+- R3（结构必然项）**成立且精确化**：异步化把阻塞挪到 end-of-wave 后，序号
+  错位使 AR 在 forward 窗口内不可能完成，主线程波末 wait 必然暴露等待。
+  R3 是"落点"，序号错位是"根因"。
+
+### 旧解读修正（重要）
+1. "TP1 先 submit、再干等 TP0 ~99ms"——**错**。主线程 head/submit 双会话均
+   齐步（~2ms）。上节第 3 点相应作废。
+2. "AR rendezvous 偏斜 ~99ms"——数字对、语义错：不是两侧同波 AR 的
+   rendezvous，而是慢侧 wave-k AR 与快侧 wave-(k+1) AR 的跨波配对。
+3. "后台 AR 与 forward 未真实 overlap"——对，但机制非资源竞争：配对方在
+   forward 窗口内不存在，不是被 forward 占住进度。
+4. 顺带解释历史现象：DueBitsBusWorker 各轮 C2（0.982–0.993）的波动部分
+   来自错位方向/是否错位的 boot 随机性，非实现质量问题。
+
+### 下一步
+- **方案 A（file mtime 轮询替代 per-wave AR）仍为正解**：无 collective 即无
+  错位，drain 等待整体消失。
+- 若保留 due-bit AR：必须保证双侧 collective 调用次数严格一致（not-due 侧
+  也发全 0 向量，不可早退），或加入序号对齐/重对齐机制——复杂度高于方案 A，
+  不推荐。
+- 测量注：本次插桩（纯 Python time.time/perf_counter）开销 ~us 级，对 C2
+  影响可忽略；wave 采样为 300 波窗口 recent 8 条，非全波覆盖。
+
+
+## 2026-09-29 v2 全波插桩复核：根因改判为「CPU 相位漂移累积」，昨日「Gloo 序号错位一格」结论作废
+
+### 背景
+用户质疑昨日结论（错位=collective 序号错配对），要求 v2 插桩：每波带 wave idx
+（bus AR 计数 + sync_for_step 计数）、forward start/end 锚点、worker 线程
+AR 进入/退出实时日志（[RG-BUS-AR-IN/OUT]）、drain 后整波汇总
+（[RG-BUS-WV2]，含 head/submit/ar_in/ar_out/fwd_in/fwd_out/drain_end 绝对时间戳）。
+
+### 采集
+- probe 会话（卡4,5, port8173, T2, 100s 稳态流量, Qwen2.5-7B TP2）
+- 1429 波/rank，2858 条 WV2，**全波覆盖**（v1 只有 300 波窗口 recent 8）
+- log: rg_probe_tip15/serve_t2.log（analyze_wv2*.py 三件套已上传容器）
+
+### 决定性证据（全部指向配对正确、相位漂移）
+1. **双侧每波都调用 AR，无一跳过**：两 rank idx 集合完全一致（0..1428），
+   sync 计数同步增长，wait/log 无缺口。
+2. **同 idx AR 完成时刻差 p50≈0ms**：Gloo 按调用序配对正确，跨波错配不存在。
+   （v1 看到的"慢侧 AR ~99ms"实为等对端**同波**进入，v1 无 idx 才误读成错位一格。）
+3. **同 idx head 相位差 p50≈102ms**（≈一个波周期）：漂移在跑。
+4. **坍缩实证 idx 906→908**（01:47:04，head 时间戳互证 rank 身份）：
+   - 906/907 稳态：TP0 head 领先 TP1 ~106–110ms；TP0 worker AR 等满 ~108–111ms
+     （异步不阻塞 forward）；TP1 AR 亚毫秒完成（TP0 已在等）。
+   - 908 双侧空闲波（无 scheduler 输出，fwd_in=0）：TP0 head=424.119，
+     无 forward 可做，drain 直接等 AR → **阻塞 141ms**（wait_us=141342）直到
+     TP1 于 424.259 进入其 908 AR；TP1 drain 仅 2ms。两侧 909 起相位归零，
+     漂移重新累积。→ 「空闲波坍缩」机制实锤，方向 per-boot（本会话 TP1 慢）。
+
+### 漂移分解（analyze_wv2_drift.py，busy 波 n=1405，fwd>50ms）
+| 阶段 | TP0 | TP1 | TP1−TP0 |
+|---|---|---|---|
+| pre (head→fwd_in) | 0.10ms | 0.10ms | -0.00 |
+| fwd (execute_model) | 107.87ms | 109.89ms | **+2.03** |
+| post (fwd_out→drain_end) | 4.75ms | 3.30ms | **-1.45** |
+| gap (drain→next head) | 12.47ms | 12.60ms | +0.13 |
+| 周期 | 125.19ms | 125.89ms | **+0.70ms/波** |
+
+- 100s 累计漂移 +992ms ≈ 8 个波周期；skew 增长几乎全部来自 d_fwd
+  （TP1 forward 偶发 +10~29ms 跳变，最大 idx907 +29ms；同窗口无任何其他日志事件，
+  属宿主/设备侧抖动）。d_post 是 TP0 作为领先方的 drain 暴露（果非因）。
+- TP0 wait 尖峰（>5ms, busy 波）66 次，TP1 为 0 —— 等待全部由领先方承担。
+
+### 根因（最终判定）
+vLLM V1 TP worker 之间**没有每波 CPU 级屏障**：scheduler 输出走 ZMQ 单播，
+HCCL 集合通信只做 device 流节流，CPU 相位可自由漂移。TP1 每波慢 0.70ms
+（fwd +2.03 被自身 post -1.45 部分抵消）→ 相位漂移累积至近一个波周期
+（~100ms）。due-bit AR 是唯一 CPU 会合点，异步设计使领先方在 worker 线程
+等满一波（不阻塞 forward），残余等待在波尾 drain 暴露：mean +1.45ms/波
+（≈1.2% 周期）+ 66 次尖峰 —— 与 C2 缺口（0.99275 vs 0.999）量级吻合。
+
+### 修复方向（不变，依据更强）
+- **方案 A（file mtime 轮询替代 per-wave AR）仍为正解**：相位漂移本身无害
+  （device 节流兜底），吞吐损失全部来自 AR 这个 CPU 会合点在 drain 的暴露。
+  去掉 AR → drain 无等待 → C2 恢复。
+- 若保留 AR：需改造为对称的每波屏障（双侧互等）而非单侧 drain 暴露——
+  等价于回到阻塞式设计，不推荐。
+- 注意：rg-tip15-8f5e3 worktree 仍带 v2 probe 插桩（未提交），C2 复测前需剥离。
+
+
+## 2026-09-29 hooks-only T1 probe：漂移确认为流水线原有（TP0 同向领先、钉在约一波）；「TP0 单源 due+广播」方案判定
+
+### 背景
+方案A（mtime 轮询）已弃。用户要求先做 hooks-only probe 变体：T1 基线（无
+runtime_config，bus/drain 完全不激活）确认相位漂移是否同样存在——判定漂移
+是否 bus 引入。
+
+### 采集
+- patch_probe_hooks.py：hooks wrapper 自打 [RG-HK-WAVE]（idx 复用 processor.py
+  _probe_sync_idx，T1/T2 每波自增；init_logger_ascend 保证 (Worker_TP 前缀兜底）。
+- run_tip15_probe_t1.sh：与 T2 probe 完全同构（warmup/REQS/100s/停服全同），
+  唯一差异不传 --additional-config；卡4,5 port 8175；1429 波/rank，2858 条 HK 行。
+- analyze_hk_t1.py：skew 曲线/百分位/三段 pin 检验/无会合检验 + T2 参照比对。
+- log: rg_probe_tip15/serve_t1.log
+
+### 结果（s = head_tp1 − head_tp0，正 = TP0 领先；T2 参照按同物理方向 +102~110）
+| 指标 | T2（bus 激活） | T1 hooks-only |
+|---|---|---|
+| TP0 领先量 p50 | ~+102ms | +66ms（thirds 74/51/84ms） |
+| pin 位置 | +100~110 ≈ 1 波 | +108~110 ≈ 1 波（P=109ms） |
+| fwd_out≈head skew（无 CPU 会合） | 1417/1418 | **1429/1429** |
+| busy fwd p50 | ~100ms | 104ms（tp0 104.2 / tp1 104.9） |
+- 漂移曲线反复钉在 +108~110ms ≈ +1 周期；20 个空闲波多次坍缩归零
+  （−35/−64/+1 事件）后重新累积。
+
+### 结论
+1. **CONFIRMED：漂移是流水线原有的**。T1 无 bus/AR/drain 仍漂至 ~1 波并被 HCCL
+   钉死，方向与 T2 相同（TP0 领先、TP1 每波慢）——「领先方被 device 集体拽住、
+   钉在约一波」模型在无 bus 状态同样成立。T2 的 C2 缺口只来自波尾 drain 暴露，
+   不来自漂移本身。
+2. 「TP0 单源算 [config_due, dump_due] → 广播」方案判定：**语义可行、性能对症**：
+   - 对齐本就靠「每 rank 每波恰一次 bus + list/D2H 同波契约」，不靠对称 AR；
+     dump due 事实上只有 TP0 有信息（队列/detect 只在 TP0），list 本来就是
+     TP0→TP 广播；config timer 单源化（去 OR 投票）更一致，reload 生效波由
+     TP0 一锤定音。
+   - 广播把结果就绪点从「落后方 head（AR 语义）」提前到「TP0 head」：TP1
+     收包即得（TP0 早 ~1 波已发出）、TP0 自产自消 → 实测方向（TP0 领先）下
+     波尾 drain 税→0，正对 C2 缺口。
+   - 每 rank 税不劣于 AR。AR 隐式背压消失后需补：队列上限 + MERGED_BUS_UNFINISHED
+     告警保留；gloo 通道容忍 producer 超前 ~1 波（单 tag FIFO 保序/小消息缓冲）。
+   - **新增护栏（关键）**：payload 带 wave_idx + recv 侧断言配对——AR 时代错配
+     = 挂死（响亮失败），缓冲广播时代错配 = 静默串波（危险），必须显式断言；
+     v2 探针已给 MergedBusRequest 加过 wave_idx，可直接复用。
+   - 符号稳健性：漂移方向 per-boot（本两会话均 TP0 领先）。若某次 boot 翻转
+     （TP1 领先 ~1 波），广播税落回新领先方 ≈ (S−fwd)（典型几 ms），量级≈今日
+     AR、不会更差；届时再启用「生产 head(n) → 消费 tail(n+1)」
+     （slack≈P+fwd−S>0 两向稳，代价 auto-dump 时序再 +1 波，需产品确认）。
+   - 修正旧预期：单靠「消费点后移到下一波头」在 skew≈1 波时 slack≈P−S≈1ms，
+     贴边不可靠；对症修复是 TP0 单源广播，后移仅作翻转相位的备选增强。
+3. 下一步：实现 TP0 单源 due+广播（含 wave_idx 配对断言）→ 消费点保 tail(n) →
+   剥离 probe 插桩 → C2 N=3 复测。
+4. worktree 现带 v2 probe + HK probe 两层插桩（未提交），C2 复测前需剥离。
+
+## 2026-09-29 TP0 单源 due 广播落地：strip probe + sync_due_bits_from_src + UT/冒烟全过；C2 N=3 复测
+
+### 改造（rg-tip15-8f5e3；最终 diff 存容器 /data0/test-mrv2-cann91/tip15_bcast_final.diff，6 文件 +376/-34）
+- **strip_probe.py**：剥离全部 v2+HK 探针插桩（每波 [RG-BUS-WAVE] 日志、
+  wave_idx/tp_rank/enqueued_wall 探针字段、_probe_ 属性、recent 采样列表），
+  保留产品层（rate-limit 警告、BUS-STATS 每 300 波聚合、MergedBusResult.timings）。
+- **patch_tp0_broadcast.py**：
+  - `_task_bus.sync_due_bits_from_src(group, due_locals, *, wave_idx)`：TP0 构造
+    `[wave_idx % 2^24, bit…]` float32 payload → 一次 gloo broadcast → 接收端断言
+    wave_idx 配对（错配 raise RuntimeError，防静默串波；%2^24 保证 float32 长会话
+    精度）。对称 `sync_due_bits`（all_reduce）保留给 PP>1 单 lane 路径不动。
+  - `bus_worker.py`：merged bus 每波切到新函数并传 wave_idx；文档同步。
+  - `processor_bus.py`：`_bus_wave_seq` 每波递增随请求下发；BUS-STATS 保留。
+  - 语义依据：dump_due 本就仅 TP0 产生；config reload 周期性投票改由 TP0
+    单源广播一锤定音；gloo broadcast 源端无需 rendezvous → 领先 rank 波尾
+    drain 税→0（正对 C2 缺口根因）。
+- **fix_ut_regress.py**：v18f/v18g 断言从 all_reduce 切到 broadcast（含
+  get_process_group_ranks patch，与 test_bus_worker 同款 KeyError 修复）；
+  v18e/e2（PP>1 单 lane all_reduce 路径）不动。
+- 警告文案 "waiting on all_reduce" → "waiting on the due broadcast"。
+
+### 验证
+- **UT 全绿**：runtime_guard + runtime_config 228 passed（test_task_bus 新增 8
+  用例：空列表/单 rank/波号错配/模环绕对；v18f idle=1 broadcast 0 bcast_object）。
+- **冒烟 r3 PASS**（rg_tip15_smoke_r3）：dump lane 112 个 .pt 落盘、两 rank bus
+  worker 正常启动、wave misalignment 断言未触发、unfinished warns=4（与改造前
+  基线一致）、无残留进程、HBM 干净释放。
+
+### C2 N=3 复测（rg_c2_tip15_r3，point=tip15_8f5e3_bcast_r3，卡 4,5）
+- **C2 = T2/T1 = 1.00001 ≥ 0.999 PASS**（N=3 交叉轮换，t1→t2）
+  - t1 gm=9.110 tok/s（r1:9.10 r2:9.18 r3:9.04，round spread +1.55%）
+  - t2 gm=9.110 tok/s（r1:9.16 r2:9.06 r3:9.12，round spread +1.10%）
+  - 对照：stock tip14 0.98274 → per-wave-AR v2 0.99275 → **TP0 单源广播
+    1.00001**：波尾 drain 等待税归零，C2 缺口闭合。
+  - MERGED_BUS_UNFINISHED_T1=0 / T2=7（3 个 t2 会话合计，常态水平）；
+    wave misalignment 断言全程未触发；每会话无残留、HBM 释放干净。
+
+### 提交（rebase 到 origin/feat/runtime-guard-config d24f3b78b）
+- 远端新增 6 提交（sync_mode 移除 / transport 改 last-PP TP + file poll /
+  collective 作用域 last-PP × TP / ruff 格式化），与本改造在
+  bus_worker/processor_bus 两处内容冲突：解决为远端 ruff 格式 + 本侧
+  enqueued_ns 计时；docstring 对齐 last-PP × TP 语义（2 处措辞）。
+- 提交后全量 UT 229 passed（rebase 前 228，远端新增 1 用例）。
+- 分支 feat/runtime-guard-config 领先 origin 2 提交（19abdd3ac 广播改造 +
+  cd4fc5442 docstring 对齐），未推送。
