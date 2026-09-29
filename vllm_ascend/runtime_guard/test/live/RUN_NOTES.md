@@ -1377,3 +1377,39 @@ runtime_config，bus/drain 完全不激活）确认相位漂移是否同样存�
 - 提交后全量 UT 229 passed（rebase 前 228，远端新增 1 用例）。
 - 分支 feat/runtime-guard-config 领先 origin 2 提交（19abdd3ac 广播改造 +
   cd4fc5442 docstring 对齐），未推送。
+
+## 2026-09-29 tip15 round 2：产品 tip 验证（b1b58921f P0 全 PASS / C123 verdict / 新 tip 0645cf331 重构适配）
+
+> 本条目为 round-2 独立归档：脚本已入仓（`perf/scripts/tip15_round2/`、`live/scripts/tip15_round2/`），
+> 结果目录 `rg_c4_tip15_tip/`、`rg_tip15_pp2_smoke/`、`rg_tip15_tp1_smoke/`、`rg_c123_tip15_v2/`、`rg_c5_tip15_v2/`，
+> 与 09-28/09-29 上午的历史目录不混用。
+
+### A. 版本与前提
+- 产品 tip：`b1b58921f` + UT 修复 `2ca3cdab5`（worktree `rg-tip15-8f5e3`）；T0 基线 = merge-base `8a2c3182c`（worktree `rg-t0-b1b58`，无 runtime_guard）
+- 拓扑：Qwen2.5-7B v2 runner、TP=2 卡 4,5（PP=2 冒烟用卡 4-7）、enforce-eager、batch-invariant
+
+### B. P0 功能验证（测于 b1b58921f+2ca3cdab5）
+| 项 | 结果 | 关键证据 |
+|---|---|---|
+| C4 输出一致性 | **PASS** | T0-T3 四状态 3 prompt bit-identical（`rg_c4_tip15_tip/c4_identity.jsonl`） |
+| PP=2×TP=2 冒烟 | **PASS** | 56 .pt 仅 last-PP 两 rank；broadcast+file-poll 双路径；0 misalignment |
+| TP=1 冒烟 | **PASS** | 单 rank `dp0_tp0_pp0_cp0`、bus worker started=1、纯 file poll 无 collective |
+
+### C. C123 交叉轮换 N=3（`rg_c123_tip15_v2/`，verdict 行 07:57:41）
+- gm：t0 9.263 / t1 9.181 / t2 9.139 / t3 9.081 tok/s；轮内 spread ≤1.43%
+- **C3 T3/T2=0.99369 PASS（≥0.990）；C1 T1/T0=0.99110 FAIL；C2 T2/T1=0.99541 FAIL；OVERALL FAIL**
+- 配对逐 tag（n=9）与状态级 GM 一致：缺口方向三轮一致，非单轮噪声
+- 关键事实：
+  1. T1（无 config）也起 bus worker → C1 测的是 always-on 基础设施成本（**首次** C1 测量，无历史基线）
+  2. 相邻状态 gm 随固定顺序单调下降 → 「真实成本叠加」与「固定顺序位置漂移（已知 ±1.5~2.5% 系统偏差）」在 N=3 下不可分辨
+  3. 与 r3 交替协议 C2=1.00001 PASS 矛盾 → 方法学差异（fixed-order vs 交替）
+  4. 门禁要求 N≥6，本轮 N=3 低于门禁
+- **下一步**：order-shuffled 轮换（r1 t0..t3 / r2 t3..t0）×N≥6 重跑分辨 (a)/(b)；无论测量结论，T1 always-on 每波工作都是优化对象
+- C5：**BLOCKED**——measure 客户端首请求挂死 90min（serve 侧无 POST 记录，非 proxy）；客户端已加固（no-proxy opener + 120s timeout + 诊断输出）待新 tip 重跑。注意 C5 是唯一让 token_repeat 真正命中的测试，若复现即为命中路径产品 bug
+
+### D. 新 tip 0645cf331 重构（9 提交）review + 适配
+- review 结论：合理。ruff/`un-nest metrics`（恢复 pre-nest import，design/ops 文档移至 analysis）/drop `set_log_level`+`print_output_on_finish`/prune config surface + **删 output_substring 检测器**（RETIRED，validate soft-pop）/DetectorSchema catalog/`allow_arm`→`allow_manual_dump`（仅内部 API，JSON 字段 `manual_dump` 不变）/**v2-only**（删 v1 wiring）/merge small modules + report caps 100000
+- 新 tip UT **176 passed**；本地 2ca3cdab5（token_repeat UT same-wave dedupe 修复）已被上游吸收（远端含 4 处 clear_wave_cache），本地提交安全丢弃
+- 脚本适配（analysis 提交 `e33d933dc`+`a59b48ad6`+`5b1eb3187`）：cfg 删 `output_substring` 与顶层 `reload_interval_seconds`（均 RETIRED）；`--additional-config` 的 `runtime_config_reload_interval` → `runtime_config_hot_reload: true`（布尔，固定 3s poll；传旧参数 pydantic 直接报错——首跑 TP=1 FAIL 即此因）；`run_tip15_c4_v1.sh` 标记 DEPRECATED（v2-only 后 v1 无 guard hooks）
+- 新 tip 冒烟：**TP=1 PASS**（56 .pt 单 rank、bus worker=1、incident=1、HBM 释放）；PP=2 首跑 FAIL 为环境冲突（邻居作业绑 HCCL 192.168.2.195:16666，EI0020），已挂 idle 自动重试
+- FTL 同步更新：§0.1 v1+v2 双跑标记 SUPERSEDED（v2-only）；文末追加 round-2 脚本登记表
