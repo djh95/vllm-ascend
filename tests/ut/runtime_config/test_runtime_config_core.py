@@ -462,6 +462,36 @@ def test_manual_dump_hand_edit_raises_target_while_catching_up(tmp_path: Path):
     assert cfg.manual_trigger_count() == 4
 
 
+def test_bootstrap_overwrite_wipes_prestart_manual_dump_then_hot_reload_rearms(
+    tmp_path: Path,
+):
+    """Pre-start hand-edit of manual_dump is overwritten; post-start hot-reload arms it."""
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {"dump": {"manual_dump": 1, "auto_max_times": 0}})
+
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=False,  # production: persist deferred to ensure_persisted
+        hot_reload=True,
+    )
+    # Bootstrap ignores the pre-start file → default false.
+    assert cfg.manual_dump_target() == 0
+    assert cfg.manual_trigger_count() == 0
+    assert cfg.ensure_persisted() is True
+    on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert on_disk["dump"]["manual_dump"] is False
+
+    # Ops path: start first, then raise N in the live file.
+    _write(cfg_path, {"dump": {"manual_dump": 1, "auto_max_times": 0}})
+    assert cfg.reload(force=True) is True
+    assert cfg.manual_dump_target() == 1
+    assert cfg.manual_trigger_count() == 1
+    assert cfg.consume_manual_trigger() is True
+    assert cfg.manual_dumps_done() == 1
+    assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["manual_dump"] == 1
+
+
 def test_same_mtime_content_change_reloads_via_digest(tmp_path: Path):
     """Bug #11: same-second equal-size edits must reload via content digest."""
     import os

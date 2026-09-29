@@ -41,6 +41,8 @@ Edit the live `runtime_config.json` (JSONC comments/trailing commas OK) and set:
 - `detector.<name>.on_trigger`: `["report", "dump_kv"]`
 - `dump.auto_max_times`: e.g. `3` (required for auto dump quota)
 
+**Manual one-shot dump (watermark):** start the server with `runtime_config_hot_reload=true` first (startup overwrites the JSON from defaults/overlay). Then edit the live file: set `dump.manual_dump` to `1`. After it fires, raise to `2`, `3`, … for another capture. Setting a large `N` while `done` is still `0` catch-up-dumps across that many later waves — prefer bumping by 1. See [runtime_config.md](../configuration/runtime_config.md#dump).
+
 ## Startup options
 
 Configure through `--additional-config` (or `LLM(..., additional_config=...)`):

@@ -227,13 +227,6 @@ def manual_dump_target(raw: Any) -> int:
         return 0
 
 
-def manual_dump_count(raw: Any) -> int:
-    """Legacy alias: target N for int; ``true``→1 sentinel for \"armed\". Prefer watermark APIs."""
-    if isinstance(raw, bool):
-        return 1 if raw else 0
-    return manual_dump_target(raw)
-
-
 def _normalize_ascend_log_section_into(ascend: dict[str, Any]) -> None:
     """Normalize ``ascend_log`` in place (level, debug list, modules dict)."""
     if "level" not in ascend:
@@ -984,45 +977,6 @@ class RuntimeConfig:
             target,
             _process_role_tag(),
         )
-        return True
-
-    def disable_detector_unavailable(self, section: str, *, reason: str) -> bool:
-        """Force ``detector.<section>.enabled=false`` when a hard dependency is missing.
-
-        Returns True if the in-memory flag was changed.
-        """
-        sec = self.detector_section(section)
-        if not bool(sec.get("enabled", False)):
-            return False
-        sec["enabled"] = False
-        self._invalidate_hot_path_gates()
-        logger.error(
-            "[runtime_config] detector.%s.enabled forced false: %s %s",
-            section,
-            reason,
-            _process_role_tag(),
-        )
-        if _is_json_writer():
-            if self.save({"detector": {section: {"enabled": False}}}):
-                logger.info(
-                    "[runtime_config] detector.%s.enabled=false persisted path=%s %s",
-                    section,
-                    self.config_path,
-                    _process_role_tag(),
-                )
-            else:
-                logger.warning(
-                    "[runtime_config] detector.%s.enabled cleared in-memory but failed to persist path=%s %s",
-                    section,
-                    self.config_path,
-                    _process_role_tag(),
-                )
-        else:
-            logger.info(
-                "[runtime_config] detector.%s.enabled cleared in-memory (non-writer) %s",
-                section,
-                _process_role_tag(),
-            )
         return True
 
     def ascend_log_level(self) -> str:
