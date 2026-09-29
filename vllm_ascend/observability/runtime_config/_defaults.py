@@ -13,7 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Default ``runtime_config.json`` schema (hot-reload control plane)."""
+"""Default ``runtime_config.json`` schema (hot-reload control plane).
+
+Detector sections are assembled from :mod:`detector_catalog` (each detector
+declares ``schema``). Shared dump/report/actions/ascend_log stay here.
+"""
 
 from __future__ import annotations
 
@@ -31,11 +35,17 @@ _RETIRED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"reload_interval_seconds"})
 _RETIRED_DUMP_KEYS: frozenset[str] = frozenset({"free_headroom_bytes"})
 _RETIRED_REPORT_KEYS: frozenset[str] = frozenset({"decode_token_ids", "include_block_ids"})
 _RETIRED_ACTIONS_KEYS: frozenset[str] = frozenset({"queue_max_size"})
-_RETIRED_DETECTOR_SECTIONS: frozenset[str] = frozenset({"output_substring"})
-_RETIRED_DETECTOR_KEYS: dict[str, frozenset[str]] = {
-    "spec_acceptance": frozenset({"short_log_interval_seconds"}),
-    "logits_finite": frozenset({"deferred_queue_max"}),
-}
+
+# Detector catalog (imports detector classes; only needs constants above).
+from vllm_ascend.observability.runtime_config.detector_catalog import (  # noqa: E402
+    DETECTOR_SECTIONS,
+    RETIRED_DETECTOR_SECTIONS as _RETIRED_DETECTOR_SECTIONS,
+    build_detector_defaults,
+    detector_param_keys,
+    retired_detector_keys,
+)
+
+_RETIRED_DETECTOR_KEYS: dict[str, frozenset[str]] = retired_detector_keys()
 
 _DEFAULTS: dict[str, Any] = {
     # Hot-reload on/off is startup-only (additional_config.runtime_config_hot_reload);
@@ -90,52 +100,9 @@ _DEFAULTS: dict[str, Any] = {
             "on_trigger": ["report"],
         },
     },
-    "detector": {
-        # Stop-detect after report.max_per_req successful writes (see report).
-        "spec_acceptance": {
-            "enabled": False,
-            "window": 10,
-            "low_threshold": 0.3,
-            "len_low_threshold": 1.4,
-            "high_threshold": 0.96,
-            "len_high_threshold": 2.8,
-        },
-        # Sliding-window token re-read detector (no logprobs). Per new token:
-        # score = count of that id in the previous ``window`` content tokens;
-        # alert when sum of the last ``window`` scores exceeds threshold.
-        "token_repeat": {
-            "enabled": False,
-            "window": 32,
-            "repeat_sum_threshold": 64,
-            # Require this many content tokens before alerting (0 = no warmup).
-            "min_tokens": 32,
-            # Require this many consecutive over-threshold steps.
-            "consecutive_hits": 1,
-            # Token ids skipped for the content window (e.g. punctuation fillers).
-            "ignore_token_ids": [],
-        },
-        # Pre-sample logits NaN/Inf on sampling rows (no msprobe; ill_type=nan).
-        # Every step: device isfinite + one gate scalar. Default async .item()
-        # (wait at after-sample); set item_sync=true to block at pre-sample.
-        "logits_finite": {
-            "enabled": False,
-            # false: non-blocking D2H of the all-finite gate; wait in check_deferred.
-            #   Logits may be mutated afterward (grammar bitmask → -inf); gate still
-            #   uses precomputed row_finite, but hit-time finite_kind may see post-mutation
-            #   values. true: blocking .item() (+ hit resolve) at pre-sample — correct
-            #   pre-grammar logits / kind.
-            "item_sync": False,
-        },
-    },
+    "detector": build_detector_defaults(),
 }
 
-
-# Known nested detector sections under ``detector``.
-DETECTOR_SECTIONS: tuple[str, ...] = (
-    "spec_acceptance",
-    "token_repeat",
-    "logits_finite",
-)
 # Allowed top-level keys (typos like ``windw`` must fail validation loudly).
 TOP_LEVEL_KEYS: frozenset[str] = frozenset(_DEFAULTS)
 # Allowed keys under ``dump`` / ``report``.
@@ -153,7 +120,7 @@ _DETECTOR_ACTION_KEYS: frozenset[str] = frozenset(
 )
 # Allowed keys per detector section (params ∪ action overrides).
 DETECTOR_KEYS: dict[str, frozenset[str]] = {
-    name: frozenset(sec) | _DETECTOR_ACTION_KEYS for name, sec in _DEFAULTS["detector"].items() if isinstance(sec, dict)
+    name: keys | _DETECTOR_ACTION_KEYS for name, keys in detector_param_keys().items()
 }
 # Control-plane section for incident_type=manual_trigger (not a detector).
 MANUAL_TRIGGER_SECTION_KEYS: frozenset[str] = frozenset(_DETECTOR_ACTION_KEYS)

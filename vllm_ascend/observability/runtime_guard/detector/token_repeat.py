@@ -21,17 +21,18 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-from vllm_ascend.observability.runtime_config._validate import normalize_ignore_token_ids
-from vllm_ascend.observability.runtime_config.config import RuntimeConfig
+from vllm_ascend.observability.runtime_config.schema import ConfigField, DetectorSchema, coerce_list_int
 from vllm_ascend.observability.runtime_guard.detector.base import ConfigBackedDetector, resolve_batch_req_ids
 from vllm_ascend.observability.runtime_guard.incident import ILL_TYPE_REPEAT, Incident
 from vllm_ascend.observability.runtime_guard.io_snapshot import RequestIoSnapshotManager
 from vllm_ascend.observability.runtime_guard.rank_gate import runner_tp_rank
 from vllm_ascend.observability.runtime_guard.token_utils import normalize_token_ids
+
+if TYPE_CHECKING:
+    from vllm_ascend.observability.runtime_config.config import RuntimeConfig
 
 logger = init_logger_ascend(__name__)
 
@@ -102,6 +103,42 @@ class TokenRepeatDetector(ConfigBackedDetector):
 
     incident_type = "token_repeat"
     section_key = "token_repeat"
+    schema = DetectorSchema(
+        section_key="token_repeat",
+        stage="after_sample",
+        help="Sliding-window local token re-read (no logprobs).",
+        fields=(
+            ConfigField("enabled", False, "bool", help="Master switch"),
+            ConfigField("window", 32, "int", min_value=1, help="Sliding content window"),
+            ConfigField(
+                "repeat_sum_threshold",
+                64,
+                "int",
+                min_value=0,
+                help="Alert when sum of repeat scores exceeds this",
+            ),
+            ConfigField(
+                "min_tokens",
+                32,
+                "int",
+                min_value=0,
+                help="Minimum content tokens before alerting (0 = no warmup)",
+            ),
+            ConfigField(
+                "consecutive_hits",
+                1,
+                "int",
+                min_value=1,
+                help="Required consecutive over-threshold steps",
+            ),
+            ConfigField(
+                "ignore_token_ids",
+                [],
+                "list_int",
+                help="Token ids excluded from window scoring",
+            ),
+        ),
+    )
 
     def __init__(
         self,
@@ -110,10 +147,7 @@ class TokenRepeatDetector(ConfigBackedDetector):
         runner: Any | None = None,
     ) -> None:
         super().__init__(runtime_config=runtime_config, runner=runner, enabled=False)
-        # Single source of defaults: runtime_config JSON schema (_DEFAULTS).
-        # These fields refresh from config on bind / hot-reload; the literals
-        # only cover a detector constructed without a runtime_config.
-        _section = _DEFAULTS["detector"]["token_repeat"]
+        _section = self.schema.defaults_dict()
         self._window = int(_section["window"])
         self._repeat_sum_threshold = int(_section["repeat_sum_threshold"])
         self._min_tokens = int(_section["min_tokens"])
@@ -139,7 +173,7 @@ class TokenRepeatDetector(ConfigBackedDetector):
         self._min_tokens = max(0, int(getter("min_tokens", self._min_tokens)))
         self._consecutive_hits_thresh = max(1, int(getter("consecutive_hits", self._consecutive_hits_thresh)))
         try:
-            ignore = normalize_ignore_token_ids(getter("ignore_token_ids", []))
+            ignore = coerce_list_int(getter("ignore_token_ids", []), "ignore_token_ids")
         except ValueError as exc:
             logger.error("[runtime_guard: token_repeat] invalid ignore_token_ids: %s; keeping previous", exc)
             return

@@ -26,10 +26,8 @@ import numpy as np
 import torch
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._defaults import (
-    _DEFAULTS,
-    LOGITS_FINITE_DEFERRED_QUEUE_MAX,
-)
+from vllm_ascend.observability.runtime_config._defaults import LOGITS_FINITE_DEFERRED_QUEUE_MAX
+from vllm_ascend.observability.runtime_config.schema import ConfigField, DetectorSchema
 from vllm_ascend.observability.runtime_guard.detector.base import ConfigBackedDetector
 from vllm_ascend.observability.runtime_guard.incident import ILL_TYPE_NAN, Incident
 
@@ -108,13 +106,31 @@ class LogitsFiniteDetector(ConfigBackedDetector):
 
     incident_type = "logits_finite"
     section_key = "logits_finite"
+    schema = DetectorSchema(
+        section_key="logits_finite",
+        stage="before_sample",
+        help="Pre-sample logits NaN/Inf (isfinite + all-finite gate).",
+        retired_keys=frozenset({"deferred_queue_max"}),
+        fields=(
+            ConfigField("enabled", False, "bool", help="Master switch"),
+            ConfigField(
+                "item_sync",
+                False,
+                "bool",
+                help=(
+                    "false: async .item() (wait in check_deferred; logits may mutate). "
+                    "true: blocking .item() at pre-sample for pre-grammar kind."
+                ),
+            ),
+        ),
+    )
 
     def __init__(self, *, runtime_config: Any | None = None, runner: Any | None = None) -> None:
         super().__init__(runtime_config=runtime_config, runner=runner, enabled=False)
         self._deferred: deque[list[Incident]] = deque()
         self._pending_gates: deque[_PendingAsyncGate] = deque()
         self._deferred_queue_max = LOGITS_FINITE_DEFERRED_QUEUE_MAX
-        self._item_sync = bool(_DEFAULTS["detector"]["logits_finite"]["item_sync"])
+        self._item_sync = bool(self.schema.defaults_dict()["item_sync"])
         if runtime_config is not None:
             self.refresh_from_config()
 

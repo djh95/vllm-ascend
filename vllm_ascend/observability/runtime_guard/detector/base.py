@@ -23,6 +23,7 @@ from vllm_ascend.observability.runtime_guard.token_utils import normalize_token_
 
 if TYPE_CHECKING:
     from vllm_ascend.observability.runtime_config.config import RuntimeConfig
+    from vllm_ascend.observability.runtime_config.schema import DetectorSchema
 
 
 def resolve_batch_req_ids(runner: Any, req_ids: list[str] | None) -> list[str]:
@@ -78,9 +79,15 @@ class AnomalyDetector:
 
 
 class ConfigBackedDetector(AnomalyDetector):
-    """Detector whose enable flag and thresholds live in ``detector.<section>``."""
+    """Detector whose enable flag and thresholds live in ``detector.<section>``.
+
+    Subclasses declare ``schema: DetectorSchema`` (fields + defaults). Register
+    the class in ``runtime_config.detector_catalog.REGISTERED_DETECTOR_TYPES``
+    so defaults / validate / control panel pick it up automatically.
+    """
 
     section_key: str = ""
+    schema: DetectorSchema | None = None
 
     def refresh_from_config(self) -> None:
         if self._runtime_config is None:

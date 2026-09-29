@@ -65,6 +65,10 @@ GPU `block_ids` are always included in report detail. Decoding token ids to text
 Stop-detect is controlled by ``report.max_per_req`` (write-full), not a shared detector flag.
 Default ``actions.defaults.on_trigger`` includes ``report``.
 
+Detector JSON sections are declared on each detector class (``schema``) and
+registered in ``runtime_config.detector_catalog`` — add/remove a detector there
+to refresh defaults, validation, and control-panel field lists.
+
 Each nested detector section supports:
 
 | Key | Type | Description |

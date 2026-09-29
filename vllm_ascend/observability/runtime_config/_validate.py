@@ -20,7 +20,6 @@ from __future__ import annotations
 from typing import Any
 
 from vllm_ascend.observability.runtime_config._defaults import (
-    _DEFAULTS,
     _RETIRED_ACTIONS_KEYS,
     _RETIRED_DETECTOR_KEYS,
     _RETIRED_DETECTOR_SECTIONS,
@@ -41,20 +40,13 @@ from vllm_ascend.observability.runtime_config._merge import (
     dump_auto_on,
     manual_dump_active,
 )
+from vllm_ascend.observability.runtime_config.detector_catalog import validate_registered_detectors
+from vllm_ascend.observability.runtime_config.schema import coerce_list_int
 
 
 def normalize_ignore_token_ids(raw: Any) -> list[int]:
     """Validate config ``ignore_token_ids`` as a flat list of ints."""
-    if raw is None:
-        return []
-    if not isinstance(raw, (list, tuple)):
-        raise ValueError(f"ignore_token_ids must be a list of ints, got {type(raw).__name__}")
-    out: list[int] = []
-    for i, item in enumerate(raw):
-        if isinstance(item, bool) or not isinstance(item, int):
-            raise ValueError(f"ignore_token_ids[{i}] must be int, got {item!r}")
-        out.append(int(item))
-    return out
+    return coerce_list_int(raw, "ignore_token_ids")
 
 
 def int_field(value: Any, field: str, *, min_value: int | None = None) -> int:
@@ -229,45 +221,4 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         sec = detector.setdefault(name, {})
         if not isinstance(sec, dict):
             raise ValueError(f"detector.{name} must be an object")
-        coerce_bool_field(sec, "enabled", f"detector.{name}.enabled")
-
-    token_repeat = detector["token_repeat"]
-    token_repeat["window"] = int_field(token_repeat.get("window", 32), "detector.token_repeat.window", min_value=1)
-    token_repeat["repeat_sum_threshold"] = int_field(
-        token_repeat.get("repeat_sum_threshold", 64),
-        "detector.token_repeat.repeat_sum_threshold",
-        min_value=0,
-    )
-    token_repeat["min_tokens"] = int_field(
-        token_repeat.get("min_tokens", token_repeat["window"]),
-        "detector.token_repeat.min_tokens",
-        min_value=0,
-    )
-    token_repeat["consecutive_hits"] = int_field(
-        token_repeat.get("consecutive_hits", 1),
-        "detector.token_repeat.consecutive_hits",
-        min_value=1,
-    )
-    token_repeat["ignore_token_ids"] = normalize_ignore_token_ids(token_repeat.get("ignore_token_ids", []))
-
-    spec = detector["spec_acceptance"]
-    spec["window"] = int_field(spec.get("window", 10), "detector.spec_acceptance.window", min_value=1)
-    for rate_key in ("low_threshold", "high_threshold"):
-        spec[rate_key] = float_field(
-            spec.get(rate_key, _DEFAULTS["detector"]["spec_acceptance"][rate_key]),
-            f"detector.spec_acceptance.{rate_key}",
-            min_value=0.0,
-            max_value=1.0,
-        )
-    for len_key in ("len_low_threshold", "len_high_threshold"):
-        spec[len_key] = float_field(
-            spec.get(len_key, _DEFAULTS["detector"]["spec_acceptance"][len_key]),
-            f"detector.spec_acceptance.{len_key}",
-            min_value=0.0,
-        )
-
-    logits = detector["logits_finite"]
-    if logits.get("item_sync") is None:
-        logits["item_sync"] = _DEFAULTS["detector"]["logits_finite"]["item_sync"]
-    coerce_bool_field(logits, "item_sync", "detector.logits_finite.item_sync")
-    logits["item_sync"] = bool(logits["item_sync"])
+    validate_registered_detectors(detector)

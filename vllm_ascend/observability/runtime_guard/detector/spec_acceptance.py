@@ -25,10 +25,8 @@ import torch
 from vllm.distributed.parallel_state import get_pp_group
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._defaults import (
-    _DEFAULTS,
-    SPEC_SHORT_LOG_INTERVAL_SECONDS,
-)
+from vllm_ascend.observability.runtime_config._defaults import SPEC_SHORT_LOG_INTERVAL_SECONDS
+from vllm_ascend.observability.runtime_config.schema import ConfigField, DetectorSchema
 from vllm_ascend.observability.runtime_guard.detector.base import ConfigBackedDetector, resolve_batch_req_ids
 from vllm_ascend.observability.runtime_guard.incident import ILL_TYPE_NONE, Incident
 from vllm_ascend.observability.runtime_guard.io_snapshot import output_token_count_for_request
@@ -45,6 +43,46 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
 
     incident_type = "spec_acceptance"
     section_key = "spec_acceptance"
+    schema = DetectorSchema(
+        section_key="spec_acceptance",
+        stage="after_spec",
+        help="Speculative-decoding acceptance rate / length drift.",
+        retired_keys=frozenset({"short_log_interval_seconds"}),
+        fields=(
+            ConfigField("enabled", False, "bool", help="Master switch"),
+            ConfigField("window", 10, "int", min_value=1, help="Rolling window size"),
+            ConfigField(
+                "low_threshold",
+                0.3,
+                "float",
+                min_value=0.0,
+                max_value=1.0,
+                help="Low acceptance rate threshold",
+            ),
+            ConfigField(
+                "len_low_threshold",
+                1.4,
+                "float",
+                min_value=0.0,
+                help="Length ratio at low rate",
+            ),
+            ConfigField(
+                "high_threshold",
+                0.96,
+                "float",
+                min_value=0.0,
+                max_value=1.0,
+                help="High acceptance rate threshold",
+            ),
+            ConfigField(
+                "len_high_threshold",
+                2.8,
+                "float",
+                min_value=0.0,
+                help="Length ratio at high rate",
+            ),
+        ),
+    )
 
     def __init__(
         self,
@@ -55,10 +93,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         super().__init__(runtime_config=runtime_config, runner=runner, enabled=False)
         # Per-req sliding window: (accepted_draft, draft_len, sampled_ids, accepted_ids)
         self._history: dict[str, deque[tuple[int, int, list[int], list[int]]]] = defaultdict(deque)
-        # Single source of defaults: runtime_config JSON schema (_DEFAULTS).
-        # These fields refresh from config on bind / hot-reload; the literals
-        # only cover a detector constructed without a runtime_config.
-        _section = _DEFAULTS["detector"]["spec_acceptance"]
+        _section = self.schema.defaults_dict()
         self._window = int(_section["window"])
         self._low_threshold = float(_section["low_threshold"])
         self._len_low_threshold = float(_section["len_low_threshold"])

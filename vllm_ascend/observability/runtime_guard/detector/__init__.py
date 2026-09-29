@@ -13,16 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from vllm_ascend.observability.runtime_guard.detector.base import (
-    AnomalyDetector,
-    ConfigBackedDetector,
-    DetectorRegistry,
-)
-from vllm_ascend.observability.runtime_guard.detector.logits_finite import LogitsFiniteDetector
-from vllm_ascend.observability.runtime_guard.detector.manager import DetectorManager
-from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
-from vllm_ascend.observability.runtime_guard.detector.token_repeat import TokenRepeatDetector
-from vllm_ascend.observability.runtime_guard.incident import Incident
+"""Detector package (lazy exports to avoid runtime_config ↔ detector import cycles)."""
+
+from __future__ import annotations
+
+from typing import Any
 
 __all__ = [
     "Incident",
@@ -34,3 +29,31 @@ __all__ = [
     "SpecAcceptanceDetector",
     "TokenRepeatDetector",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "Incident":
+        from vllm_ascend.observability.runtime_guard.incident import Incident
+
+        return Incident
+    if name in ("AnomalyDetector", "ConfigBackedDetector", "DetectorRegistry"):
+        from vllm_ascend.observability.runtime_guard.detector import base as _base
+
+        return getattr(_base, name)
+    if name == "DetectorManager":
+        from vllm_ascend.observability.runtime_guard.detector.manager import DetectorManager
+
+        return DetectorManager
+    if name == "LogitsFiniteDetector":
+        from vllm_ascend.observability.runtime_guard.detector.logits_finite import LogitsFiniteDetector
+
+        return LogitsFiniteDetector
+    if name == "SpecAcceptanceDetector":
+        from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
+
+        return SpecAcceptanceDetector
+    if name == "TokenRepeatDetector":
+        from vllm_ascend.observability.runtime_guard.detector.token_repeat import TokenRepeatDetector
+
+        return TokenRepeatDetector
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
