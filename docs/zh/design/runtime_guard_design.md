@@ -135,7 +135,7 @@ sync 路径上 after-sample 已 arm 的 job 可同波 D2H；async `get_output` �
 | **Last-PP × all TP**（`tp_size>1`） | 波头 submit TP0 `broadcast([wave_idx, config_due, dump_due])` + due-lane `broadcast_object`（DueBitsBusWorker）；**波尾 drain/apply** |
 | **其余** | 轮询 `runtime_config_path`；dump 仍仅 last-PP TP |
 
-**注意**：配置热更 **不跨 DP replica 做全 world collective**。多 DP 时每个 EngineCore 各自维护可读 JSON。产品 tip `ad6e06bcd` 已删除 `sync_mode` 旋钮。
+**注意**：配置热更 **不跨 DP replica 做全 world collective**。多 DP 时每个 EngineCore 各自维护可读 JSON。产品 tip `d36597ee6` 已删除 `sync_mode` 旋钮。
 
 ### 2.3 热更新
 

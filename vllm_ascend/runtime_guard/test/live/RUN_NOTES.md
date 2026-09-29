@@ -833,15 +833,16 @@ V030 (v2 runner 关键路径更紧) 暴露 ~1.7%。注: AR 计时大部分是对
 方案 C: 优化 Gloo 传输本身 -- 不可行, AR 耗时主要是对端等待, 同步点不消除无解。
 C1 无需优化: 36821945f 之后 t1 基础设施开销 ~0 (1.00523, 在噪声内)。
 
-## 2026-09-29 产品 tip `ad6e06bcd`（单 commit squash）对 analysis 用例的影响
+## 2026-09-29 产品 tip `d36597ee6`（单 commit squash + SOB）对 analysis 用例的影响
 
-产品 `feat/runtime-guard-config` 已压成 `ad6e06bcd`；历史明细在
-`feat/runtime-guard-config-history`。相对本旁支旧假设的关键变点：
+产品 `feat/runtime-guard-config` 当前 tip **`d36597ee6`**（此前同线 squash 曾记
+`ad6e06bcd` / `6513317ee`）；历史明细在 `feat/runtime-guard-config-history`。
+相对本旁支旧假设的关键变点：
 
 | 变点 | 产品行为 | analysis 影响 |
 |------|----------|---------------|
 | 删除 `sync_mode` | 传输按 rank 固定：last-PP×TP → TP0 due-broadcast；其余 file poll | **F-01/02/03、T-05/06/11、中文 design §2.2 已改**；勿再验收 `forcing sync_mode=file` |
-| due `all_reduce` → `sync_due_bits_from_src` | TP0 打包 `[wave_idx,config_due,dump_due]` 再 `broadcast`；DueBitsBusWorker 异步 | **C2 必须对 `ad6e06bcd` 重跑入库**（旧 0.99920 属 AR 时代；产品侧 N=3 报 ≈1.0，analysis 未复验） |
+| due `all_reduce` → `sync_due_bits_from_src` | TP0 打包 `[wave_idx,config_due,dump_due]` 再 `broadcast`；DueBitsBusWorker 异步 | **C2 必须对 `d36597ee6` 重跑入库**（旧 0.99920 属 AR 时代；产品侧 N=3 报 ≈1.0，analysis 未复验） |
 | `wave_idx` | receiver 错波 → `RuntimeError` | 产品 UT `tests/ut/runtime_config/test_task_bus.py` 已覆盖；实卡补 **F-03 / T-13** |
 | 无 RG-BUS-STATS | 验证打点已从产品删除 | analysis **不必**补 stats 用例 |
 
@@ -855,7 +856,7 @@ C1 无需优化: 36821945f 之后 t1 基础设施开销 ~0 (1.00523, 在噪声�
 
 **要跑、尚未出数（实卡）：**
 
-1. **C1+C2 交叉轮换** × v1/v2，对 PRODUCT=`ad6e06bcd`（`run_c1_c2_cross_rotate.sh`，N≥3，正式门禁 N=6）。  
+1. **C1+C2 交叉轮换** × v1/v2，对 PRODUCT=`d36597ee6`（`run_c1_c2_cross_rotate.sh`，N≥3，正式门禁 N=6）。  
 2. **T-05（PP=2）**：确认非 last-PP file poll + last-PP due-bcast，无 hang。  
 3. **T-13 / F-01**：TP=2 reload 热路径日志无 world AR、idle 无 `broadcast_object`。  
 

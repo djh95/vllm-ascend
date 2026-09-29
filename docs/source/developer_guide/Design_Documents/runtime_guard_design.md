@@ -115,7 +115,7 @@ sync 路径上 after-sample 已 arm 的 job 可同波 D2H；async `get_output` �
 
 拼 last-PP 下各 `tp*` 目录得到该 stage 的完整 head 切分；**没有**其它 `pp*` 目录是预期行为。
 
-代价：last-PP×TP 上 dump 与 config 共用一趟 **TP0 源** `broadcast([wave_idx, config_due, dump_due])`（`sync_due_bits_from_src`）；无 due 则不做 `broadcast_object`。非 last-PP / `tp_size≤1` 走 JSON poll。不改 `SchedulerOutput`，也不在 PP 组上 collective。产品 tip `ad6e06bcd` 已删除 `sync_mode`。
+代价：last-PP×TP 上 dump 与 config 共用一趟 **TP0 源** `broadcast([wave_idx, config_due, dump_due])`（`sync_due_bits_from_src`）；无 due 则不做 `broadcast_object`。非 last-PP / `tp_size≤1` 走 JSON poll。不改 `SchedulerOutput`，也不在 PP 组上 collective。产品 tip `d36597ee6` 已删除 `sync_mode`。
 
 ## 2. Runtime Config
 

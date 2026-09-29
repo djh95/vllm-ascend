@@ -57,23 +57,23 @@ runtime_guard 挂在 model runner 路径上，**v1 与 v2 都是正式验收对�
 
 | 用例 ID | runner | 结果 | 日志/report 要点 | 启动脚本 |
 |---------|--------|------|------------------|----------|
-| P0-2 | v2 | ☐ | | `scripts/p0_02_token_repeat.sh`（待补） |
-| P0-2 | v1 | ☐ | | 同上 + `VLLM_USE_V2_MODEL_RUNNER=0` |
+| P0-2 | v2 | ☐ | | `scripts/p0_02_token_repeat.sh` + `RUNNER=v2` |
+| P0-2 | v1 | ☐ | | `scripts/p0_02_token_repeat.sh` + `RUNNER=v1`（或 `run_both_runners.sh`） |
 
 ### 0.2 P0 实卡冒烟子集（每次必跑 · 须 v1+v2）
 
-| ID | 场景 | 预期 | 启动脚本（待补） |
-|----|------|------|------------------|
-| P0-1 | reload=0、detector 全关 | 输出与无 guard 一致（temp=0） | `live/scripts/p0_01_guard_off.{v2,v1}.sh` |
-| P0-2 | 单卡 + `token_repeat` + report | 命中写 report；HTTP body 不变 | `live/scripts/p0_02_token_repeat.{v2,v1}.sh` |
-| P0-3 | `manual_dump` | 能 dump；结构见 §15；`dump_attempted`；事后删盘 | `live/scripts/p0_03_manual_dump.{v2,v1}.sh` |
-| P0-4 | TP≥2 时 detector | 仅 last-PP TP0 检测 | `live/scripts/p0_04_tp_rank_gate.{v2,v1}.sh` |
-| P0-5 | `RG_INJECT=nan_logits` | detector 命中；report 对标杆；可初步定位（§10/§15） | `live/scripts/p0_05_inject_nan.{v2,v1}.sh` |
-| P0-6 | async scheduling（若开） | `check_after_sample` 在 `get_output` 后仍执行 | `live/scripts/p0_06_async_after_sample.{v2,v1}.sh` |
-| P0-7 | dump 结构 + `verify_request_kv` + 覆盖/一致 | §15.2 PASS：schema（K-11）+ block 覆盖 `len(block_ids)*block_size≥N`（K-12）+ report↔dump `req_id/block_ids/dump_dir` 一致（K-13） | `live/scripts/p0_07_dump_schema.{v2,v1}.sh` |
-| P0-8 | 磁盘回收 | 用例结束删 `kv_cache` 临时 dump；盘不涨满 | 嵌入各 dump 脚本 `trap`/`finally` |
-| P0-9 | TP≥2 dump 完整性 | `stitch_kv --dump-dir` 报全 tp_rank、拼接 heads=全量（K-14/K-24），无缺 rank 的静默部分 dump | `live/scripts/p0_09_tp_stitch.{v2,v1}.sh` |
-| P0-10 | KV 内容对标 golden | `stitch_kv --target/--ref` 每层余弦≥阈值、shape 一致（K-22/K-24）；证明 dump 内容=模型实际 KV | `live/scripts/p0_10_kv_compare.{v2,v1}.sh` |
+| ID | 场景 | 预期 | 启动脚本 |
+|----|------|------|----------|
+| P0-1 | reload=0、detector 全关 | 输出与无 guard 一致（temp=0） | `live/scripts/p0_01_guard_off.sh` |
+| P0-2 | 单卡 + `token_repeat` + report | 命中写 report；HTTP body 不变 | `live/scripts/p0_02_token_repeat.sh` |
+| P0-3 | `manual_dump` | 能 dump；结构见 §15；`dump_attempted`；事后删盘 | `live/scripts/p0_03_manual_dump.sh` |
+| P0-4 | TP≥2 时 detector | 仅 last-PP TP0 检测 | `live/scripts/p0_04_tp_rank_gate.sh` |
+| P0-5 | `RG_INJECT=nan_logits` | detector 命中；report 对标杆；可初步定位（§10/§15） | `live/scripts/p0_05_inject_nan.sh` |
+| P0-6 | async scheduling（若开） | `check_after_sample` 在 `get_output` 后仍执行 | `live/scripts/p0_06_async_after_sample.sh` |
+| P0-7 | dump 结构 + `verify_request_kv` + 覆盖/一致 | §15.2 PASS：schema（K-11）+ block 覆盖 `len(block_ids)*block_size≥N`（K-12）+ report↔dump `req_id/block_ids/dump_dir` 一致（K-13） | `live/scripts/p0_07_dump_schema.sh` |
+| P0-8 | 磁盘回收 | 用例结束删 `kv_cache` 临时 dump；盘不涨满 | `live/scripts/p0_08_disk_reclaim.sh`（或嵌入各 dump 脚本 `trap`） |
+| P0-9 | TP≥2 dump 完整性 | `stitch_kv --dump-dir` 报全 tp_rank、拼接 heads=全量（K-14/K-24），无缺 rank 的静默部分 dump | `live/scripts/p0_09_tp_stitch.sh` |
+| P0-10 | KV 内容对标 golden | `stitch_kv --target/--ref` 每层余弦≥阈值、shape 一致（K-22/K-24）；证明 dump 内容=模型实际 KV | `live/scripts/p0_10_kv_compare.sh` |
 
 ### 0.3 启动 / 执行脚本与配置（全部落 analysis · 缺则必补）
 
@@ -83,18 +83,17 @@ runtime_guard 挂在 model runner 路径上，**v1 与 v2 都是正式验收对�
 ```
 vllm_ascend/runtime_guard/test/live/
   FUNCTIONAL_TEST_LIST.md          # 本文件（要测什么）
-  scripts/                         # 起服 + 发请求 + 验收（现在多数待补）
-    p0_01_guard_off.v2.sh
-    p0_01_guard_off.v1.sh
+  scripts/                         # 起服 + 发请求 + 验收（P0 已落地 p0_*.sh）
+    p0_01_guard_off.sh
+    p0_02_token_repeat.sh
     …
-  configs/                         # runtime_guard JSON / CLI 片段（现在多数待补）
+    run_both_runners.sh            # 同一用例跑 v1+v2
+  configs/                         # runtime_guard JSON / CLI 片段
     p0_02_token_repeat.json
     …
-
-vllm_ascend/runtime_guard/test/perf/scripts/   # 性能起服与交叉轮换（同样：缺则补这里）
 ```
 
-完成定义：用例 ID 有可执行入口（`.sh` 或统一 runner + `configs/<id>.json`），且 **v1/v2 都能跑**；  
+完成定义：用例 ID 有可执行入口（`.sh` 或统一 runner + `configs/<id>.json`），且 **v1/v2 都能跑**（`RUNNER=v1|v2` 或 `run_both_runners.sh`）；  
 仅文档占位 / README 不算 done。
 
 每条用例脚本建议固定提供：
@@ -152,7 +151,7 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | F-08 | `additional_config.runtime_config` 启动 overlay | — | 起服务时传 overlay 设 `detector.token_repeat.enabled=true` | 启动即生效（不经 JSON/热重载），`ensure_persisted` 把有效配置写回 JSON |
 | F-09 | 启动参数优先级 | — | 同时传 `runtime_config_reload_interval` / `runtime_dump_dir` 与 overlay 同名字段不同值 | 启动参数 authoritative，overlay 同名字段被忽略（日志确认 ctor 覆盖）；**已无 `sync_mode` 启动参** |
 | F-01b | JSON 残留 `sync_mode` | — | JSON 写 `"sync_mode":"file"` | **拒绝/忽略**（产品已删该旋钮）；不得再出现 `PP>1: forcing sync_mode=file` 日志 |
-| F-10 | 启动 overlay 非法 | — | overlay 传未知键 `detector.fatal_error`，或传非 dict（如 list） | 软失败回退默认，服务不崩，detector 全关 |
+| F-10a | 启动 overlay 非法 | — | overlay 传未知键 `detector.fatal_error`，或传非 dict（如 list） | 软失败回退默认，服务不崩，detector 全关 |
 | F-11 | pre-bootstrap 旧 JSON | — | 起服前在 JSON 里手工设 `token_repeat.enabled=true`，起服不传 overlay | 被 defaults+overlay 覆盖写回（`enabled=false`），首个热重载周期不读回旧值 |
 
 ### 1.2 `dump` 子块
@@ -527,7 +526,7 @@ skills 与 `summarize_reports.KNOWN_DETECTORS` 已标注：`token_logprob` /
 
 | 缺口 | 说明 |
 |------|------|
-| C1/C2 交叉轮换正式数 | **须对产品 tip `ad6e06bcd`（TP0 due-broadcast）重跑**；旧 C2 数字属 AR 时代；脚本 `run_c1_c2_cross_rotate.sh`；**分 v1/v2** |
+| C1/C2 交叉轮换正式数 | **须对产品 tip `d36597ee6`（TP0 due-broadcast）重跑**；旧 C2 数字属 AR 时代；脚本 `run_c1_c2_cross_rotate.sh`；**分 v1/v2** |
 | C5 dump_kv 开销 | `run_c5_dump.sh` 骨架；正式阈值待定 |
 | C6 leak-back 门禁 | `run_c6_leakback.sh` 骨架 |
 | 起服脚本未入库 | `serve_t0`…`t3` 已入库；`START_CMD` 由机房填充 |

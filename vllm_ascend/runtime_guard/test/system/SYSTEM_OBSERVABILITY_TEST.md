@@ -4,7 +4,12 @@
 > module-by-module log printing**. Each section is self-contained with shell
 > commands so `run_system_observability.sh` can pick it up.
 >
-> UT expect ≈ **86 passed** on this branch.
+> **DEPRECATED path note (2026-09-29):** product UTs live under
+> `tests/ut/runtime_guard/` + `tests/ut/runtime_config/` on
+> `feat/runtime-guard-config` (tip `d36597ee6`, ~220+ tests). Do **not**
+> collect `vllm_ascend/runtime_guard/test/` as product CI — that tree is
+> analysis-only (live/perf/system). Re-check passed count after pull:
+> `pytest tests/ut/runtime_guard/ tests/ut/runtime_config/ -q`.
 
 ## 0. Pre-flight (every section depends on this)
 
@@ -14,9 +19,9 @@ docker exec test-mrv2 bash -lc '
   git fetch origin &&
   test "$(git rev-parse HEAD)" = "$(git rev-parse origin/feat/runtime-guard-config)" \
     || { echo "HEAD != origin; run: git pull --ff-only"; exit 1; }
-  python -m pytest vllm_ascend/runtime_guard/test/ tests/ut/runtime_config/ -q 2>&1 | tail -3
+  python -m pytest tests/ut/runtime_guard/ tests/ut/runtime_config/ -q 2>&1 | tail -5
 '
-# Expect: 86 passed (runtime_guard 80 + runtime_config 6)
+# Expect: all passed (count drifts with tip; was ~135+ on tip5 era, higher now)
 ```
 
 ```bash
@@ -138,7 +143,7 @@ docker exec test-mrv2 bash -lc '
 | Metric | Bar | How |
 |---|---|---|
 | **C1** (T0 vs T1) gap | ≤0.1% per tag (short/medium/long) | `perf_t0.jsonl` avg tps vs `perf_baseline.jsonl` avg tps |
-| **C2** (T1 vs T2) gap | ≤0.1% per tag；**须对产品 tip `ad6e06bcd`（TP0 due-broadcast）重测**（旧数字属 due-AR 时代） | T2/T1 from `run_c1_c2_cross_rotate.sh` |
+| **C2** (T1 vs T2) gap | ≤0.1% per tag；**须对产品 tip `d36597ee6`（TP0 due-broadcast）重测**（旧数字属 due-AR 时代） | T2/T1 from `run_c1_c2_cross_rotate.sh` |
 | **C3** (T2 vs T3) gap | ≤1% per tag | T3 = perf_ab_quick B rounds avg tps vs T2 A |
 | **Phase B monotonic RSS growth** | per-round delta ≤20 MB | Compare `post_rss_kb - pre_rss_kb` across rounds within same state |
 | **Phase C leak-back** | end-of-leakback `rss_delta_kb` ≤ 30 MB (30720) | `leakback_*.jsonl` last line `rss_delta_kb` field |
