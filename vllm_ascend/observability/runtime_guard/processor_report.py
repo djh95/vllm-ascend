@@ -35,13 +35,13 @@ from vllm_ascend.observability.runtime_guard.rank_gate import (
     is_action_leader_rank,
     should_dump_kv_on_rank,
 )
-from vllm_ascend.observability.runtime_guard.token_utils import decode_token_ids, load_model_tokenizer
+from vllm_ascend.observability.runtime_guard.token_utils import load_model_tokenizer
 
 logger = init_logger_ascend(__name__)
 
 
 class RuntimeGuardReportMixin:
-    """Incident report arming, manual trigger, finish print, tokenizer helpers."""
+    """Incident report arming, manual trigger, tokenizer helpers."""
 
     # Attributes provided by RuntimeGuardProcessor (mixin composition).
     runner: Any
@@ -131,51 +131,6 @@ class RuntimeGuardReportMixin:
             logger.info(
                 "[runtime_guard manual_trigger] manual_dump consumed, remaining=%d",
                 cfg.manual_trigger_count(),
-            )
-
-    def _maybe_print_output_on_finish(self, finished_req_ids: Any, io_mgr: RequestIoSnapshotManager) -> None:
-        """Log output_token_ids + text for finished reqs (last-PP TP0 only).
-
-        Content comes from runtime_guard cumulative IO accumulated while
-        ``log.print_output_on_finish`` was true on sample steps (no historical
-        backfill). Mid-request hot-enable may print a partial sequence or
-        ``output_token_count=0`` / empty text if nothing was appended after
-        enable. See ``RuntimeConfig.log_print_output_on_finish``.
-        """
-        # Print on the report-leader rank (last-PP TP0): non-last PP ranks
-        # never sample and hold no cumulative IO, and other TP ranks would
-        # duplicate the print. The gate must read the process groups — v1
-        # runners often lack ``tp_rank`` and an attribute fallback would
-        # resolve 0 on every TP rank.
-        if not is_action_leader_rank(self.runner):
-            return
-        tokenizer = self._get_detector_tokenizer()
-        max_ids = self.runtime_config.report_max_output_token_ids()
-        for req_id in finished_req_ids:
-            if not req_id:
-                continue
-            snap = io_mgr.snapshot(self.runner, req_id, None, include_token_ids=True, use_cache=False)
-            ids = list(snap.output_token_ids or [])
-            truncated = False
-            if max_ids > 0 and len(ids) > max_ids:
-                ids = ids[:max_ids]
-                truncated = True
-            text = ""
-            if tokenizer is not None and ids:
-                try:
-                    text = decode_token_ids(tokenizer, ids)
-                except Exception as exc:
-                    text = f"<decode failed: {exc}>"
-            elif tokenizer is None:
-                text = "<tokenizer unavailable>"
-            logger.info(
-                "[runtime_guard print_output] req_id=%s output_token_count=%d truncated=%s "
-                "output_token_ids=%s output_text=%r",
-                req_id,
-                snap.output_token_count,
-                truncated,
-                ids,
-                text,
             )
 
     def _handle_alert(

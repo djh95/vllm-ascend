@@ -381,19 +381,17 @@ class RuntimeConfig:
         dump = self._data.get("dump") or {}
         det = self._data.get("detector") or {}
         report = self._data.get("report") or {}
-        log = self._data.get("log") or {}
         any_det = self.detectors_enabled_in(self._data)
 
         dump_on = dump_auto_on(dump) or manual_dump_active(dump.get("manual_dump", False))
-        print_out = bool(log.get("print_output_on_finish", False))
         save_sensitive = bool(report.get("save_sensitive_info", False))
         out_sub = bool((det.get("output_substring") or {}).get("enabled", False))
         tok_rep = bool((det.get("token_repeat") or {}).get("enabled", False))
 
         manual_count = manual_dump_count(dump.get("manual_dump", False))
 
-        needs_io = print_out or out_sub or tok_rep or (any_det and save_sensitive)
-        needs_sample = any_det or print_out
+        needs_io = out_sub or tok_rep or (any_det and save_sensitive)
+        needs_sample = any_det
 
         cached = {
             "any_detector": any_det,
@@ -644,22 +642,6 @@ class RuntimeConfig:
         """
         report = self._data.get("report") or {}
         return bool(report.get("save_sensitive_info", False))
-
-    def log_print_output_on_finish(self) -> bool:
-        """Whether to log output token ids + text when any request finishes.
-
-        Default False. When True, TP0 logs on reap (after ``mark_finished``) for every
-        finished request (independent of ``save_sensitive_info``). Can be large /
-        sensitive — leave off in prod.
-
-        Accumulation starts only while this flag is true on each sample step
-        (no backfill of tokens produced before enable). Hot-enabling mid-request
-        may yield a partial finish log, or an empty one if the request finishes
-        with no further appends after enable. Enable before traffic for full
-        output.
-        """
-        log_sec = self._data.get("log") or {}
-        return bool(log_sec.get("print_output_on_finish", False))
 
     def report_decode_token_ids(self) -> bool:
         """Whether to decode ``*_token_ids`` into text in reports.

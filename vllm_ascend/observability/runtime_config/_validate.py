@@ -26,7 +26,6 @@ from vllm_ascend.observability.runtime_config._defaults import (
     DETECTOR_KEYS,
     DETECTOR_SECTIONS,
     DUMP_KEYS,
-    LOG_KEYS,
     MANUAL_TRIGGER_SECTION_KEYS,
     REPORT_KEYS,
     TOP_LEVEL_KEYS,
@@ -147,7 +146,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     for section in (
         "dump",
         "ascend_log",
-        "log",
         "detector",
         "report",
         "actions",
@@ -190,10 +188,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         min_value=0,
     )
     validate_dump_mutual_exclusive(data["dump"])
-    unknown_log = sorted(set(data["log"]) - LOG_KEYS)
-    if unknown_log:
-        raise ValueError(f"log has unknown key(s) {unknown_log}; allowed={sorted(LOG_KEYS)}")
-    coerce_bool_field(data["log"], "print_output_on_finish", "log.print_output_on_finish")
     unknown_report = sorted(set(data["report"]) - REPORT_KEYS)
     if unknown_report:
         raise ValueError(f"report has unknown key(s) {unknown_report}; allowed={sorted(REPORT_KEYS)}")

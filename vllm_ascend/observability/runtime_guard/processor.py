@@ -386,15 +386,12 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
             return 0
 
     def _reap_finished_requests(self) -> None:
-        """Optionally log finish output and clear reqs that are finished and drained."""
+        """Clear reqs that are finished and drained."""
         store = RequestGuardStore.get()
         wave = self._current_wave()
         reapable = store.list_reapable(current_wave=wave)
         if not reapable:
             return
-        io_mgr = RequestIoSnapshotManager.get()
-        if self.runtime_config.log_print_output_on_finish():
-            self._maybe_print_output_on_finish(reapable, io_mgr)
         store.clear_many(reapable, detectors=self.detectors)
         if self.wave_tracker is not None:
             self.wave_tracker.discard_many(reapable)
@@ -502,7 +499,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         Appending ``AsyncOutput.sampled_token_ids`` (padded numpy) here inflated
         cumulative IO and false-triggered ``token_repeat`` (W2-3 / D-11).
         """
-        # Idle fast-path: detectors / print_output all off →
+        # Idle fast-path: detectors all off →
         # skip soft-fail wrappers and observational hooks entirely.
         # Still flush: TP>1 drain collectives must stay lockstep every sample.
         if not self.needs_sample_phase_hooks():

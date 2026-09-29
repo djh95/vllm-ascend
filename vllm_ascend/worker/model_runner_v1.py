@@ -110,7 +110,6 @@ from vllm.v1.worker.gpu_model_runner import (
     GPUModelRunner,
     nans_to_dict,
 )
-
 from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
     maybe_create_ubatch_slices,

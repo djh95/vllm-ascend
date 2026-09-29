@@ -13,17 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""UT: ActionExecutor resolve/order + SetLogLevelAction."""
+"""UT: ActionExecutor resolve/order."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from vllm_ascend.observability.runtime_guard.action.actions import (
-    ActionContext,
-    SetLogLevelAction,
-)
 from vllm_ascend.observability.runtime_guard.action.executor import (
     ActionExecutor,
     order_incident_actions,
@@ -37,9 +33,8 @@ def test_order_incident_actions_report_before_dump():
     assert order_incident_actions(["dump_kv", "report"]) == ["report", "dump_kv"]
     assert order_incident_actions(["report"]) == ["report"]
     assert order_incident_actions(["dump_kv"]) == ["dump_kv"]
-    # sync_only ahead of report/dump; dedupe.
-    assert order_incident_actions(["dump_kv", "set_log_level", "report", "report"]) == [
-        "set_log_level",
+    # Dedupe; report before dump_kv.
+    assert order_incident_actions(["dump_kv", "report", "report"]) == [
         "report",
         "dump_kv",
     ]
@@ -79,22 +74,6 @@ def test_resolve_actions_falls_back_when_on_trigger_missing():
     )
     names, _ = ex.resolve_actions("token_repeat")
     assert names == ["report"]
-
-
-def test_set_log_level_action_applies_level():
-    ctx = ActionContext(
-        incident=Incident(incident_type="token_repeat", req_id="r1"),
-        runner=SimpleNamespace(),
-        runtime_config=MagicMock(ascend_log_level=lambda: "INFO"),
-        report_writer=MagicMock(),
-        kv_reader=MagicMock(),
-        quota=MagicMock(),
-        rank_tag="tp0",
-        action_overrides={"set_log_level": {"level": "DEBUG", "modules": {"x": "DEBUG"}}},
-    )
-    with patch("vllm_ascend.logger.apply_ascend_log_level") as apply:
-        SetLogLevelAction().run(ctx)
-        apply.assert_called_once_with("DEBUG", module_levels={"x": "DEBUG"})
 
 
 def test_has_nonempty_sampled_row_gate():
@@ -175,7 +154,7 @@ def test_handle_manual_trigger_injects_dump_kv_all_requests():
     def _get_action(name: str):
         act = MagicMock()
         act.name = name
-        act.sync_only = name == "set_log_level"
+        act.sync_only = False
         act.heavy = name == "dump_kv"
 
         def _prepare(ctx):

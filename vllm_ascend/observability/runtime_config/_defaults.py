@@ -58,13 +58,6 @@ _DEFAULTS: dict[str, Any] = {
         # Per-logger overrides, e.g. {"vllm.worker": "WARNING", "runtime_guard": "DEBUG"}.
         "modules": {},
     },
-    # Ops logging switches (not persisted into anomaly report JSON files).
-    "log": {
-        # When a request finishes: log output_token_ids + decoded text (TP0 only).
-        # Applies to every finished request. Accumulate only while true
-        # (no backfill); mid-request enable may be partial or empty.
-        "print_output_on_finish": False,
-    },
     "report": {
         # Default False: anomaly reports store lengths only.
         # Set true to persist prompt_token_ids + cumulative output_token_ids.
@@ -150,9 +143,8 @@ DETECTOR_SECTIONS: tuple[str, ...] = (
 )
 # Allowed top-level keys (typos like ``windw`` must fail validation loudly).
 TOP_LEVEL_KEYS: frozenset[str] = frozenset(_DEFAULTS)
-# Allowed keys under ``dump`` / ``log`` / ``report``.
+# Allowed keys under ``dump`` / ``report``.
 DUMP_KEYS: frozenset[str] = frozenset(_DEFAULTS["dump"])
-LOG_KEYS: frozenset[str] = frozenset(_DEFAULTS["log"])
 REPORT_KEYS: frozenset[str] = frozenset(_DEFAULTS["report"])
 ASCEND_LOG_KEYS: frozenset[str] = frozenset(_DEFAULTS["ascend_log"])
 ACTIONS_KEYS: frozenset[str] = frozenset(_DEFAULTS["actions"])
@@ -161,7 +153,6 @@ _DETECTOR_ACTION_KEYS: frozenset[str] = frozenset(
     {
         "on_trigger",
         "dump_kv",
-        "set_log_level",
         "report",
     }
 )

@@ -17,12 +17,9 @@
 
   "ascend_log": {
     "level": "INFO",
+    // Force SamplingMeta / runtime_guard DEBUG dumps, e.g. ["runtime_guard"].
     "debug": [],
     "modules": {}
-  },
-
-  "log": {
-    "print_output_on_finish": false
   },
 
   "dump": {

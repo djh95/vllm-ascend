@@ -84,12 +84,6 @@ def test_needs_sample_phase_hooks_and_cumulative_io_flags(tmp_path: Path):
     assert cfg.needs_sample_phase_hooks() is False
     assert cfg.needs_cumulative_io() is False
 
-    cfg._data["log"]["print_output_on_finish"] = True
-    cfg._invalidate_hot_path_gates()
-    assert cfg.needs_sample_phase_hooks() is True
-    assert cfg.needs_cumulative_io() is True
-
-    cfg._data["log"]["print_output_on_finish"] = False
     cfg._data["detector"]["token_repeat"]["enabled"] = True
     cfg._invalidate_hot_path_gates()
     assert cfg.needs_sample_phase_hooks() is True
@@ -225,10 +219,10 @@ def test_sync_for_step_marks_finished_on_empty_batch(tmp_path: Path):
     Async scheduling returns EMPTY_MODEL_RUNNER_OUTPUT for the trailing empty
     batch, so ``run_sample_phase`` (and its ``mark_finished`` hook) never fires.
     ``sync_for_step`` must mark ``scheduler_output.finished_req_ids`` itself so
-    ``print_output_on_finish`` / reap still run for the last request.
+    reap still runs for the last request.
     """
     cfg = _cfg(tmp_path, reload=0.0)
-    cfg._data["log"]["print_output_on_finish"] = True
+    cfg._data["detector"]["token_repeat"]["enabled"] = True
     cfg._invalidate_hot_path_gates()
     assert cfg.needs_sample_phase_hooks() is True
 
@@ -279,7 +273,7 @@ def test_refresh_config_skips_clear_wave_cache_when_idle(tmp_path: Path):
         proc.refresh_config()
         io.clear_wave_cache.assert_not_called()
 
-        cfg._data["log"]["print_output_on_finish"] = True
+        cfg._data["detector"]["token_repeat"]["enabled"] = True
         cfg._invalidate_hot_path_gates()
         proc.refresh_config()
         io.clear_wave_cache.assert_called_once()
@@ -287,7 +281,7 @@ def test_refresh_config_skips_clear_wave_cache_when_idle(tmp_path: Path):
 
 
 def test_run_sample_phase_idle_skips_hooks(tmp_path: Path):
-    """A-path: detectors/print/block-meta off → sample_fn only."""
+    """A-path: detectors/block-meta off → sample_fn only."""
     cfg = _cfg(tmp_path, reload=0.0)
     proc = _bind(cfg)
     calls: list[str] = []

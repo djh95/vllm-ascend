@@ -14,8 +14,7 @@ Priorities: **P0** every PR / smoke; **P1** full suite; **P2** env-dependent.
 | I4 | Soft-fail | Malformed JSON on hot-reload | Keep old config; service alive |
 | I5 | Soft-fail | Unknown / wrong-type fields | Validate raises; hot-reload keeps previous config; service alive (V10/V10b / F-07) |
 | I6 | dump_kv | Empty `block_ids` | **No** full-cache D2H; skip / no dump |
-| I7 | Output | Report / print_output must not mutate sampler outputs | HTTP body unchanged vs I1 |
-| O1 | Output integrity | `print_output_on_finish` text vs HTTP (no MTP) | String-equal (trim) |
+| I7 | Output | Report must not mutate sampler outputs | HTTP body unchanged vs I1 |
 
 ## P0 — function smoke (UT + short e2e)
 
@@ -117,4 +116,4 @@ runtime_guard loggers stay on the stdlib tree.
 | L5 | Per-module levels | `apply_ascend_log_level(module_levels=...)` | Override applies (was a silent no-op under UCM) |
 
 UT command: `pytest tests/ut/runtime_guard/ tests/ut/runtime_config/ -q`.
-Live-NPU log-level smoke (`ascend_log` / `set_log_level` → DEBUG) is manual when needed.
+Live-NPU log-level smoke (`ascend_log` → DEBUG / SamplingMeta) is manual when needed.

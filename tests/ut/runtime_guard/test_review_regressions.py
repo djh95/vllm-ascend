@@ -273,7 +273,6 @@ def test_v8b_reap_discards_wave_stamps():
     wt.record_sample_waves(["r1", "r2"])
     p.wave_tracker = wt
     p.runtime_config = MagicMock()
-    p.runtime_config.log_print_output_on_finish.return_value = False
     store = MagicMock()
     store.list_reapable.return_value = ["r1", "r2"]
     with patch("vllm_ascend.observability.runtime_guard.processor.RequestGuardStore") as store_cls:
@@ -447,7 +446,6 @@ def test_v10b_unknown_top_level_key_rejected_on_reload(tmp_path: Path):
             {
                 "windw": 10,
                 "dump": {},
-                "log": {},
                 "report": {},
                 "ascend_log": {},
                 "detector": {},
@@ -2019,24 +2017,6 @@ def test_v26b_cpu_detect_dropped_not_inline():
 # ------------------------------------------- V27 safety audit fixes
 
 
-def test_v27a_print_output_skips_non_tp0_rank(monkeypatch):
-    """Non-TP0 must not print; the gate reads process groups, not runner attrs."""
-    from vllm_ascend.observability.runtime_guard import rank_gate
-    from vllm_ascend.observability.runtime_guard.processor_report import RuntimeGuardReportMixin
-
-    monkeypatch.setattr(rank_gate, "get_pp_group", lambda: SimpleNamespace(is_last_rank=True))
-    monkeypatch.setattr(rank_gate, "get_tp_group", lambda: SimpleNamespace(world_size=2, rank_in_group=1))
-
-    p = object.__new__(RuntimeGuardProcessor)
-    p.runner = SimpleNamespace()  # no tp_rank attr — gate must not trust it
-    p.runtime_config = MagicMock()
-    p._get_detector_tokenizer = MagicMock(side_effect=AssertionError("must not decode"))
-    io_mgr = MagicMock()
-    RuntimeGuardReportMixin._maybe_print_output_on_finish(p, ["r1"], io_mgr)
-    p._get_detector_tokenizer.assert_not_called()
-    io_mgr.snapshot.assert_not_called()
-
-
 def test_v27b_dump_prepare_exception_refunds_quota():
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
     from vllm_ascend.observability.runtime_guard.incident import Incident
@@ -2090,54 +2070,6 @@ def test_v27c_zombie_with_stuck_cpu_jobs_force_reaps():
         assert store.list_reapable(current_wave=12) == ["z1"]  # force-reap
     finally:
         RequestGuardStore.reset_for_tests()
-
-
-def test_v27d_print_output_tp0_last_pp_snapshots_processor_runner(monkeypatch):
-    """Regression: snapshot must use the processor's runner (was bare ``runner`` NameError)."""
-    from vllm_ascend.observability.runtime_guard import rank_gate
-    from vllm_ascend.observability.runtime_guard.processor_report import RuntimeGuardReportMixin
-
-    from ._helpers import capture_logger_text
-
-    monkeypatch.setattr(rank_gate, "get_pp_group", lambda: SimpleNamespace(is_last_rank=True))
-    monkeypatch.setattr(rank_gate, "get_tp_group", lambda: SimpleNamespace(world_size=2, rank_in_group=0))
-
-    p = object.__new__(RuntimeGuardProcessor)
-    p.runner = SimpleNamespace()  # no tp_rank attr — TP rank comes from the group
-    p.runtime_config = MagicMock()
-    p.runtime_config.report_max_output_token_ids.return_value = 2
-    p._get_detector_tokenizer = MagicMock(return_value=None)  # tokenizer unavailable
-
-    io_mgr = MagicMock()
-    io_mgr.snapshot.return_value = SimpleNamespace(output_token_ids=[1, 2, 3], output_token_count=3)
-    with capture_logger_text("vllm_ascend.observability.runtime_guard.processor_report") as buf:
-        RuntimeGuardReportMixin._maybe_print_output_on_finish(p, ["r1", ""], io_mgr)
-
-    # Pre-fix this raised NameError (bare ``runner``); the snapshot must receive
-    # the processor's runner, and empty ids must be skipped.
-    io_mgr.snapshot.assert_called_once_with(p.runner, "r1", None, include_token_ids=True, use_cache=False)
-    text = buf.getvalue()
-    assert "output_token_count=3" in text
-    assert "truncated=True" in text
-    assert "<tokenizer unavailable>" in text
-
-
-def test_v27e_print_output_skips_non_last_pp_tp0(monkeypatch):
-    """TP0 on a non-last PP rank must not print (no cumulative IO there)."""
-    from vllm_ascend.observability.runtime_guard import rank_gate
-    from vllm_ascend.observability.runtime_guard.processor_report import RuntimeGuardReportMixin
-
-    monkeypatch.setattr(rank_gate, "get_pp_group", lambda: SimpleNamespace(is_last_rank=False))
-    monkeypatch.setattr(rank_gate, "get_tp_group", lambda: SimpleNamespace(world_size=1, rank_in_group=0))
-
-    p = object.__new__(RuntimeGuardProcessor)
-    p.runner = SimpleNamespace()
-    p.runtime_config = MagicMock()
-    p._get_detector_tokenizer = MagicMock(side_effect=AssertionError("must not decode"))
-    io_mgr = MagicMock()
-    RuntimeGuardReportMixin._maybe_print_output_on_finish(p, ["r1"], io_mgr)
-    p._get_detector_tokenizer.assert_not_called()
-    io_mgr.snapshot.assert_not_called()
 
 
 # ------------------------------------------- V28 dump-drop quota refunds

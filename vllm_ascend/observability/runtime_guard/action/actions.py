@@ -441,36 +441,9 @@ def _queue_kv_dumps(
     return queued
 
 
-class SetLogLevelAction(Action):
-    name = "set_log_level"
-    sync_only = True
-
-    def run(self, ctx: ActionContext) -> None:
-        cfg = ctx.action_overrides.get("set_log_level") or {}
-        if not isinstance(cfg, dict):
-            return
-        level = cfg.get("level")
-        modules = cfg.get("modules")
-        if level is None and not modules:
-            return
-        from vllm_ascend.logger import apply_ascend_log_level
-
-        apply_ascend_log_level(
-            str(level or ctx.runtime_config.ascend_log_level()),
-            module_levels=dict(modules) if isinstance(modules, dict) else None,
-        )
-        logger.info(
-            "[runtime_guard set_log_level] incident=%s level=%s modules=%s",
-            ctx.incident.incident_type,
-            level,
-            modules,
-        )
-
-
 _ACTIONS: dict[str, Action] = {
     ReportAction.name: ReportAction(),
     DumpKvAction.name: DumpKvAction(),
-    SetLogLevelAction.name: SetLogLevelAction(),
 }
 
 
