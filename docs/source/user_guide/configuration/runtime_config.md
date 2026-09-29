@@ -32,7 +32,7 @@ Valid action names: `report`, `dump_kv`. ActionQueue capacity is a fixed interna
 |-----|------|---------|-------------|
 | `auto_max_times` | int | `0` | Max auto `dump_kv` captures per process lifetime. `0` disables auto dump quota |
 | `auto_cooldown_seconds` | float | `300` | Minimum seconds between auto dumps after a **successful** quota consume (refund clears this cooldown) |
-| `manual_dump` | bool \| int | `false` | Manual dump: `false`, positive int N (armed waves; **prefer `1` — one shot is enough**), or `true` (continuous every wave until hot-reload false; **not recommended** — little debug value, floods ActionQueue/disk). Each armed wave decrements in memory whether dump queued or failed (`dump_skipped.json`); JSON rewritten only when count reaches 0. Multi-DP sharing one file: each DP may dump up to N times while the file still shows N. |
+| `manual_dump` | bool \| int | `false` | Manual dump watermark: `false`, positive int N (dump while process `done < N`; **prefer bump 1→2→3 for another shot**), or `true` (continuous every wave until hot-reload false; **not recommended**). Never rewritten by the process — if the value on disk is ≤ already-completed dumps, skip. Each dump report / `.pt` carries `manual_dump_count` (1-based seq). Multi-DP: each replica tracks its own `done`. |
 | `dump_dir` | str \| null | derived | KV dump root (default `<report_dir>/kv_cache`). Layout: `<dump_root>/<incident_type>/<req_id>/dp*_tp*_pp*_cp*/*.pt`. Coverage is last PP × all TP (not other PP). |
 
 Free-space headroom for `dump_kv` (`estimated payload + headroom`) is a fixed internal constant (5 GiB), not a JSON field.
@@ -119,9 +119,9 @@ logits. Retired: ``check_every_tokens`` (multi-step window) — ignored if prese
 
 Not a detector — control-plane for `dump.manual_dump`. Always runs `dump_kv` over the live batch (`scope=all_requests`; configured `dump_kv.scope` is ignored). `on_trigger` may still list `report` / other actions; if omitted, `actions.defaults` apply and `dump_kv` is injected.
 
-**Prefer `dump.manual_dump: 1` (one shot).** Continuous `true` / large N adds little for debugging and can flood the action queue and disk; hot-reload again when you need another capture.
+**Prefer `dump.manual_dump: 1` then bump to `2`, `3`, … for another capture.** Continuous `true` / large jumps add little for debugging and can flood the action queue and disk.
 
-Each armed wave with scheduled tokens decrements `manual_dump` **in memory** after handle (`true` = continuous, no decrement), **even if** `dump_kv` fails to queue. Skips write `{dump_root}/<type>/<req_id>/wave_<N>/dump_skipped.json` with a `reason` (same layout as successful `request_info.json`). The JSON file is updated to `false` **only when the count reaches 0**, not on every decrement. While the in-memory count is still >0, a hand-edit to the file still hot-reloads into memory. Multi-DP sharing one file: each DP may dump up to N times (file stays at N until some replica persists `false`).
+`N` is a **watermark**, not a remaining counter. The process keeps an in-memory `done` count (never written back to JSON). While `done < N`, each armed wave with scheduled tokens fires one dump and bumps `done` (even if `dump_kv` fails to queue — skip marker still written). If the value on disk is ≤ `done`, no dump. To dump again after finishing, raise `N` above `done`. Reports and dump payloads include `manual_dump_count` (1-based seq for that wave) and `manual_dump_target`. Multi-DP sharing one file: each replica tracks its own `done`.
 
 ```json
 "manual_trigger": {

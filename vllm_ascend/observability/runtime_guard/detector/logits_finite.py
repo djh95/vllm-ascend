@@ -29,7 +29,7 @@ from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config._defaults import LOGITS_FINITE_DEFERRED_QUEUE_MAX
 from vllm_ascend.observability.runtime_config.schema import ConfigField, DetectorSchema
 from vllm_ascend.observability.runtime_guard.detector.base import ConfigBackedDetector
-from vllm_ascend.observability.runtime_guard.incident import ILL_TYPE_NAN, Incident
+from vllm_ascend.observability.runtime_guard.state import ILL_TYPE_NAN, Incident
 
 logger = init_logger_ascend(__name__)
 

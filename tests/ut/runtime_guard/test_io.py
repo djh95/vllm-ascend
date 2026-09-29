@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # mypy: ignore-errors
-"""UT: token_utils + io snapshot cache edge cases."""
+"""UT: runtime_guard.io (token helpers + I/O snapshot cache)."""
 
 from __future__ import annotations
 
@@ -22,15 +22,13 @@ from types import SimpleNamespace
 
 import torch
 
-from vllm_ascend.observability.runtime_guard.io_snapshot import (
+from vllm_ascend.observability.runtime_guard.io import (
     RequestIoSnapshotManager,
-    prompt_token_count_for_request,
-)
-from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
-from vllm_ascend.observability.runtime_guard.token_utils import (
     accepted_token_counts,
     normalize_token_ids,
+    prompt_token_count_for_request,
 )
+from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
 
 def test_accepted_token_counts_placeholder_minus_one():

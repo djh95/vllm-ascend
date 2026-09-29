@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pytest
 
-from vllm_ascend.observability.runtime_config._defaults import HOT_RELOAD_INTERVAL_SECONDS
-from vllm_ascend.observability.runtime_config.from_additional_config import (
+from vllm_ascend.observability.runtime_config import (
     ADDITIONAL_CONFIG_STRIP_KEYS,
     build_runtime_config_from_additional,
 )
+from vllm_ascend.observability.runtime_config._defaults import HOT_RELOAD_INTERVAL_SECONDS
 
 
 def test_strip_keys_cover_runtime_aliases():

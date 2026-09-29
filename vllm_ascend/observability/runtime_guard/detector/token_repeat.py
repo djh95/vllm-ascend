@@ -26,10 +26,9 @@ from typing import TYPE_CHECKING, Any
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config.schema import ConfigField, DetectorSchema, coerce_list_int
 from vllm_ascend.observability.runtime_guard.detector.base import ConfigBackedDetector, resolve_batch_req_ids
-from vllm_ascend.observability.runtime_guard.incident import ILL_TYPE_REPEAT, Incident
-from vllm_ascend.observability.runtime_guard.io_snapshot import RequestIoSnapshotManager
+from vllm_ascend.observability.runtime_guard.io import RequestIoSnapshotManager, normalize_token_ids
 from vllm_ascend.observability.runtime_guard.rank_gate import runner_tp_rank
-from vllm_ascend.observability.runtime_guard.token_utils import normalize_token_ids
+from vllm_ascend.observability.runtime_guard.state import ILL_TYPE_REPEAT, Incident
 
 if TYPE_CHECKING:
     from vllm_ascend.observability.runtime_config.config import RuntimeConfig

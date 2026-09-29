@@ -32,10 +32,9 @@ from vllm_ascend.observability.runtime_guard.detector.token_repeat import (
     TokenRepeatState,
     push_token_repeat,
 )
-from vllm_ascend.observability.runtime_guard.incident import Incident
-from vllm_ascend.observability.runtime_guard.io_snapshot import RequestIoSnapshotManager
-from vllm_ascend.observability.runtime_guard.kv_cache_reader import KvCacheReader, _slice_blocks
-from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+from vllm_ascend.observability.runtime_guard.dump import KvCacheReader, _slice_blocks
+from vllm_ascend.observability.runtime_guard.io import RequestIoSnapshotManager
+from vllm_ascend.observability.runtime_guard.state import Incident, RequestGuardStore
 
 
 def _dump_rc(tmp_path: Path, **extra) -> SimpleNamespace:
@@ -108,7 +107,7 @@ def test_push_token_repeat_scores_and_ignore():
 def test_token_repeat_detector_hit_and_miss(tmp_path: Path):
     """S4: synthetic repeats alert; unique ids miss; disabled stays quiet."""
     from vllm_ascend.observability.runtime_config.config import RuntimeConfig
-    from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+    from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
     RequestGuardStore.reset_for_tests()
     RequestIoSnapshotManager.reset_for_tests()
@@ -310,7 +309,7 @@ def test_snapshot_request_blocks_writes_req_slice(tmp_path: Path):
 
 
 def test_write_snapshots_torch_save_failure_writes_dump_skipped(tmp_path: Path, monkeypatch):
-    from vllm_ascend.observability.runtime_guard.kv_cache_reader import KvDumpSnapshot
+    from vllm_ascend.observability.runtime_guard.dump import KvDumpSnapshot
 
     dump_root = tmp_path / "dump"
     snap = KvDumpSnapshot(
@@ -330,7 +329,7 @@ def test_write_snapshots_torch_save_failure_writes_dump_skipped(tmp_path: Path, 
         raise OSError("disk full")
 
     monkeypatch.setattr(
-        "vllm_ascend.observability.runtime_guard.kv_cache_reader.torch.save",
+        "vllm_ascend.observability.runtime_guard.dump.torch.save",
         _boom,
     )
     assert KvCacheReader.write_snapshots([snap]) == []
@@ -343,7 +342,7 @@ def test_write_snapshots_torch_save_failure_writes_dump_skipped(tmp_path: Path, 
 
 
 def test_free_bytes_at_walks_to_existing_ancestor(tmp_path: Path):
-    from vllm_ascend.observability.runtime_guard.dump_io import free_bytes_at
+    from vllm_ascend.observability.runtime_guard.dump import free_bytes_at
 
     nested = tmp_path / "a" / "b" / "c" / "missing_file"
     free = free_bytes_at(nested)
@@ -407,7 +406,7 @@ def test_dump_kv_skips_when_free_below_payload_plus_headroom(tmp_path, monkeypat
 
 def test_dump_kv_skips_when_request_finished(tmp_path):
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
-    from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+    from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
     RequestGuardStore.reset_for_tests()
     try:
@@ -437,7 +436,7 @@ def test_dump_kv_skips_when_request_finished(tmp_path):
 
 def test_dump_kv_writes_request_info_json(tmp_path):
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
-    from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+    from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
     RequestGuardStore.reset_for_tests()
     try:
@@ -476,7 +475,7 @@ def test_dump_kv_writes_request_info_json(tmp_path):
 
 
 def test_write_kv_dump_skipped_marker(tmp_path):
-    from vllm_ascend.observability.runtime_guard.dump_io import write_kv_dump_skipped
+    from vllm_ascend.observability.runtime_guard.dump import write_kv_dump_skipped
 
     path = write_kv_dump_skipped(
         tmp_path,
@@ -498,7 +497,7 @@ def test_write_kv_dump_skipped_marker(tmp_path):
 
 
 def test_write_kv_dump_skipped_arm_reasons(tmp_path):
-    from vllm_ascend.observability.runtime_guard.dump_io import write_kv_dump_skipped
+    from vllm_ascend.observability.runtime_guard.dump import write_kv_dump_skipped
 
     path = write_kv_dump_skipped(
         tmp_path,
@@ -522,13 +521,12 @@ def test_write_kv_dump_skipped_arm_reasons(tmp_path):
 
 def test_dump_kv_writes_skipped_when_no_targets(tmp_path, monkeypatch):
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
-    from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE
-    from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+    from vllm_ascend.observability.runtime_guard.state import MANUAL_TRIGGER_TYPE, RequestGuardStore
 
     RequestGuardStore.reset_for_tests()
     try:
         monkeypatch.setattr(
-            "vllm_ascend.observability.runtime_guard.incident.iter_local_request_rows",
+            "vllm_ascend.observability.runtime_guard.state.iter_local_request_rows",
             lambda _runner: [],
         )
         ctx = _dump_ctx(
@@ -554,7 +552,7 @@ def test_dump_kv_writes_skipped_when_no_targets(tmp_path, monkeypatch):
 def test_dump_kv_all_requests_enumerates_local_batch(tmp_path, monkeypatch):
     """scope=all_requests lists live reqs via iter_local_request_rows."""
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
-    from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+    from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
     RequestGuardStore.reset_for_tests()
     try:
@@ -569,7 +567,7 @@ def test_dump_kv_all_requests_enumerates_local_batch(tmp_path, monkeypatch):
             input_batch=SimpleNamespace(req_ids=["r1", "r2"]),
         )
         monkeypatch.setattr(
-            "vllm_ascend.observability.runtime_guard.kv_block_meta.block_ids_for_request",
+            "vllm_ascend.observability.runtime_guard.dump.block_ids_for_request",
             lambda _runner, req_id, req_idx=None, **kw: [0] if req_id == "r1" else [1, 2],
         )
         ctx = _dump_ctx(
@@ -620,7 +618,7 @@ def test_bug4_block_ids_v2_without_input_batch():
     """BUG-4: after sample_tokens clears execute_model_state, still resolve via req_states."""
     import numpy as np
 
-    from vllm_ascend.observability.runtime_guard.kv_block_meta import block_ids_for_request
+    from vllm_ascend.observability.runtime_guard.dump import block_ids_for_request
 
     # state slots 0..2; req lives at persistent index 2 with 3 blocks
     num_blocks = SimpleNamespace(np=np.array([[0, 0, 3]], dtype=np.int32))
@@ -652,7 +650,7 @@ def test_bug4_block_ids_v2_gpu_row_when_no_host_np():
     """StagedWriteTensor-style: only ``.gpu``, sync row to host."""
     import numpy as np
 
-    from vllm_ascend.observability.runtime_guard.kv_block_meta import block_ids_for_request
+    from vllm_ascend.observability.runtime_guard.dump import block_ids_for_request
 
     num_blocks = SimpleNamespace(np=np.array([[2]], dtype=np.int32))
     gpu_row = torch.tensor([[7, 8, 9]], dtype=torch.int32)

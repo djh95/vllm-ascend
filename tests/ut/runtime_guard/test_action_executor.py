@@ -20,12 +20,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from vllm_ascend.observability.runtime_guard.action.executor import (
+from vllm_ascend.observability.runtime_guard.action.actions import (
     ActionExecutor,
     order_incident_actions,
 )
-from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE, Incident
-from vllm_ascend.observability.runtime_guard.token_utils import has_nonempty_sampled_row
+from vllm_ascend.observability.runtime_guard.io import has_nonempty_sampled_row
+from vllm_ascend.observability.runtime_guard.state import MANUAL_TRIGGER_TYPE, Incident
 
 
 def test_order_incident_actions_report_before_dump():
@@ -130,7 +130,7 @@ def test_handle_write_report_false_strips_report_action():
         return act
 
     with patch(
-        "vllm_ascend.observability.runtime_guard.action.executor.get_action",
+        "vllm_ascend.observability.runtime_guard.action.actions.get_action",
         side_effect=_get_action,
     ):
         ex.handle(
@@ -165,7 +165,7 @@ def test_handle_manual_trigger_injects_dump_kv_all_requests():
         return act
 
     with patch(
-        "vllm_ascend.observability.runtime_guard.action.executor.get_action",
+        "vllm_ascend.observability.runtime_guard.action.actions.get_action",
         side_effect=_get_action,
     ):
         ex.handle(

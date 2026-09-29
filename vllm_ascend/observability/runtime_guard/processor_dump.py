@@ -24,20 +24,20 @@ from typing import Any
 from vllm.distributed.parallel_state import get_tp_group
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._task_bus import sync_task_bus
-from vllm_ascend.observability.runtime_guard.dump_io import (
+from vllm_ascend.observability.runtime_config.dist import sync_task_bus
+from vllm_ascend.observability.runtime_guard.dump import (
+    KvCacheReader,
+    block_ids_for_request,
     kv_dump_wave_dirname,
     parse_dump_arm_wave,
     write_kv_dump_skipped,
 )
-from vllm_ascend.observability.runtime_guard.kv_block_meta import block_ids_for_request
-from vllm_ascend.observability.runtime_guard.kv_cache_reader import KvCacheReader
 from vllm_ascend.observability.runtime_guard.rank_gate import (
     dump_rank_tag,
     runner_tp_rank,
     should_dump_kv_on_rank,
 )
-from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
 logger = init_logger_ascend(__name__)
 
@@ -275,6 +275,16 @@ class RuntimeGuardDumpMixin:
                     if wave_i is not None:
                         snap.payload.setdefault("dump_arm_wave", wave_i)
                     snap.payload.setdefault("dump_root", str(dump_root))
+                    job_detail = job.get("detail")
+                    if isinstance(job_detail, dict):
+                        for key in (
+                            "manual_dump_count",
+                            "manual_dump_target",
+                            "manual_dump_continuous",
+                            "source",
+                        ):
+                            if key in job_detail:
+                                snap.payload.setdefault(key, job_detail[key])
                     if submit is not None:
                         submit(lambda s=snap: KvCacheReader.write_snapshots([s]))
                     else:

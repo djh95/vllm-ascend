@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._dist import _runtime_config_sync_group_or_none
+from vllm_ascend.observability.runtime_config.dist import _runtime_config_sync_group_or_none
 from vllm_ascend.observability.runtime_guard.bus_worker import MergedBusRequest, MergedBusResult
 from vllm_ascend.observability.runtime_guard.rank_gate import should_dump_kv_on_rank
 

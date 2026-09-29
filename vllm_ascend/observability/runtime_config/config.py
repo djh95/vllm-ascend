@@ -18,7 +18,8 @@
 Design (multi-DP safe — avoid full-world / cross-PP collectives):
 
 1. **One writer / monitor per EngineCore (per DP replica)**
-   Reads & writes the JSON (``ensure_persisted`` / ``save`` / ``manual_trigger`` clear).
+   Reads & writes the JSON (``ensure_persisted`` / ``save`` for rare clears).
+   ``dump.manual_dump`` is a read-only watermark — never rewritten by consume.
    Prefer ``inner_dp_world`` first rank; else TP0∧PP0 when ``dp_size>1``; else
    global world rank0 / ``RANK==0``.
 
@@ -35,10 +36,9 @@ Design (multi-DP safe — avoid full-world / cross-PP collectives):
 Production: ``AscendConfig`` uses ``ensure_file=False``; worker
 :meth:`RuntimeConfig.ensure_persisted` materializes JSON on the writer.
 
-Implementation is split across:
-``_defaults`` (schema), ``_dist``, ``_merge``, ``_validate``
-(pattern/list normalizers live in ``_validate``); this module keeps the live
-``RuntimeConfig`` control plane.
+Payload helpers (JSONC load, deep-merge, validate) live in this module.
+Defaults stay in ``_defaults`` (detector-cycle leaf); distributed roles /
+task-bus live in ``dist``.
 """
 
 from __future__ import annotations
@@ -56,29 +56,416 @@ from typing import Any
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config._defaults import (
     _DEFAULTS,
+    _RETIRED_ACTIONS_KEYS,
+    _RETIRED_DETECTOR_KEYS,
+    _RETIRED_DUMP_KEYS,
+    _RETIRED_REPORT_KEYS,
+    _RETIRED_TOP_LEVEL_KEYS,
     ACTION_QUEUE_MAX_SIZE,
+    ACTIONS_KEYS,
+    ASCEND_LOG_KEYS,
+    DETECTOR_KEYS,
+    DUMP_KEYS,
     HOT_RELOAD_INTERVAL_SECONDS,
+    MANUAL_TRIGGER_SECTION_KEYS,
+    REPORT_KEYS,
+    TOP_LEVEL_KEYS,
 )
-from vllm_ascend.observability.runtime_config._dist import (
+from vllm_ascend.observability.runtime_config.detector_catalog import (
+    DETECTOR_SECTIONS as _CATALOG_DETECTOR_SECTIONS,
+)
+from vllm_ascend.observability.runtime_config.detector_catalog import (
+    RETIRED_DETECTOR_SECTIONS as _RETIRED_DETECTOR_SECTIONS,
+)
+from vllm_ascend.observability.runtime_config.detector_catalog import (
+    validate_registered_detectors,
+)
+from vllm_ascend.observability.runtime_config.dist import (
     _bg_reload_paths,
     _is_distributed_worker_process,
     _is_json_writer,
     _log_file_poll_fallback_once,
     _process_role_tag,
 )
-from vllm_ascend.observability.runtime_config._merge import (
-    _deep_merge,
-    _leaf_changes,
-    _normalize_config_sections,
-    dump_auto_on,
-    manual_dump_active,
-    manual_dump_count,
-)
-from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
-from vllm_ascend.observability.runtime_config.detector_catalog import (
-    DETECTOR_SECTIONS as _DETECTOR_SECTIONS,
-)
-from vllm_ascend.observability.runtime_config.jsonc_io import loads_jsonc
+from vllm_ascend.observability.runtime_config.schema import coerce_list_int
+
+# ---- JSONC ------------------------------------------------------------
+
+
+def _strip_jsonc(text: str) -> str:
+    """String-aware removal of comments and commas directly preceding ``}`` / ``]``.
+
+    Trailing commas may sit before a comment that itself precedes ``}`` / ``]``
+    (e.g. ``{ "a": 1, /* note */ }``). Lookahead therefore skips both whitespace
+    and comments before deciding whether to drop the comma.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_str = False
+
+    def _skip_ws_and_comments(start: int) -> int:
+        j = start
+        while j < n:
+            if text[j] in " \t\r\n":
+                j += 1
+                continue
+            if text[j] == "/" and j + 1 < n and text[j + 1] == "/":
+                j += 2
+                while j < n and text[j] != "\n":
+                    j += 1
+                continue
+            if text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+                j += 2
+                while j < n and not (text[j] == "*" and j + 1 < n and text[j + 1] == "/"):
+                    j += 1
+                j += 2
+                continue
+            break
+        return j
+
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i < n and not (text[i] == "*" and i + 1 < n and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        if c == ",":
+            j = _skip_ws_and_comments(i + 1)
+            if j < n and text[j] in "}]":
+                i += 1
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def loads_jsonc(text: str) -> Any:
+    """``json.loads`` that also accepts ``//`` / ``/* */`` comments and trailing commas.
+
+    Keeps the shipped ``.jsonc`` example template loadable as-is.
+    """
+    return json.loads(_strip_jsonc(text))
+
+
+# ---- merge / normalize ------------------------------------------------
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = deepcopy(base)
+    for key, value in override.items():
+        if key in out and isinstance(out[key], dict) and isinstance(value, dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = deepcopy(value)
+    return out
+
+
+def _leaf_changes(old: Any, new: Any, prefix: str = "") -> list[str]:
+    """Return ``path: old -> new`` strings for leaf values that differ."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        keys = set(old) | set(new)
+        out: list[str] = []
+        for key in sorted(keys):
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if key not in old:
+                out.append(f"{path}: <missing> -> {new[key]!r}")
+            elif key not in new:
+                out.append(f"{path}: {old[key]!r} -> <missing>")
+            else:
+                out.extend(_leaf_changes(old[key], new[key], path))
+        return out
+    if old != new:
+        path = prefix or "<root>"
+        return [f"{path}: {old!r} -> {new!r}"]
+    return []
+
+
+def dump_auto_on(dump: dict[str, Any]) -> bool:
+    """True when ``dump.auto_max_times > 0`` (invalid values → False)."""
+    try:
+        return int(dump.get("auto_max_times", 0)) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def manual_dump_active(raw: Any) -> bool:
+    """True when ``dump.manual_dump`` is armed (``true`` or positive int)."""
+    return raw not in (False, 0)
+
+
+def manual_dump_target(raw: Any) -> int:
+    """Watermark target from JSON: ``false``/``0``→0, ``true``→0 (continuous), positive int→N.
+
+    Continuous ``true`` is not a watermark; callers use ``isinstance(raw, bool) and raw``.
+    """
+    if isinstance(raw, bool):
+        return 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def manual_dump_count(raw: Any) -> int:
+    """Legacy alias: target N for int; ``true``→1 sentinel for \"armed\". Prefer watermark APIs."""
+    if isinstance(raw, bool):
+        return 1 if raw else 0
+    return manual_dump_target(raw)
+
+
+def _normalize_ascend_log_section_into(ascend: dict[str, Any]) -> None:
+    """Normalize ``ascend_log`` in place (level, debug list, modules dict)."""
+    if "level" not in ascend:
+        ascend["level"] = "INFO"
+    debug = ascend.get("debug", [])
+    if debug is None:
+        debug = []
+    if isinstance(debug, str):
+        debug = [debug]
+    if not isinstance(debug, list):
+        raise ValueError("ascend_log.debug must be a list of module name strings")
+    ascend["debug"] = [str(item).strip() for item in debug if str(item).strip()]
+    modules = ascend.get("modules", {})
+    if modules is None:
+        modules = {}
+    if not isinstance(modules, dict):
+        raise ValueError("ascend_log.modules must be an object")
+    normalized_modules: dict[str, str] = {}
+    for key, val in modules.items():
+        name = str(key).strip()
+        if not name:
+            continue
+        normalized_modules[name] = str(val).strip().upper()
+    ascend["modules"] = normalized_modules
+
+
+def _normalize_config_sections_into(data: dict[str, Any]) -> None:
+    """Normalize ``ascend_log`` shape in place (coerce debug/modules).
+
+    Despite the plural name this only touches ``ascend_log`` today; other
+    sections are validated / coerced by :func:`validate_runtime_config`.
+    """
+    if not isinstance(data, dict):
+        return
+    ascend = data.get("ascend_log")
+    if not isinstance(ascend, dict):
+        ascend = {}
+        data["ascend_log"] = ascend
+    _normalize_ascend_log_section_into(ascend)
+
+
+def _normalize_config_sections(data: dict[str, Any]) -> dict[str, Any]:
+    """Shallow-copy top level, deep-copy ``ascend_log``, then normalize in place."""
+    out = dict(data)
+    ascend = out.get("ascend_log")
+    out["ascend_log"] = dict(ascend) if isinstance(ascend, dict) else {}
+    _normalize_config_sections_into(out)
+    return out
+
+
+# ---- validate --------------------------------------------------------
+
+
+def normalize_ignore_token_ids(raw: Any) -> list[int]:
+    """Validate config ``ignore_token_ids`` as a flat list of ints."""
+    return coerce_list_int(raw, "ignore_token_ids")
+
+
+def int_field(value: Any, field: str, *, min_value: int | None = None) -> int:
+    # C3: reject None/str/NaN and silently-truncated floats (2.7 → 2) with
+    # an error that names the offending field.
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        raise ValueError(f"{field} must be a number, got {value!r}")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(f"{field} must be an integer, got {value!r}")
+    iv = int(value)
+    if min_value is not None and iv < min_value:
+        raise ValueError(f"{field} must be >= {min_value}, got {iv}")
+    return iv
+
+
+def float_field(
+    value: Any,
+    field: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        raise ValueError(f"{field} must be a number, got {value!r}")
+    fv = float(value)
+    if min_value is not None and fv < min_value:
+        raise ValueError(f"{field} must be >= {min_value}, got {fv}")
+    if max_value is not None and fv > max_value:
+        raise ValueError(f"{field} must be <= {max_value}, got {fv}")
+    return fv
+
+
+def coerce_bool_field(container: dict[str, Any], key: str, field: str) -> None:
+    """In-place coerce ``0``/``1`` → bool; reject other non-bool values.
+
+    Missing / already-bool values are left unchanged. ``None`` is ignored
+    (callers that require a default should set it before calling).
+    """
+    val = container.get(key)
+    if val is None or isinstance(val, bool):
+        return
+    if val in (0, 1):
+        container[key] = bool(val)
+        return
+    raise ValueError(f"{field} must be bool")
+
+
+def validate_dump_mutual_exclusive(dump: dict[str, Any]) -> None:
+    if dump_auto_on(dump) and manual_dump_active(dump.get("manual_dump", False)):
+        raise ValueError("dump.auto_max_times>0 and dump.manual_dump active are mutually exclusive")
+
+
+def validate_runtime_config(data: dict[str, Any]) -> None:
+    """Validate / normalize ``data`` in place.
+
+    Detect and dump are orthogonal: dump-only / detect-only / both are valid.
+    Soft warnings for easy-to-misread combos live on ``RuntimeConfig``.
+
+    S10 fix: defensively re-run ``_normalize_config_sections_into`` at entry so
+    validation is safe regardless of whether the caller normalized first.
+    """
+    _normalize_config_sections_into(data)
+    # Drop retired keys so old on-disk JSON still loads.
+    for key in _RETIRED_TOP_LEVEL_KEYS:
+        data.pop(key, None)
+    unknown_top = sorted(set(data) - TOP_LEVEL_KEYS)
+    if unknown_top:
+        raise ValueError(f"runtime config has unknown top-level key(s) {unknown_top}; allowed={sorted(TOP_LEVEL_KEYS)}")
+    for section in (
+        "dump",
+        "ascend_log",
+        "detector",
+        "report",
+        "actions",
+    ):
+        if section not in data or not isinstance(data[section], dict):
+            raise ValueError(f"runtime config missing object section '{section}'")
+    for key in _RETIRED_ACTIONS_KEYS:
+        data["actions"].pop(key, None)
+    unknown_actions = sorted(set(data["actions"]) - ACTIONS_KEYS)
+    if unknown_actions:
+        raise ValueError(f"actions has unknown key(s) {unknown_actions}; allowed={sorted(ACTIONS_KEYS)}")
+    for key in _RETIRED_DUMP_KEYS:
+        data["dump"].pop(key, None)
+    unknown_dump = sorted(set(data["dump"]) - DUMP_KEYS)
+    if unknown_dump:
+        raise ValueError(f"dump has unknown key(s) {unknown_dump}; allowed={sorted(DUMP_KEYS)}")
+    auto_max_times = data["dump"].get("auto_max_times", 0)
+    data["dump"]["auto_max_times"] = int_field(auto_max_times, "dump.auto_max_times", min_value=0)
+    auto_cd = data["dump"].get("auto_cooldown_seconds", 300)
+    data["dump"]["auto_cooldown_seconds"] = int_field(auto_cd, "dump.auto_cooldown_seconds", min_value=0)
+    manual_dump = data["dump"].get("manual_dump")
+    if manual_dump is not None and not isinstance(manual_dump, bool):
+        if isinstance(manual_dump, int) and not isinstance(manual_dump, bool):
+            if manual_dump < 0:
+                raise ValueError("dump.manual_dump must be >= 0")
+            if manual_dump == 0:
+                data["dump"]["manual_dump"] = False
+        else:
+            raise ValueError("dump.manual_dump must be bool or non-negative int")
+    dump_dir_raw = data["dump"].get("dump_dir")
+    if dump_dir_raw is not None and not isinstance(dump_dir_raw, str):
+        raise ValueError("dump.dump_dir must be a string path or null")
+    validate_dump_mutual_exclusive(data["dump"])
+    for key in _RETIRED_REPORT_KEYS:
+        data["report"].pop(key, None)
+    unknown_report = sorted(set(data["report"]) - REPORT_KEYS)
+    if unknown_report:
+        raise ValueError(f"report has unknown key(s) {unknown_report}; allowed={sorted(REPORT_KEYS)}")
+    coerce_bool_field(data["report"], "save_sensitive_info", "report.save_sensitive_info")
+    for max_key in ("max_prompt_token_ids", "max_output_token_ids"):
+        max_val = data["report"].get(max_key)
+        if max_val is None:
+            continue
+        if isinstance(max_val, bool) or not isinstance(max_val, (int, float)):
+            raise ValueError(f"report.{max_key} must be an int >= 0")
+        if int(max_val) < 0:
+            raise ValueError(f"report.{max_key} must be >= 0")
+        data["report"][max_key] = int(max_val)
+    if "max_per_req" in data["report"] and data["report"]["max_per_req"] is not None:
+        data["report"]["max_per_req"] = int_field(data["report"]["max_per_req"], "report.max_per_req", min_value=1)
+    level = data["ascend_log"].get("level", "INFO")
+    if not isinstance(level, str):
+        raise ValueError("ascend_log.level must be str")
+    unknown_ascend = sorted(set(data["ascend_log"]) - ASCEND_LOG_KEYS)
+    if unknown_ascend:
+        raise ValueError(f"ascend_log has unknown key(s) {unknown_ascend}; allowed={sorted(ASCEND_LOG_KEYS)}")
+    debug = data["ascend_log"].get("debug", [])
+    if not isinstance(debug, list):
+        raise ValueError("ascend_log.debug must be a list of module name strings")
+    for item in debug:
+        if not isinstance(item, (str, int, float)):
+            raise ValueError("ascend_log.debug entries must be strings")
+    modules = data["ascend_log"].get("modules", {})
+    if not isinstance(modules, dict):
+        raise ValueError("ascend_log.modules must be an object")
+    for key, val in modules.items():
+        if not isinstance(key, str):
+            raise ValueError("ascend_log.modules keys must be strings")
+        if not isinstance(val, str):
+            raise ValueError("ascend_log.modules values must be strings")
+    detector = data["detector"]
+    for key in _RETIRED_DETECTOR_SECTIONS:
+        detector.pop(key, None)
+    known = set(_CATALOG_DETECTOR_SECTIONS)
+    for key, value in detector.items():
+        if key == "manual_trigger":
+            # Control-plane overrides for incident_type=manual_trigger (not a detector).
+            if not isinstance(value, dict):
+                raise ValueError("detector.manual_trigger must be an object")
+            unknown_sub = sorted(set(value) - MANUAL_TRIGGER_SECTION_KEYS)
+            if unknown_sub:
+                raise ValueError(
+                    f"detector.manual_trigger has unknown key(s) {unknown_sub}; "
+                    f"allowed={sorted(MANUAL_TRIGGER_SECTION_KEYS)}"
+                )
+            continue
+        if key not in known:
+            raise ValueError(
+                f"detector.{key} is not a known detector section; "
+                f"expected nested objects among {sorted(known)} "
+                f"(e.g. detector.spec_acceptance.enabled)"
+            )
+        if not isinstance(value, dict):
+            raise ValueError(f"detector.{key} must be an object")
+        for retired in _RETIRED_DETECTOR_KEYS.get(key, ()):
+            value.pop(retired, None)
+        unknown_sub = sorted(set(value) - DETECTOR_KEYS[key])
+        if unknown_sub:
+            raise ValueError(f"detector.{key} has unknown key(s) {unknown_sub}; allowed={sorted(DETECTOR_KEYS[key])}")
+    for name in _CATALOG_DETECTOR_SECTIONS:
+        sec = detector.setdefault(name, {})
+        if not isinstance(sec, dict):
+            raise ValueError(f"detector.{name} must be an object")
+    validate_registered_detectors(detector)
+
 
 logger = init_logger_ascend(__name__)
 
@@ -172,6 +559,9 @@ class RuntimeConfig:
         # Lazily filled hot-path bools; cleared on every ``_data`` mutation.
         self._hot_path_gates: dict[str, Any] | None = None
         self._bootstrap_persisted = False
+        # Watermark progress for dump.manual_dump (int N). Never decreases;
+        # never written back to JSON. Continuous ``true`` does not use this.
+        self._manual_dumps_done = 0
         self._bg_reloader_started = False
         self._bg_thread: threading.Thread | None = None
         # Same seeding contract for dump.dump_dir (startup arg always applied at bootstrap).
@@ -427,7 +817,12 @@ class RuntimeConfig:
         save_sensitive = bool(report.get("save_sensitive_info", False))
         tok_rep = bool((det.get("token_repeat") or {}).get("enabled", False))
 
-        manual_count = manual_dump_count(dump.get("manual_dump", False))
+        raw_manual = dump.get("manual_dump", False)
+        if isinstance(raw_manual, bool) and raw_manual:
+            # Continuous: always "armed" sentinel (does not use watermark).
+            remaining = 1
+        else:
+            remaining = max(0, manual_dump_target(raw_manual) - int(self._manual_dumps_done))
 
         needs_io = tok_rep or (any_det and save_sensitive)
         needs_sample = any_det
@@ -437,7 +832,7 @@ class RuntimeConfig:
             "dump_enabled": dump_on,
             "needs_cumulative_io": needs_io,
             "needs_sample_phase_hooks": needs_sample,
-            "manual_trigger_count": manual_count,
+            "manual_trigger_count": remaining,
         }
         self._hot_path_gates = cached
         return cached
@@ -472,7 +867,7 @@ class RuntimeConfig:
         return bool(self._hot_path_gates_cached()["needs_sample_phase_hooks"])
 
     # Detector section order comes from ``detector_catalog``.
-    DETECTOR_SECTIONS = _DETECTOR_SECTIONS
+    DETECTOR_SECTIONS = _CATALOG_DETECTOR_SECTIONS
 
     @staticmethod
     def detectors_enabled_in(data: dict[str, Any]) -> bool:
@@ -540,81 +935,55 @@ class RuntimeConfig:
         """True when ``dump.manual_dump`` is bool ``true`` (always-on dump)."""
         return self.dump.get("manual_dump", False) is True
 
-    def manual_trigger_count(self) -> int:
-        """Remaining manual dump waves from ``dump.manual_dump``.
+    def manual_dump_target(self) -> int:
+        """Watermark target ``N`` from ``dump.manual_dump`` (0 when off or continuous)."""
+        return manual_dump_target(self.dump.get("manual_dump", False))
 
-        ``false``/``0`` → 0; ``true`` (continuous) → 1 as a positive sentinel;
-        positive int → N. Continuous mode does not decrement on consume.
-        Only observed after a successful hot-reload; requires
-        ``runtime_config_hot_reload=true``.
+    def manual_dumps_done(self) -> int:
+        """How many watermark manual dumps this process has completed."""
+        return int(self._manual_dumps_done)
+
+    def manual_trigger_count(self) -> int:
+        """Remaining catch-up dumps: ``max(0, target - done)``; continuous → 1.
+
+        Int ``N`` is a watermark: fire while ``done < N``. Disk value is never
+        mutated by the process — raise ``N`` (e.g. 1→2) for another dump.
+        If the value on disk is ≤ ``done``, skip. Requires hot-reload.
         """
         return int(self._hot_path_gates_cached()["manual_trigger_count"])
 
     def manual_trigger(self) -> bool:
-        """True when manual dump is armed (continuous or remaining count > 0)."""
+        """True when manual dump is armed (continuous or ``target > done``)."""
         return self.manual_trigger_count() > 0
 
     def consume_manual_trigger(self) -> bool:
-        """Arm one manual dump wave; return True if armed.
+        """Record one completed manual dump wave; return True if armed.
 
-        - ``true`` (bool): continuous — leave value as ``true``, do not persist.
-        - positive int: decrement **in memory** by one each armed wave.
-          Persist to JSON **only when the count reaches 0** (``false``), not on
-          every decrement. While the in-memory count is still >0, a content
-          change on disk still hot-reloads into memory (normal reload path).
+        - ``true`` (bool): continuous — always armed; do not bump watermark;
+          never touch JSON.
+        - positive int ``N``: if ``done < N``, bump ``done`` by one and return
+          True; else False. JSON ``manual_dump`` is left unchanged.
 
-        Multi-DP sharing one ``runtime_config.json``: the file keeps the original
-        ``N`` until some replica persists ``false``. Each DP may therefore dump
-        up to ``N`` times independently (worst case roughly ``num_DP × N``).
+        Multi-DP sharing one file: each replica tracks its own ``done``.
         """
         if self.manual_trigger_continuous():
             logger.debug(
-                "[runtime_config] manual_trigger continuous (true); not clearing %s",
+                "[runtime_config] manual_trigger continuous (true); watermark unused %s",
                 _process_role_tag(),
             )
             return True
-        remaining = self.manual_trigger_count()
-        if remaining <= 0:
+        target = self.manual_dump_target()
+        if self._manual_dumps_done >= target:
             return False
 
-        new_val: bool | int = False if remaining <= 1 else remaining - 1
-        self.dump["manual_dump"] = new_val
+        self._manual_dumps_done += 1
         self._invalidate_hot_path_gates()
-
-        if new_val is not False:
-            # Mid-count: memory only. Disk stays at the original N so other DPs
-            # that share the file can still see N; a user hand-edit still reloads.
-            logger.info(
-                "[runtime_config] manual_dump → %s in-memory (was %d; JSON unchanged until 0) %s",
-                new_val,
-                remaining,
-                _process_role_tag(),
-            )
-            return True
-
-        # Drained to 0: persist false once (JSON writer only).
-        if _is_json_writer():
-            if self.save(updates={"dump": {"manual_dump": False}}):
-                logger.info(
-                    "[runtime_config] manual_dump drained → false (persisted) path=%s was=%d %s",
-                    self.config_path,
-                    remaining,
-                    _process_role_tag(),
-                )
-            else:
-                logger.warning(
-                    "[runtime_config] manual_dump drained → false in-memory but failed to persist path=%s was=%d %s",
-                    self.config_path,
-                    remaining,
-                    _process_role_tag(),
-                )
-        else:
-            logger.info(
-                "[runtime_config] manual_dump drained → false in-memory "
-                "(non-writer; JSON still shows prior N until a writer persists) was=%d %s",
-                remaining,
-                _process_role_tag(),
-            )
+        logger.info(
+            "[runtime_config] manual_dump watermark done=%d target=%d (JSON unchanged) %s",
+            self._manual_dumps_done,
+            target,
+            _process_role_tag(),
+        )
         return True
 
     def disable_detector_unavailable(self, section: str, *, reason: str) -> bool:
@@ -1053,8 +1422,8 @@ class RuntimeConfig:
         """Merge ``updates`` and write JSON. Leader (or single-process) only.
 
         Under the config lock, re-read disk first so a stale in-memory snapshot
-        cannot wipe concurrent hand-edits (e.g. ``dump.max_times``) when only
-        flushing ``manual_trigger``.
+        cannot wipe concurrent hand-edits when saving (e.g. detector disable).
+        ``dump.manual_dump`` is never cleared here — it is a read-only watermark.
         """
         if not _is_json_writer():
             logger.debug(

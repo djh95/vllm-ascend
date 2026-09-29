@@ -20,8 +20,7 @@ from unittest.mock import MagicMock, patch
 
 from vllm_ascend.observability.runtime_guard.action.queue import ActionQueue
 from vllm_ascend.observability.runtime_guard.processor import RuntimeGuardProcessor
-from vllm_ascend.observability.runtime_guard.quota import DumpQuota
-from vllm_ascend.observability.runtime_guard.wave_tracker import WaveTracker
+from vllm_ascend.observability.runtime_guard.state import DumpQuota, WaveTracker
 
 
 class _Cfg:

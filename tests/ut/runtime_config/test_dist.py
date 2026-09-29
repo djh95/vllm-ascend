@@ -13,20 +13,84 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""UT: task_bus idle / single-process paths (no real collective)."""
+"""UT: runtime_config.dist (sync-group selection + task-bus collectives)."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_ascend.observability.runtime_config._task_bus import (
+import vllm_ascend.observability.runtime_config.dist as dist
+from vllm_ascend.observability.runtime_config.dist import (
     broadcast_when_due,
     sync_due_bits,
     sync_due_bits_from_src,
     sync_task_bus,
 )
+
+# ---- sync group ----
+
+
+def test_sync_group_none_when_not_last_pp(monkeypatch):
+    pp = SimpleNamespace(is_last_rank=False)
+    tp = SimpleNamespace(world_size=2)
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.get_pp_group",
+        lambda: pp,
+    )
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.get_tp_group",
+        lambda: tp,
+    )
+    assert dist._runtime_config_sync_group_or_none() is None
+
+
+def test_sync_group_tp_when_last_pp_tp_gt1(monkeypatch):
+    pp = SimpleNamespace(is_last_rank=True)
+    tp = SimpleNamespace(world_size=2, is_first_rank=True)
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.get_pp_group",
+        lambda: pp,
+    )
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.get_tp_group",
+        lambda: tp,
+    )
+    assert dist._runtime_config_sync_group_or_none() is tp
+
+
+def test_sync_group_none_when_last_pp_tp1(monkeypatch):
+    pp = SimpleNamespace(is_last_rank=True)
+    tp = SimpleNamespace(world_size=1)
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.get_pp_group",
+        lambda: pp,
+    )
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.get_tp_group",
+        lambda: tp,
+    )
+    assert dist._runtime_config_sync_group_or_none() is None
+
+
+def test_sync_group_none_when_pp_unavailable(monkeypatch):
+    def _boom():
+        raise RuntimeError("no pp")
+
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.get_pp_group",
+        _boom,
+    )
+    monkeypatch.setattr(
+        "vllm.distributed.parallel_state.get_tp_group",
+        MagicMock(),
+    )
+    assert dist._runtime_config_sync_group_or_none() is None
+
+
+# ---- task bus ----
 
 
 def test_sync_due_bits_none_group_returns_local():

@@ -27,7 +27,7 @@ from typing import Any
 
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-from vllm_ascend.observability.runtime_guard.token_utils import decode_token_ids, is_int_list, is_list_of_int_lists
+from vllm_ascend.observability.runtime_guard.io import decode_token_ids, is_int_list, is_list_of_int_lists
 
 logger = init_logger_ascend(__name__)
 
@@ -55,7 +55,7 @@ def _kv_dump_req_ids_for_report(
     synthetic incident id but ``scope=all_requests``, so KV lands under each
     real ``detail.requests[].req_id`` — report ``dump_dir`` must follow that.
     """
-    from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_REQ_ID
+    from vllm_ascend.observability.runtime_guard.state import MANUAL_TRIGGER_REQ_ID
 
     out: list[str] = []
     if isinstance(detail, dict):
@@ -381,7 +381,7 @@ class ReportWriter:
         if not req_id:
             return
         try:
-            from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+            from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
             RequestGuardStore.get().mark_detection_stopped(req_id)
         except Exception as exc:

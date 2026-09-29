@@ -20,7 +20,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+from vllm_ascend.observability.runtime_config.config import validate_runtime_config
 from vllm_ascend.observability.runtime_config.detector_catalog import (
     DETECTOR_SCHEMAS,
     DETECTOR_SECTIONS,

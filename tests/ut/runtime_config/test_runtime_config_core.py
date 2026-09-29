@@ -173,7 +173,7 @@ def test_dump_manual_trigger_unknown_key_rejected():
     from copy import deepcopy
 
     from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-    from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+    from vllm_ascend.observability.runtime_config.config import validate_runtime_config
 
     data = deepcopy(_DEFAULTS)
     data["dump"]["manual_trigger"] = 2
@@ -185,7 +185,7 @@ def test_token_repeat_window_wrong_type_rejected():
     from copy import deepcopy
 
     from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-    from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+    from vllm_ascend.observability.runtime_config.config import validate_runtime_config
 
     data = deepcopy(_DEFAULTS)
     data["detector"]["token_repeat"]["window"] = "x"
@@ -197,7 +197,7 @@ def test_token_repeat_window_non_integer_float_rejected():
     from copy import deepcopy
 
     from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-    from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+    from vllm_ascend.observability.runtime_config.config import validate_runtime_config
 
     data = deepcopy(_DEFAULTS)
     data["detector"]["token_repeat"]["window"] = 2.7
@@ -209,7 +209,7 @@ def test_report_save_sensitive_wrong_type_rejected():
     from copy import deepcopy
 
     from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-    from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+    from vllm_ascend.observability.runtime_config.config import validate_runtime_config
 
     data = deepcopy(_DEFAULTS)
     data["report"]["save_sensitive_info"] = "yes"
@@ -221,7 +221,7 @@ def test_ascend_log_enabled_unknown_key_rejected():
     from copy import deepcopy
 
     from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-    from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+    from vllm_ascend.observability.runtime_config.config import validate_runtime_config
 
     data = deepcopy(_DEFAULTS)
     data["ascend_log"]["enabled"] = True
@@ -261,7 +261,7 @@ def test_retired_p0_p1_keys_soft_popped(tmp_path: Path):
         ACTION_QUEUE_MAX_SIZE,
         DUMP_FREE_HEADROOM_BYTES,
     )
-    from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+    from vllm_ascend.observability.runtime_config.config import validate_runtime_config
 
     data = deepcopy(_DEFAULTS)
     data["actions"]["queue_max_size"] = 128
@@ -371,7 +371,8 @@ def test_report_dir_explicit(tmp_path: Path):
     assert cfg.dump_root() == reports.resolve() / "kv_cache"
 
 
-def test_manual_dump_persist_only_when_count_reaches_zero(tmp_path: Path):
+def test_manual_dump_watermark_never_rewrites_json(tmp_path: Path):
+    """``manual_dump: N`` is a watermark; consume bumps done, leaves JSON alone."""
     cfg_path = tmp_path / "runtime_config.json"
     _write(cfg_path, {})
     cfg = RuntimeConfig(
@@ -382,22 +383,63 @@ def test_manual_dump_persist_only_when_count_reaches_zero(tmp_path: Path):
     )
     _write(cfg_path, {"dump": {"manual_dump": 3, "auto_max_times": 0}})
     assert cfg.reload(force=True) is True
+    assert cfg.manual_dump_target() == 3
+    assert cfg.manual_dumps_done() == 0
     assert cfg.manual_trigger_count() == 3
 
     assert cfg.consume_manual_trigger() is True
+    assert cfg.manual_dumps_done() == 1
     assert cfg.manual_trigger_count() == 2
     assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["manual_dump"] == 3
 
     assert cfg.consume_manual_trigger() is True
+    assert cfg.manual_dumps_done() == 2
     assert cfg.manual_trigger_count() == 1
     assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["manual_dump"] == 3
 
     assert cfg.consume_manual_trigger() is True
+    assert cfg.manual_dumps_done() == 3
     assert cfg.manual_trigger_count() == 0
-    assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["manual_dump"] is False
+    assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["manual_dump"] == 3
+    assert cfg.consume_manual_trigger() is False
 
 
-def test_manual_dump_hand_edit_reloads_while_count_nonzero(tmp_path: Path):
+def test_manual_dump_skip_when_target_leq_done(tmp_path: Path):
+    """Disk value ≤ already-completed dumps → no dump; raise N to dump again."""
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {})
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        hot_reload=True,
+    )
+    _write(cfg_path, {"dump": {"manual_dump": 1, "auto_max_times": 0}})
+    assert cfg.reload(force=True) is True
+    assert cfg.consume_manual_trigger() is True
+    assert cfg.manual_dumps_done() == 1
+    assert cfg.manual_trigger_count() == 0
+
+    # Same or lower target: skip.
+    _write(cfg_path, {"dump": {"manual_dump": 1, "auto_max_times": 0}})
+    assert cfg.reload(force=True) is True
+    assert cfg.manual_trigger_count() == 0
+    assert cfg.consume_manual_trigger() is False
+
+    _write(cfg_path, {"dump": {"manual_dump": 0, "auto_max_times": 0}})
+    assert cfg.reload(force=True) is True
+    assert cfg.manual_trigger_count() == 0
+
+    # Bump above done → one more dump.
+    _write(cfg_path, {"dump": {"manual_dump": 2, "auto_max_times": 0}})
+    assert cfg.reload(force=True) is True
+    assert cfg.manual_trigger_count() == 1
+    assert cfg.consume_manual_trigger() is True
+    assert cfg.manual_dumps_done() == 2
+    assert json.loads(cfg_path.read_text(encoding="utf-8"))["dump"]["manual_dump"] == 2
+
+
+def test_manual_dump_hand_edit_raises_target_while_catching_up(tmp_path: Path):
     cfg_path = tmp_path / "runtime_config.json"
     _write(cfg_path, {})
     cfg = RuntimeConfig(
@@ -409,12 +451,15 @@ def test_manual_dump_hand_edit_reloads_while_count_nonzero(tmp_path: Path):
     _write(cfg_path, {"dump": {"manual_dump": 3, "auto_max_times": 0}})
     assert cfg.reload(force=True) is True
     assert cfg.consume_manual_trigger() is True
+    assert cfg.manual_dumps_done() == 1
     assert cfg.manual_trigger_count() == 2
 
-    # Hand-edit while memory still >0: reload must pick up the new value.
+    # Hand-edit raises target; done stays — remaining grows.
     _write(cfg_path, {"dump": {"manual_dump": 5, "auto_max_times": 0}})
     assert cfg.reload(force=True) is True
-    assert cfg.manual_trigger_count() == 5
+    assert cfg.manual_dumps_done() == 1
+    assert cfg.manual_dump_target() == 5
+    assert cfg.manual_trigger_count() == 4
 
 
 def test_same_mtime_content_change_reloads_via_digest(tmp_path: Path):
@@ -465,3 +510,29 @@ def test_touch_same_content_skips_reload(tmp_path: Path):
     assert cfg.reload(force=False) is False
     assert cfg._content_digest == digest_before
     assert cfg.detector_get("token_repeat", "window") == 8
+
+
+# ---- JSONC (loads_jsonc lives in config.py) ---------------------------------
+
+
+def test_loads_jsonc_comments_and_trailing_commas():
+    from vllm_ascend.observability.runtime_config.config import loads_jsonc
+
+    raw = """
+    {
+      // line comment
+      "a": 1,
+      "b": [2, 3,],
+      /* block
+         comment */
+      "c": "keep // inside",
+    }
+    """
+    assert loads_jsonc(raw) == {"a": 1, "b": [2, 3], "c": "keep // inside"}
+
+
+def test_loads_jsonc_escaped_quote_in_string():
+    from vllm_ascend.observability.runtime_config.config import loads_jsonc
+
+    raw = r'{ "msg": "say \"hi\"", }'
+    assert loads_jsonc(raw) == {"msg": 'say "hi"'}

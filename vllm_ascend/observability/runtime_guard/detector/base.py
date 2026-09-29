@@ -18,8 +18,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
-from vllm_ascend.observability.runtime_guard.incident import Incident
-from vllm_ascend.observability.runtime_guard.token_utils import normalize_token_ids
+from vllm_ascend.observability.runtime_guard.io import normalize_token_ids
+from vllm_ascend.observability.runtime_guard.state import Incident
 
 if TYPE_CHECKING:
     from vllm_ascend.observability.runtime_config.config import RuntimeConfig

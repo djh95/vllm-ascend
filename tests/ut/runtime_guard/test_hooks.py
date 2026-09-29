@@ -10,11 +10,11 @@ import pytest
 import torch
 
 from vllm_ascend.observability.runtime_guard.hooks import (
+    get_postprocess_sampled,
     runtime_guard_idle_step,
     runtime_guard_sample_tokens,
     runtime_guard_step,
 )
-from vllm_ascend.observability.runtime_guard.runner_bridge import get_postprocess_sampled
 
 _WORKER_ROOT = Path(__file__).resolve().parents[3] / "vllm_ascend" / "worker"
 _PENDING_SO_ATTR = "_pending_scheduler_output"

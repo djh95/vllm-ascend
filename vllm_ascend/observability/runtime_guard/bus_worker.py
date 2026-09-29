@@ -182,7 +182,7 @@ class DueBitsBusWorker:
 
     @staticmethod
     def _run_merged_bus(req: MergedBusRequest) -> MergedBusResult:
-        from vllm_ascend.observability.runtime_config._task_bus import (
+        from vllm_ascend.observability.runtime_config.dist import (
             broadcast_when_due,
             sync_due_bits_from_src,
         )

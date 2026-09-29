@@ -22,20 +22,19 @@ from uuid import uuid4
 
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_guard.detector.base import AnomalyDetector
-from vllm_ascend.observability.runtime_guard.incident import (
+from vllm_ascend.observability.runtime_guard.dump import block_ids_for_request
+from vllm_ascend.observability.runtime_guard.io import RequestIoSnapshotManager, load_model_tokenizer
+from vllm_ascend.observability.runtime_guard.rank_gate import (
+    is_action_leader_rank,
+    should_dump_kv_on_rank,
+)
+from vllm_ascend.observability.runtime_guard.state import (
     MANUAL_TRIGGER_REQ_ID,
     MANUAL_TRIGGER_TYPE,
     Incident,
     TriggerEvent,
     iter_local_request_rows,
 )
-from vllm_ascend.observability.runtime_guard.io_snapshot import RequestIoSnapshotManager
-from vllm_ascend.observability.runtime_guard.kv_block_meta import block_ids_for_request
-from vllm_ascend.observability.runtime_guard.rank_gate import (
-    is_action_leader_rank,
-    should_dump_kv_on_rank,
-)
-from vllm_ascend.observability.runtime_guard.token_utils import load_model_tokenizer
 
 logger = init_logger_ascend(__name__)
 
@@ -57,10 +56,10 @@ class RuntimeGuardReportMixin:
     def _maybe_fire_manual_local(self, *, allow_manual_dump: bool) -> None:
         """Fire ``manual_dump`` locally on each last-PP TP (no job bcast).
 
-        Config update (or already-armed in-memory count) → every dump rank
+        Config watermark ``N`` (or continuous ``true``) → every dump rank
         enumerates its local requests and D2H's its own shards. Auto single-req
-        dumps still use the TP dump lane. All dump ranks decrement in-memory
-        ``manual_dump`` together (JSON writer persists at 0).
+        dumps still use the TP dump lane. Each dump rank bumps its own
+        in-process ``done`` counter; JSON is never rewritten.
         """
         if not allow_manual_dump:
             return
@@ -87,25 +86,31 @@ class RuntimeGuardReportMixin:
         wave = self.wave_tracker.current_wave()
         arm_id = uuid4().hex
         continuous = cfg.manual_trigger_continuous()
+        # Sequence for this wave (1-based) before consume bumps done.
+        dump_seq = int(cfg.manual_dumps_done()) + 1 if not continuous else None
+        target = cfg.manual_dump_target()
         if continuous:
             logger.info("[runtime_guard manual_trigger] dump.manual_dump event (continuous)")
-            remaining_after: bool | int = True
         else:
-            remaining_after = max(0, remaining - 1)
             logger.info(
-                "[runtime_guard manual_trigger] dump.manual_dump event (remaining_after_arm=%d)",
-                remaining_after,
+                "[runtime_guard manual_trigger] dump.manual_dump event (seq=%d target=%d)",
+                dump_seq,
+                target,
             )
+
+        detail_extra: dict[str, Any] = {"source": "dump.manual_dump"}
+        if continuous:
+            detail_extra["manual_dump_continuous"] = True
+        else:
+            detail_extra["manual_dump_count"] = dump_seq
+            detail_extra["manual_dump_target"] = target
 
         if is_action_leader_rank(self.runner):
             self._handle_manual_trigger(
                 TriggerEvent(
                     trigger_type=MANUAL_TRIGGER_TYPE,
                     req_id=MANUAL_TRIGGER_REQ_ID,
-                    detail={
-                        "source": "dump.manual_dump",
-                        "manual_trigger_remaining_after": remaining_after,
-                    },
+                    detail=detail_extra,
                     consume_quota=False,
                 ),
                 write_report=True,
@@ -120,6 +125,7 @@ class RuntimeGuardReportMixin:
                 "wave": wave,
                 "arm_id": arm_id,
                 "consume_quota": False,
+                "detail": dict(detail_extra),
             }
             for req_id, _idx in rows
             if req_id
@@ -129,8 +135,9 @@ class RuntimeGuardReportMixin:
 
         if cfg.consume_manual_trigger():
             logger.info(
-                "[runtime_guard manual_trigger] manual_dump consumed, remaining=%d",
-                cfg.manual_trigger_count(),
+                "[runtime_guard manual_trigger] manual_dump consumed done=%d target=%d",
+                cfg.manual_dumps_done(),
+                cfg.manual_dump_target(),
             )
 
     def _handle_alert(
@@ -276,8 +283,9 @@ class RuntimeGuardReportMixin:
 
         if consume and self.runtime_config.consume_manual_trigger():
             logger.info(
-                "[runtime_guard manual_trigger] manual_dump consumed, remaining=%d",
-                self.runtime_config.manual_trigger_count(),
+                "[runtime_guard manual_trigger] manual_dump consumed done=%d target=%d",
+                self.runtime_config.manual_dumps_done(),
+                self.runtime_config.manual_dump_target(),
             )
 
     def _enrich_detail_with_block_meta(

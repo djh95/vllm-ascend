@@ -319,7 +319,7 @@ def test_run_sample_phase_idle_skips_hooks(tmp_path: Path):
 
 def test_sync_due_bits_all_reduce_even_when_not_due():
     """Due-vector AR always runs; due=false pays only the cheap all_reduce."""
-    from vllm_ascend.observability.runtime_config._task_bus import sync_due_bits
+    from vllm_ascend.observability.runtime_config.dist import sync_due_bits
 
     group = MagicMock()
     group.world_size = 2

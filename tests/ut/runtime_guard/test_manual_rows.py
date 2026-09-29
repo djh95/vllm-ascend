@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_ascend.observability.runtime_guard.incident import iter_local_request_rows
+from vllm_ascend.observability.runtime_guard.state import iter_local_request_rows
 
 
 @pytest.mark.parametrize(

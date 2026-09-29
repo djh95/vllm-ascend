@@ -49,11 +49,11 @@ def test_bus_worker_runs_due_bits_off_main_thread():
         group = SimpleNamespace(world_size=2, is_first_rank=True, rank_in_group=0)
         with (
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.sync_due_bits_from_src",
+                "vllm_ascend.observability.runtime_config.dist.sync_due_bits_from_src",
                 side_effect=_fake_sync,
             ),
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.broadcast_when_due",
+                "vllm_ascend.observability.runtime_config.dist.broadcast_when_due",
                 return_value=None,
             ),
         ):
@@ -92,11 +92,11 @@ def test_bus_worker_rejects_second_submit_while_inflight():
         group = SimpleNamespace(world_size=2, is_first_rank=True)
         with (
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.sync_due_bits_from_src",
+                "vllm_ascend.observability.runtime_config.dist.sync_due_bits_from_src",
                 side_effect=_fake_sync,
             ),
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.broadcast_when_due",
+                "vllm_ascend.observability.runtime_config.dist.broadcast_when_due",
                 return_value=None,
             ),
         ):
@@ -229,11 +229,11 @@ def test_async_merged_bus_warns_when_drain_waits():
                 return_value=False,
             ),
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.sync_due_bits_from_src",
+                "vllm_ascend.observability.runtime_config.dist.sync_due_bits_from_src",
                 side_effect=_slow_sync,
             ),
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.broadcast_when_due",
+                "vllm_ascend.observability.runtime_config.dist.broadcast_when_due",
                 return_value=None,
             ),
             capture_logger_text(
@@ -283,11 +283,11 @@ def test_wave_head_submit_failure_refunds_handed_off_jobs():
                 return_value=True,
             ),
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.sync_due_bits_from_src",
+                "vllm_ascend.observability.runtime_config.dist.sync_due_bits_from_src",
                 return_value=[False, False],
             ),
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.broadcast_when_due",
+                "vllm_ascend.observability.runtime_config.dist.broadcast_when_due",
                 return_value=None,
             ),
             pytest.raises(RuntimeError, match="not started"),
@@ -335,11 +335,11 @@ def test_drain_timeout_refunds_pending_jobs_and_clears_state():
                 return_value=True,
             ),
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.sync_due_bits_from_src",
+                "vllm_ascend.observability.runtime_config.dist.sync_due_bits_from_src",
                 side_effect=_stuck_sync,
             ),
             patch(
-                "vllm_ascend.observability.runtime_config._task_bus.broadcast_when_due",
+                "vllm_ascend.observability.runtime_config.dist.broadcast_when_due",
                 return_value=None,
             ),
         ):

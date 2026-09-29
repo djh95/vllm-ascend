@@ -53,17 +53,13 @@ _DEFAULTS: dict[str, Any] = {
         # with manual_dump. dump.enabled is derived at runtime (auto || manual).
         "auto_max_times": 0,
         "auto_cooldown_seconds": 5 * 60,
-        # Manual dump: false/0=off; positive int N = next N armed waves
-        # (prefer N=1 — one shot is enough). true=continuous every wave until
-        # hot-reload false (not recommended: little debug value, floods disk /
-        # ActionQueue). Needs runtime_config_hot_reload=true. Skips auto
-        # quota/cooldown/filters. Count is decremented in-memory each armed
-        # wave; JSON is rewritten only when the count reaches 0 (false). While
-        # the in-memory count is still >0, a hand-edit to this file still
-        # hot-reloads into memory as usual. Multi-DP sharing one
-        # runtime_config.json: each DP replica may dump up to N times (file
-        # stays at N until some replica persists 0) — worst case about
-        # num_DP × N dumps across the cluster.
+        # Manual dump watermark (never written back by the process):
+        # false/0=off; positive int N = dump while process_done < N (one wave
+        # at a time). Prefer bumping N by 1 for another shot (1→2→3…). If the
+        # value on disk is ≤ already-completed dumps, skip. true=continuous
+        # every wave until hot-reload false (not recommended). Needs
+        # runtime_config_hot_reload=true. Skips auto quota/cooldown/filters.
+        # Reports/request_info carry manual_dump_count (= completed seq).
         "manual_dump": False,
         # KV dump landing root (default derived: <report_dir>/kv_cache).
         # ``<incident_type>/<req_id>/`` is created under it per incident.

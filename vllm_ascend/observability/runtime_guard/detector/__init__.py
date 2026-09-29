@@ -33,7 +33,7 @@ __all__ = [
 
 def __getattr__(name: str) -> Any:
     if name == "Incident":
-        from vllm_ascend.observability.runtime_guard.incident import Incident
+        from vllm_ascend.observability.runtime_guard.state import Incident
 
         return Incident
     if name in ("AnomalyDetector", "ConfigBackedDetector", "DetectorRegistry"):
