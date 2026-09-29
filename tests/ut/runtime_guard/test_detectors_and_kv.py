@@ -105,6 +105,60 @@ def test_push_token_repeat_scores_and_ignore():
     assert len(ignored.content) == 0
 
 
+def test_token_repeat_detector_hit_and_miss(tmp_path: Path):
+    """S4: synthetic repeats alert; unique ids miss; disabled stays quiet."""
+    from vllm_ascend.observability.runtime_config.config import RuntimeConfig
+    from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
+
+    RequestGuardStore.reset_for_tests()
+    RequestIoSnapshotManager.reset_for_tests()
+    cfg = RuntimeConfig(
+        config_path=tmp_path / "c.json",
+        report_dir=tmp_path / "r",
+        ensure_file=True,
+        reload_interval_seconds=0,
+    )
+    tr = cfg._data["detector"]["token_repeat"]
+    tr["enabled"] = True
+    tr["window"] = 8
+    tr["repeat_sum_threshold"] = 4
+    tr["min_tokens"] = 3
+    tr["consecutive_hits"] = 1
+
+    det = TokenRepeatDetector(runtime_config=cfg, runner=SimpleNamespace(tp_rank=0))
+    det.refresh_from_config()
+
+    miss: list = []
+    for tid in range(10, 20):
+        miss = det.check_all([[tid]], req_ids=["uniq"])
+    assert miss == []
+
+    RequestGuardStore.reset_for_tests()
+    RequestIoSnapshotManager.reset_for_tests()
+    det.clear_finished("uniq")
+    # Same token repeatedly → high repeat_sum after warmup.
+    hit: list = []
+    for _ in range(12):
+        alerts = det.check_all([[7]], req_ids=["rep"])
+        if alerts:
+            hit = alerts
+            break
+    assert len(hit) == 1
+    assert hit[0].incident_type == "token_repeat"
+    assert hit[0].req_id == "rep"
+    assert hit[0].is_ill is True
+
+    # Already alerted: further repeats do not re-emit.
+    assert det.check_all([[7]], req_ids=["rep"]) == []
+
+    RequestGuardStore.reset_for_tests()
+    RequestIoSnapshotManager.reset_for_tests()
+    tr["enabled"] = False
+    det.refresh_from_config()
+    for _ in range(20):
+        assert det.check_all([[7]], req_ids=["off"]) == []
+
+
 def test_w1_1_r04_same_wave_double_fold_keeps_seen_eq_oc(tmp_path: Path):
     """W1-1/R-04: same-wave duplicate after-sample must not inflate content_tokens_seen.
 

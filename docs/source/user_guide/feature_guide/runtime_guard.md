@@ -64,8 +64,8 @@ RuntimeGuardProcessor.bind(runner)
   → ActionExecutor         # report | dump_kv | set_log_level (async queue)
 ```
 
-Design details (Chinese): [runtime_guard_design.md](../../developer_guide/Design_Documents/runtime_guard_design.md)  
-Operations runbook (Chinese): [runtime_guard_ops.md](../../developer_guide/Design_Documents/runtime_guard_ops.md)
+Design details: [runtime_guard_design.md](../../developer_guide/Design_Documents/runtime_guard_design.md)  
+Operations runbook: [runtime_guard_ops.md](../../developer_guide/Design_Documents/runtime_guard_ops.md)
 
 ## On-disk layout
 

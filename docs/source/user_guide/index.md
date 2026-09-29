@@ -18,7 +18,9 @@ This section provides comprehensive documentation for using vLLM Ascend in produ
 
 ## Feature Guide
 
-Explore detailed guides for vLLM Ascend features including graph mode, CPU binding, quantization, sleep mode, structured output, LoRA, expert parallelism load balancing, and more.
+- **[Runtime Guard](feature_guide/runtime_guard.md)** — Online anomaly detect / report / optional KV dump
+
+Explore other guides for graph mode, CPU binding, quantization, sleep mode, structured output, LoRA, expert parallelism load balancing, and more.
 
 ## Deployment Guide
 

@@ -877,6 +877,49 @@ def test_v17d_spec_acceptance_high_rate_below_len_high_no_alert():
         assert len(det._history["r1"]) == 2
 
 
+def test_v17e_spec_acceptance_low_rate_triggers_incident():
+    """Low accept rate + low accept_len over a filled window → alert."""
+    from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
+
+    section = {
+        "enabled": True,
+        "window": 2,
+        "low_threshold": 0.3,
+        "len_low_threshold": 1.4,
+        "high_threshold": 0.96,
+        "len_high_threshold": 2.8,
+    }
+    rc = SimpleNamespace(
+        detector_section=lambda name: section,
+        detector_get=lambda sec, key, default=None: section.get(key, default),
+    )
+    # draft_len=10, accepted_token_num=1 → accepted_draft=0 → rate=0, accept_len=0
+    runner = SimpleNamespace(
+        tp_rank=0,
+        speculative_config=SimpleNamespace(),
+        input_batch=SimpleNamespace(req_ids=["r1"], num_draft_tokens_per_req=[10]),
+        requests=None,
+    )
+    det = SpecAcceptanceDetector(runtime_config=rc, runner=runner)
+    sampled = torch.tensor([[7] + list(range(10))])
+    with (
+        patch(
+            "vllm_ascend.observability.runtime_guard.detector.spec_acceptance.get_pp_group",
+            return_value=SimpleNamespace(is_last_rank=True),
+        ),
+        patch(
+            "vllm_ascend.observability.runtime_guard.detector.spec_acceptance.runner_tp_rank",
+            return_value=0,
+        ),
+    ):
+        assert det.check_all(sampled, [1], req_ids=["r1"]) == []  # window not full
+        alerts = det.check_all(sampled, [1], req_ids=["r1"])
+    assert len(alerts) == 1
+    assert alerts[0].incident_type == "spec_acceptance"
+    assert alerts[0].req_id == "r1"
+    assert alerts[0].detail["acceptance_rate"] < 0.3
+
+
 def test_v17b_spec_acceptance_v2_threads_req_ids_without_input_batch():
     """v2: runner.input_batch is None; req_ids must come from SamplePhaseResult."""
     from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
