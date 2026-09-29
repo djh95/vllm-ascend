@@ -39,16 +39,16 @@ You can check the [support status of vLLM V1 Engine][v1_user_guide]. Below is th
 - 🔴 NO plan/Deprecated: No plan or deprecated by vLLM.
 
 [v1_user_guide]: https://docs.vllm.ai/en/latest/usage/v1_guide/
-[multimodal]: https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen-VL-Dense.html
+[multimodal]: ../../tutorials/models/Qwen-VL-Dense.md
 [guided_decoding]: https://github.com/vllm-project/vllm-ascend/issues/177
-[LoRA]: https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/lora.html
-[graph_mode]: https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/graph_mode.html
+[LoRA]: ../feature_guide/lora.md
+[graph_mode]: ../feature_guide/graph_mode.md
 [apc]: https://github.com/vllm-project/vllm-ascend/issues/732
 [cp]: https://docs.vllm.ai/en/stable/configuration/optimization/
 [1P1D]: https://github.com/vllm-project/vllm-ascend/pull/950
-[context_parallel]: https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/context_parallel.html
-[sleep_mode]: https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/sleep_mode.html
+[context_parallel]: ../feature_guide/context_parallel.md
+[sleep_mode]: ../feature_guide/sleep_mode.md
 [runtime_guard]: ../feature_guide/runtime_guard.md
-[eplb]: https://docs.vllm.ai/projects/ascend/en/latest/user_guide/feature_guide/expert_parallelism_load_balancer.html
+[eplb]: ../feature_guide/expert_parallelism_load_balancer.md
 [pipeline_parallel]: ../feature_guide/pipeline_parallel.md
 [kvpp]: ../feature_guide/kvpp.md
