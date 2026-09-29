@@ -36,7 +36,7 @@ Production: ``AscendConfig`` uses ``ensure_file=False``; worker
 :meth:`RuntimeConfig.ensure_persisted` materializes JSON on the writer.
 
 Implementation is split across:
-``_defaults`` (schema), ``_paths``, ``_dist``, ``_merge``, ``_validate``
+``_defaults`` (schema), ``_dist``, ``_merge``, ``_validate``
 (pattern/list normalizers live in ``_validate``); this module keeps the live
 ``RuntimeConfig`` control plane.
 """
@@ -74,11 +74,6 @@ from vllm_ascend.observability.runtime_config._merge import (
     manual_dump_active,
     manual_dump_count,
 )
-from vllm_ascend.observability.runtime_config._paths import (
-    _reject_unsafe_path,
-    resolve_runtime_config_path,
-    resolve_runtime_report_dir,
-)
 from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
 from vllm_ascend.observability.runtime_config.detector_catalog import (
     DETECTOR_SECTIONS as _DETECTOR_SECTIONS,
@@ -86,6 +81,57 @@ from vllm_ascend.observability.runtime_config.detector_catalog import (
 from vllm_ascend.observability.runtime_config.jsonc_io import loads_jsonc
 
 logger = init_logger_ascend(__name__)
+
+
+DEFAULT_CONFIG_FILENAME = "runtime_config.json"
+
+
+def default_runtime_root() -> Path:
+    """Execution-directory runtime root: ``<cwd>/runtime``."""
+    return Path(os.getcwd()) / "runtime"
+
+
+def default_config_dir() -> Path:
+    return default_runtime_root() / "config"
+
+
+def _reject_unsafe_path(path: Path, *, label: str) -> Path:
+    """Resolve and reject NUL / empty paths (basic path hygiene)."""
+    raw = str(path)
+    if not raw or "\x00" in raw:
+        raise ValueError(f"invalid {label}: empty or contains NUL")
+    resolved = path.expanduser().resolve()
+    try:
+        cwd = Path.cwd().resolve()
+        if resolved != cwd and cwd not in resolved.parents:
+            logger.warning(
+                "[runtime_config] %s is outside process cwd (%s): %s",
+                label,
+                cwd,
+                resolved,
+            )
+    except Exception:
+        pass
+    return resolved
+
+
+def resolve_runtime_config_path(configured_path: str | None = None) -> Path:
+    """Resolve config file path.
+
+    Priority:
+    1. Explicit ``runtime_config_path`` / ``runtime-config`` from additional_config
+    2. Default ``<cwd>/runtime/config/runtime_config.json``
+    """
+    if configured_path:
+        return _reject_unsafe_path(Path(configured_path), label="runtime_config_path")
+    return _reject_unsafe_path(default_config_dir() / DEFAULT_CONFIG_FILENAME, label="runtime_config_path")
+
+
+def resolve_runtime_report_dir(config_path: Path, configured_report_dir: str | None = None) -> Path:
+    if configured_report_dir:
+        return _reject_unsafe_path(Path(configured_report_dir), label="runtime_report_dir")
+    runtime_root = config_path.parent.parent if config_path.parent.name == "config" else config_path.parent
+    return _reject_unsafe_path(runtime_root / "report", label="runtime_report_dir")
 
 
 class RuntimeConfig:
@@ -639,14 +685,14 @@ class RuntimeConfig:
         return self.report_save_sensitive_info()
 
     def report_max_prompt_token_ids(self) -> int:
-        """Max ``prompt_token_ids`` length to persist (0 = unlimited). Default 1000."""
+        """Max ``prompt_token_ids`` length to persist (0 = unlimited). Default 100000."""
         report = self._data.get("report") or {}
-        return int(report.get("max_prompt_token_ids", 1000))
+        return int(report.get("max_prompt_token_ids", 100000))
 
     def report_max_output_token_ids(self) -> int:
-        """Max output-like ``*_token_ids`` length to persist (0 = unlimited). Default 1000."""
+        """Max output-like ``*_token_ids`` length to persist (0 = unlimited). Default 100000."""
         report = self._data.get("report") or {}
-        return int(report.get("max_output_token_ids", 1000))
+        return int(report.get("max_output_token_ids", 100000))
 
     def report_include_block_ids(self) -> bool:
         """Reports always include the request's current GPU ``block_ids``."""

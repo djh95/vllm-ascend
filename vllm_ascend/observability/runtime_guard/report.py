@@ -27,10 +27,12 @@ from typing import Any
 
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-from vllm_ascend.observability.runtime_guard._constants import SAME_PAIR_BACKOFF_BASE_WAVES
 from vllm_ascend.observability.runtime_guard.token_utils import decode_token_ids, is_int_list, is_list_of_int_lists
 
 logger = init_logger_ascend(__name__)
+
+# Same (incident_type, req_id) on-disk write backoff (wave-based). Cap is report.max_per_req.
+SAME_PAIR_BACKOFF_BASE_WAVES = 64
 
 
 def _same_pair_gap_waves(writes_so_far: int) -> int:
@@ -53,7 +55,7 @@ def _kv_dump_req_ids_for_report(
     synthetic incident id but ``scope=all_requests``, so KV lands under each
     real ``detail.requests[].req_id`` — report ``dump_dir`` must follow that.
     """
-    from vllm_ascend.observability.runtime_guard.manual_trigger import MANUAL_TRIGGER_REQ_ID
+    from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_REQ_ID
 
     out: list[str] = []
     if isinstance(detail, dict):
@@ -162,8 +164,8 @@ def _map_nested_detail(
 def truncate_token_id_fields(
     detail: dict[str, Any],
     *,
-    max_prompt_token_ids: int = 1000,
-    max_output_token_ids: int = 1000,
+    max_prompt_token_ids: int = 100000,
+    max_output_token_ids: int = 100000,
 ) -> dict[str, Any]:
     """Cap prompt/output-like ``*_token_ids`` lists; keep full ``*_token_count``.
 
@@ -233,8 +235,8 @@ def sanitize_report_detail(
     detail: dict[str, Any] | None,
     *,
     save_sensitive_info: bool = False,
-    max_prompt_token_ids: int = 1000,
-    max_output_token_ids: int = 1000,
+    max_prompt_token_ids: int = 100000,
+    max_output_token_ids: int = 100000,
     decode_token_ids: bool = True,
     tokenizer: Any | None = None,
 ) -> dict[str, Any]:
@@ -355,8 +357,8 @@ class ReportWriter:
         report_dir: str | Path,
         *,
         save_sensitive_info: bool = False,
-        max_prompt_token_ids: int = 1000,
-        max_output_token_ids: int = 1000,
+        max_prompt_token_ids: int = 100000,
+        max_output_token_ids: int = 100000,
         decode_token_ids: bool = True,
         max_per_req: int = int(_DEFAULTS["report"]["max_per_req"]),
         dump_root_provider: Callable[[], str | Path] | None = None,

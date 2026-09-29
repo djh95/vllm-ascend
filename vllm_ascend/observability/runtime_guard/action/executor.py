@@ -24,9 +24,8 @@ from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
 from vllm_ascend.observability.runtime_config.config import RuntimeConfig
 from vllm_ascend.observability.runtime_guard.action.actions import Action, ActionContext, get_action
 from vllm_ascend.observability.runtime_guard.action.queue import ActionQueue
-from vllm_ascend.observability.runtime_guard.incident import Incident
+from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE, Incident
 from vllm_ascend.observability.runtime_guard.kv_cache_reader import KvCacheReader
-from vllm_ascend.observability.runtime_guard.manual_trigger import MANUAL_TRIGGER_TYPE
 from vllm_ascend.observability.runtime_guard.quota import DumpQuota
 from vllm_ascend.observability.runtime_guard.rank_gate import (
     anomaly_check_rank_skip_reason,

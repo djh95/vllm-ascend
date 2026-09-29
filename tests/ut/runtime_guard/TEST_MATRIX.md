@@ -70,7 +70,7 @@ Throughput / µs budgets need Ascend hardware and are not gated here.
 |----|---------|------|--------|
 | V2 | P0-5 | `dumps_report_json` | np.int64 / torch scalar / NaN never lose the report |
 | V3a–d | P0-1 | soft-fail contract | Detector/hook exceptions never reach engine loop / async copy thread / sampler |
-| V4 | P0-2 | Shipped `runtime_config.example.jsonc` | Loads + validates as-is; reload(force) succeeds |
+| V4 | P0-2 | Defaults bootstrap | Validates `_DEFAULTS` and bootstraps with detectors/dump off |
 | V5 | P0-3 | Bootstrap invalid content | Falls back to defaults; service starts |
 | V8a/b | B2 | Wave stamps lifecycle | discard on reap; no unbounded `_sample_waves` growth |
 | V9a/b | B3 | ActionQueue full/stop | Heavy (dump) jobs dropped, never inline; stop works with full queue (drain + sentinel) |

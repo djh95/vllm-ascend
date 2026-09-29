@@ -24,8 +24,7 @@ from vllm_ascend.observability.runtime_guard.action.executor import (
     ActionExecutor,
     order_incident_actions,
 )
-from vllm_ascend.observability.runtime_guard.incident import Incident
-from vllm_ascend.observability.runtime_guard.manual_trigger import MANUAL_TRIGGER_TYPE
+from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE, Incident
 from vllm_ascend.observability.runtime_guard.token_utils import has_nonempty_sampled_row
 
 

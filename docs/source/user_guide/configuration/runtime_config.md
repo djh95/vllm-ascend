@@ -2,7 +2,7 @@
 
 JSON schema for Runtime Guard. Default path: `<cwd>/runtime/config/runtime_config.json`.
 
-Annotated example: `vllm_ascend/observability/runtime_config/templates/runtime_config.example.jsonc`.
+Defaults are defined in code (`runtime_config._defaults`); JSONC comments are supported if you hand-edit the live file.
 
 Startup keys (`runtime_config_path`, `runtime_config_hot_reload`, overlay dict) are documented in [Additional Configuration](./additional_config.md#runtime_guard).
 
@@ -44,8 +44,8 @@ Manual dump / manual trigger skip auto quota and cooldown. Requires `runtime_con
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `save_sensitive_info` | bool | `false` | Persist prompt/output token ids **and** decode them to text |
-| `max_prompt_token_ids` | int | `1000` | Truncate persisted prompt ids (`0` = unlimited) |
-| `max_output_token_ids` | int | `1000` | Truncate persisted output ids |
+| `max_prompt_token_ids` | int | `100000` | Truncate persisted prompt ids (`0` = unlimited) |
+| `max_output_token_ids` | int | `100000` | Truncate persisted output ids |
 | `max_per_req` | int | `1` | Max report files per `(incident_type, req_id)`; at cap, stop detecting that request. Wave backoff (64×2ⁿ) between writes when cap &gt; 1 |
 
 GPU `block_ids` are always included in report detail. Decoding token ids to text follows `save_sensitive_info` (no separate toggle).

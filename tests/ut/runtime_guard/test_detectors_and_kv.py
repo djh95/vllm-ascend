@@ -522,13 +522,13 @@ def test_write_kv_dump_skipped_arm_reasons(tmp_path):
 
 def test_dump_kv_writes_skipped_when_no_targets(tmp_path, monkeypatch):
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
-    from vllm_ascend.observability.runtime_guard.manual_trigger import MANUAL_TRIGGER_TYPE
+    from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE
     from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
 
     RequestGuardStore.reset_for_tests()
     try:
         monkeypatch.setattr(
-            "vllm_ascend.observability.runtime_guard.manual_trigger.iter_local_request_rows",
+            "vllm_ascend.observability.runtime_guard.incident.iter_local_request_rows",
             lambda _runner: [],
         )
         ctx = _dump_ctx(

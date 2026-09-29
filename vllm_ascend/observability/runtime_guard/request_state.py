@@ -54,7 +54,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_guard._constants import MAX_DEFERRED_REAP_WAVES, REAPED_RING_MAX
+
+# Finished but sample_waves still non-empty this many real-steps later → force reap.
+MAX_DEFERRED_REAP_WAVES = 8
+# Post-reap late async appends: remember recently cleared ids.
+REAPED_RING_MAX = 1024
 
 if TYPE_CHECKING:
     from vllm_ascend.observability.runtime_guard.detector.manager import DetectorManager

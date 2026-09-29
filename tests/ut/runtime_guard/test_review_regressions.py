@@ -19,7 +19,7 @@
 IDs map to review findings:
   V2  P0-5  dumps_report_json tolerates non-JSON scalars (report never lost)
   V3  P0-1  soft-fail: hook exceptions must never propagate into the engine
-  V4  P0-2  shipped example template loads + validates as-is
+  V4  P0-2  defaults bootstrap loads + validates
   V5  P0-3  bootstrap invalid content falls back to defaults (no crash)
   V8  P1-B2 wave stamps discarded when requests are reaped (no leak)
   V9  P1-B3 ActionQueue: heavy job dropped (never inline on hot path); stop works with full queue
@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -44,7 +43,6 @@ import numpy as np
 import pytest
 import torch
 
-import vllm_ascend.observability.runtime_config.config as cfg_mod
 from vllm_ascend.observability.runtime_config.config import RuntimeConfig
 from vllm_ascend.observability.runtime_guard.action.queue import ActionQueue
 from vllm_ascend.observability.runtime_guard.detector.logits_finite import LogitsFiniteDetector
@@ -134,29 +132,20 @@ def test_v3d_run_sample_phase_hook_failure_does_not_block_sampling():
     assert result.req_ids_output_copy == ["r1"]
 
 
-# ---------------------------------------------------------------- V4 (P0-2)
+# ---------------------------------------------------------------- V4 (defaults bootstrap)
 
 
-def _template_path() -> Path:
-    return Path(cfg_mod.__file__).parent / "templates" / "runtime_config.example.jsonc"
-
-
-def test_v4_example_template_loads_and_validates(tmp_path: Path):
+def test_v4_defaults_bootstrap_loads_and_validates(tmp_path: Path):
+    """Shipped defaults (no example jsonc) bootstrap and validate cleanly."""
     from copy import deepcopy
 
     from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
-    from vllm_ascend.observability.runtime_config._merge import _deep_merge, _normalize_config_sections
     from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
-    from vllm_ascend.observability.runtime_config.jsonc_io import loads_jsonc
 
-    raw = loads_jsonc(_template_path().read_text(encoding="utf-8"))
-    assert isinstance(raw, dict)
-    merged = _normalize_config_sections(_deep_merge(deepcopy(_DEFAULTS), raw))
+    merged = deepcopy(_DEFAULTS)
     validate_runtime_config(merged)
 
-    # Bootstrap ignores / overwrites any preexisting file with defaults.
     cfg_path = tmp_path / "runtime_config.json"
-    shutil.copy(_template_path(), cfg_path)
     cfg = RuntimeConfig(
         config_path=cfg_path,
         report_dir=tmp_path / "report",
@@ -165,6 +154,8 @@ def test_v4_example_template_loads_and_validates(tmp_path: Path):
     )
     assert cfg.detectors_enabled_in(cfg._data) is False
     assert cfg.dump_enabled() is False
+    assert cfg.report_max_prompt_token_ids() == 100000
+    assert cfg.report_max_output_token_ids() == 100000
 
 
 def test_v13_jsonc_comments_and_trailing_commas(tmp_path: Path):
@@ -745,8 +736,7 @@ def test_v15_report_writer_dedupes_same_pair(tmp_path: Path):
 
 
 def test_v15b_report_writer_wave_backoff(tmp_path: Path):
-    from vllm_ascend.observability.runtime_guard._constants import SAME_PAIR_BACKOFF_BASE_WAVES
-    from vllm_ascend.observability.runtime_guard.report import ReportWriter
+    from vllm_ascend.observability.runtime_guard.report import SAME_PAIR_BACKOFF_BASE_WAVES, ReportWriter
     from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
 
     RequestGuardStore.reset_for_tests()
@@ -1363,8 +1353,7 @@ def _quota_stub(ok: bool = True):
 def test_v19a4_manual_dump_arms_with_empty_block_ids(monkeypatch):
     """First prefill wave: req ids known, block table empty — still queue."""
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
-    from vllm_ascend.observability.runtime_guard.incident import Incident
-    from vllm_ascend.observability.runtime_guard.manual_trigger import MANUAL_TRIGGER_TYPE
+    from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE, Incident
 
     rc = _ConsumeRecorder(remaining=1)
     kv_reader = MagicMock()
@@ -1393,8 +1382,7 @@ def test_v19a4_manual_dump_arms_with_empty_block_ids(monkeypatch):
 def test_v19a_manual_dump_forces_all_requests_no_consume_in_prepare(monkeypatch):
     """Manual dump ignores scope=request; consume happens in processor handle."""
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
-    from vllm_ascend.observability.runtime_guard.incident import Incident
-    from vllm_ascend.observability.runtime_guard.manual_trigger import MANUAL_TRIGGER_TYPE
+    from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE, Incident
 
     rc = _ConsumeRecorder(remaining=2)
     kv_reader = MagicMock()
@@ -1423,7 +1411,7 @@ def test_v19a_manual_dump_forces_all_requests_no_consume_in_prepare(monkeypatch)
 
 
 def test_v19a2_manual_trigger_handle_consumes_one_count():
-    from vllm_ascend.observability.runtime_guard.manual_trigger import (
+    from vllm_ascend.observability.runtime_guard.incident import (
         MANUAL_TRIGGER_REQ_ID,
         MANUAL_TRIGGER_TYPE,
         TriggerEvent,
@@ -1475,7 +1463,7 @@ def test_v19a2_manual_trigger_handle_consumes_one_count():
 
 def test_v19a3_manual_trigger_consumes_even_when_dump_not_armed():
     """Arm failure still burns manual_dump; DumpKvAction writes dump_skipped."""
-    from vllm_ascend.observability.runtime_guard.manual_trigger import (
+    from vllm_ascend.observability.runtime_guard.incident import (
         MANUAL_TRIGGER_REQ_ID,
         MANUAL_TRIGGER_TYPE,
         TriggerEvent,
@@ -1536,8 +1524,7 @@ def test_v19b_non_manual_incident_does_not_consume():
 def test_v19c_empty_block_ids_manual_still_queues(monkeypatch):
     """Manual arm with empty block_ids still queues (resolve at flush)."""
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
-    from vllm_ascend.observability.runtime_guard.incident import Incident
-    from vllm_ascend.observability.runtime_guard.manual_trigger import MANUAL_TRIGGER_TYPE
+    from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE, Incident
 
     rc = _ConsumeRecorder(remaining=2)
     kv_reader = MagicMock()
@@ -1788,7 +1775,7 @@ def test_v23b_report_writer_dump_dir_follows_provider(tmp_path: Path):
 
 def test_v23c_manual_trigger_report_dump_dir_uses_real_req_ids(tmp_path: Path):
     """Per-req manual reports: top-level req_id/dump_dir align (W3-2 / K-13)."""
-    from vllm_ascend.observability.runtime_guard.manual_trigger import (
+    from vllm_ascend.observability.runtime_guard.incident import (
         MANUAL_TRIGGER_REQ_ID,
         MANUAL_TRIGGER_TYPE,
     )
@@ -1838,7 +1825,7 @@ def test_v23c_manual_trigger_report_dump_dir_uses_real_req_ids(tmp_path: Path):
 
 def test_v23d_manual_handle_writes_one_report_per_req(tmp_path: Path):
     """``_handle_manual_trigger`` one ActionExecutor.handle(report) per batch row."""
-    from vllm_ascend.observability.runtime_guard.manual_trigger import (
+    from vllm_ascend.observability.runtime_guard.incident import (
         MANUAL_TRIGGER_REQ_ID,
         MANUAL_TRIGGER_TYPE,
         TriggerEvent,

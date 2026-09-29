@@ -22,15 +22,15 @@ from uuid import uuid4
 
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_guard.detector.base import AnomalyDetector
-from vllm_ascend.observability.runtime_guard.incident import Incident
-from vllm_ascend.observability.runtime_guard.io_snapshot import RequestIoSnapshotManager
-from vllm_ascend.observability.runtime_guard.kv_block_meta import block_ids_for_request
-from vllm_ascend.observability.runtime_guard.manual_trigger import (
+from vllm_ascend.observability.runtime_guard.incident import (
     MANUAL_TRIGGER_REQ_ID,
     MANUAL_TRIGGER_TYPE,
+    Incident,
     TriggerEvent,
     iter_local_request_rows,
 )
+from vllm_ascend.observability.runtime_guard.io_snapshot import RequestIoSnapshotManager
+from vllm_ascend.observability.runtime_guard.kv_block_meta import block_ids_for_request
 from vllm_ascend.observability.runtime_guard.rank_gate import (
     is_action_leader_rank,
     should_dump_kv_on_rank,

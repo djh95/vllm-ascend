@@ -84,8 +84,8 @@ _DEFAULTS: dict[str, Any] = {
         # (always decoded to text when sensitive is on).
         "save_sensitive_info": False,
         # Cap persisted token-id list lengths (0 = unlimited). Counts stay full.
-        "max_prompt_token_ids": 1000,
-        "max_output_token_ids": 1000,
+        "max_prompt_token_ids": 100000,
+        "max_output_token_ids": 100000,
         # Same (incident_type, req_id): max report files; at cap, stop detecting
         # that req (all detectors). Default 1 = one report then stop.
         # GPU block_ids are always included in report detail.

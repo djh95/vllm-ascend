@@ -112,7 +112,7 @@ def test_report_writer_write_rolls_back_first_pair_increment(tmp_path, monkeypat
 
 
 def test_report_writer_write_rolls_back_repeat_pair_increment(tmp_path, monkeypatch):
-    from vllm_ascend.observability.runtime_guard._constants import SAME_PAIR_BACKOFF_BASE_WAVES
+    from vllm_ascend.observability.runtime_guard.report import SAME_PAIR_BACKOFF_BASE_WAVES
 
     w = ReportWriter(tmp_path / "report", max_per_req=3)
     pair = ("token_repeat", "r1")

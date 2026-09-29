@@ -34,9 +34,8 @@ from vllm_ascend.observability.runtime_guard.dump_io import (
     write_kv_dump_request_info,
     write_kv_dump_skipped,
 )
-from vllm_ascend.observability.runtime_guard.incident import Incident
+from vllm_ascend.observability.runtime_guard.incident import MANUAL_TRIGGER_TYPE, Incident
 from vllm_ascend.observability.runtime_guard.kv_cache_reader import KvCacheReader
-from vllm_ascend.observability.runtime_guard.manual_trigger import MANUAL_TRIGGER_TYPE
 from vllm_ascend.observability.runtime_guard.quota import DumpQuota
 from vllm_ascend.observability.runtime_guard.rank_gate import (
     dump_rank_tag,
@@ -323,8 +322,8 @@ def _resolve_dump_targets(
     ``block_ids_for_request`` (never reuses the incident's ``detail.block_ids``
     for other requests).
     """
+    from vllm_ascend.observability.runtime_guard.incident import iter_local_request_rows
     from vllm_ascend.observability.runtime_guard.kv_block_meta import block_ids_for_request
-    from vllm_ascend.observability.runtime_guard.manual_trigger import iter_local_request_rows
     from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
 
     if scope != "all_requests":

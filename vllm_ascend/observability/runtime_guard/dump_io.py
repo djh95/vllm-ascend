@@ -144,8 +144,8 @@ def write_kv_dump_request_info(
     tokenizer: Any | None = None,
     save_sensitive_info: bool = False,
     decode_token_ids: bool = True,
-    max_prompt_token_ids: int = 1000,
-    max_output_token_ids: int = 1000,
+    max_prompt_token_ids: int = 100000,
+    max_output_token_ids: int = 100000,
 ) -> Path | None:
     """Last-PP TP0: write report-like request metadata next to KV ``.pt`` shards.
 
