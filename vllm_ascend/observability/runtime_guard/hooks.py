@@ -24,15 +24,10 @@ byte-identical (worker ``execute_dummy_batch`` pattern): the decorated
 methods keep their original functional bodies, and the decorators only
 add wave sync / sample-phase orchestration around them.
 
-v2 meets that goal via :func:`runtime_guard_sample_tokens`. v1 still
-assembles :class:`SamplePhaseResult` inline (accepted-tokens /
-routed-experts / ``AsyncGPUModelRunnerOutput`` are v1-specific); Ascend
-async wrapping is centralized in ``runner_bridge.build_v1_async_gpu_output``.
-
-SamplePhaseResult construction for v2, pre-sample logits wrap, and async
-output wrap live here (and in ``runner_bridge``). v1 installs the logits
-wrap on ``execute_model`` via :func:`runtime_guard_pre_sample_logits`; v2
-installs it inside :func:`runtime_guard_sample_tokens`.
+v2 uses :func:`runtime_guard_step` on ``execute_model`` and
+:func:`runtime_guard_sample_tokens` on ``sample_tokens`` (pre-sample logits
+wrap + SamplePhaseResult assembly + async after-sample wrap). ModelRunner
+v1 is **not** wired — runtime_guard is v2-only.
 
 Decorator placement: guard step decorators must sit INSIDE
 ``@torch.inference_mode()`` so wave sync stays in that context. The worker
@@ -61,7 +56,7 @@ _SCHEDULER_OUTPUT_ATTR = "_pending_scheduler_output"
 
 
 def runtime_guard_step(execute_model_fn):
-    """Wave-level runtime_guard sync for ``execute_model`` (shared by v1/v2).
+    """Wave-level runtime_guard sync for ``execute_model`` (v2).
 
     - before the step body: ``sync_for_step`` (config bus, wave arm, reap)
     - ``finally``: ``end_of_wave_sync(allow_manual_dump=False)`` on no-sample paths
@@ -90,40 +85,12 @@ def runtime_guard_step(execute_model_fn):
     return wrapper
 
 
-def runtime_guard_pre_sample_logits(execute_model_fn):
-    """v1-only: patch ``model.compute_logits`` for the duration of ``execute_model``.
-
-    v1 computes sample logits inside ``execute_model`` (before grammar in
-    ``sample_tokens``). Monkey-patching here lets the runner body call bare
-    ``self.model.compute_logits(...)`` — same contract as v2's sample-phase
-    wrap, with no runner-local guard helper.
-
-    Do **not** stack this on v2: logits live in parent ``sample_tokens``,
-    already covered by :func:`runtime_guard_sample_tokens`.
-
-    Must sit INNER-most under ``@runtime_guard_step`` (and thus under
-    ``@torch.inference_mode()``).
-    """
-
-    @functools.wraps(execute_model_fn)
-    def wrapper(self, scheduler_output, *args, **kwargs):
-        guard = getattr(self, "runtime_guard", None)
-        if guard is None or not need_pre_sample_hook(guard):
-            return execute_model_fn(self, scheduler_output, *args, **kwargs)
-        # Pass None so wrap reads runner.input_batch at fire time (after
-        # _update_states / logits_indices), not the execute entry snapshot.
-        with wrap_compute_logits_for_pre_sample(self, None):
-            return execute_model_fn(self, scheduler_output, *args, **kwargs)
-
-    return wrapper
-
-
 def runtime_guard_idle_step(dummy_batch_fn):
     """Worker-level wave sync for idle DP ranks (``execute_dummy_batch``).
 
     Same lockstep gate as ``runtime_guard_step`` — do not soft-fail
     ``sync_for_step`` (busy ranks take the same collectives). Guard lives on
-    ``self.model_runner``.
+    ``self.model_runner`` (v2).
     """
 
     @functools.wraps(dummy_batch_fn)

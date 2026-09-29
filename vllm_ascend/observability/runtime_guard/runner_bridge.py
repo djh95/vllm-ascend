@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model-runner glue: pre-sample wrap + async output after-sample hooks."""
+"""Model-runner glue: pre-sample wrap + v2 async output after-sample hooks."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from typing import Any
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 from vllm.v1.worker.gpu.async_utils import AsyncOutput
-from vllm.v1.worker.gpu_model_runner import AsyncGPUModelRunnerOutput
 
 from vllm_ascend.logger import init_logger_ascend
 
@@ -119,8 +118,6 @@ def wrap_compute_logits_for_pre_sample(runner: Any, input_batch: Any) -> Iterato
         logits = orig(hidden_states, *args, **kwargs)
         if not fired:
             fired = True
-            # Explicit peeked batch (v2) wins; None → live runner.input_batch
-            # (v1 installs the wrap at execute_model entry before indices land).
             batch = input_batch if input_batch is not None else getattr(runner, "input_batch", None)
             check_before_sample_from_batch(guard, logits, batch)
         return logits
@@ -181,53 +178,6 @@ def maybe_wrap_v2_async_output(output: Any, runner: Any) -> Any:
     if not is_async_output_rank():
         return output
     return AscendAsyncOutput(output, runner)
-
-
-def build_v1_async_gpu_output(
-    *,
-    model_runner_output: Any,
-    sampled_token_ids: Any,
-    logprobs_tensors: Any,
-    invalid_req_indices: Any,
-    async_output_copy_stream: Any,
-    vocab_size: int,
-    routed_experts: Any,
-    num_nans: Any,
-    runner: Any,
-    wrap_guard: bool,
-) -> AsyncGPUModelRunnerOutput:
-    """Build v1 async output; wrap with after-sample when ``wrap_guard`` is set.
-
-    Keeps the two ctor kwarg tables in one place (Ascend vs bare upstream).
-    """
-    kwargs: dict[str, Any] = {
-        "model_runner_output": model_runner_output,
-        "sampled_token_ids": sampled_token_ids,
-        "logprobs_tensors": logprobs_tensors,
-        "invalid_req_indices": invalid_req_indices,
-        "async_output_copy_stream": async_output_copy_stream,
-        "vocab_size": vocab_size,
-        "routed_experts": routed_experts,
-        "num_nans": num_nans,
-    }
-    if wrap_guard:
-        return AscendAsyncGPUModelRunnerOutput(**kwargs, runner=runner)
-    return AsyncGPUModelRunnerOutput(**kwargs)
-
-
-class AscendAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
-    """v1 async output: run ``check_after_sample`` after D2H in ``get_output``."""
-
-    def __init__(self, *args: Any, runner: Any | None = None, **kwargs: Any):
-        super().__init__(*args, **kwargs)
-        self._runner = runner
-
-    def get_output(self) -> ModelRunnerOutput:
-        output = super().get_output()
-        if self._runner is None:
-            return output
-        _safe_check_after_sample(self._runner, output)
-        return output
 
 
 class AscendAsyncOutput(AsyncModelRunnerOutput):

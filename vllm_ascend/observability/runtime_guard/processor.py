@@ -474,9 +474,9 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         ``NPUModelRunner.sample_tokens`` with one orchestration call so
         hook ordering is owned by ``RuntimeGuardProcessor`` rather than the runner.
 
-        Hook 1 (``check_before_sample``) stays explicit in the runner because
-        it must fire BEFORE ``apply_grammar_bitmask`` (a source-level contract
-        enforced by ``test_v1_sample_tokens_checks_before_grammar_bitmask``).
+        Hook 1 (``check_before_sample``) stays on the compute_logits wrap inside
+        :func:`~vllm_ascend.observability.runtime_guard.hooks.runtime_guard_sample_tokens`
+        so it fires BEFORE grammar bitmask (v2 only).
 
         Hook sequence (``S1`` golden path):
             2. ``sample_fn()`` returns :class:`SamplePhaseResult`
