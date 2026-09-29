@@ -12,7 +12,7 @@ Detection + report only (no KV dump):
 ```bash
 vllm serve <model> --additional-config '{
   "runtime_config_path": "/data/runtime/config/runtime_config.json",
-  "runtime_config_reload_interval": 5
+  "runtime_config_hot_reload": true
 }'
 ```
 
@@ -32,7 +32,7 @@ You can also overlay at startup via `additional_config.runtime_config` **without
 
 ```bash
 vllm serve <model> --additional-config '{
-  "runtime_config_reload_interval": 5,
+  "runtime_config_hot_reload": true,
   "runtime_config": {
     "detector": {
       "token_repeat": { "enabled": true, "on_trigger": ["report", "dump_kv"] },
@@ -68,7 +68,7 @@ All detectors default off; set `enabled: true` per detector.
 
 **Recommendation: `1` (or occasionally `2`) is enough.** Continuous / `true` adds little value—duplicate dumps for the same batch, fills ActionQueue (heavy `.pt`), consumes disk, and helps debugging only marginally; hot reload again when you need another capture.
 
-**Requires `runtime_config_reload_interval > 0`**. Manual events **skip auto quota/cooldown**.
+**Requires `runtime_config_hot_reload=true`**. Manual events **skip auto quota/cooldown**.
 
 Manual triggers use incident_type `manual_trigger`. **`dump_kv` is always injected** and **forced** to `scope=all_requests` (configured `dump_kv.scope` is ignored). `on_trigger` can still include `report`; when omitted, default includes `report`, then `dump_kv` is added automatically.
 
@@ -94,12 +94,12 @@ Same `(incident_type, req_id)`: `report.max_per_req` (default **1**); when full,
 
 | Field | Purpose |
 |------|------|
-| `report.save_sensitive_info` | Whether to write prompt/output token ids |
+| `report.save_sensitive_info` | Whether to write prompt/output token ids **and** decode to text |
 | `report.max_prompt_token_ids` | Truncation cap (0 = unlimited) |
 | `report.max_output_token_ids` | Truncation cap |
 | `report.max_per_req` | Max reports per (type, req); stop detection when full (default 1) |
-| `report.include_block_ids` | Include GPU block_ids in detail |
-| `report.decode_token_ids` | Decode text when sensitive mode is on |
+
+GPU `block_ids` are always included in report detail. Decoding follows `save_sensitive_info` (no separate toggle).
 
 If reports are too large when investigating hits, turn off `save_sensitive_info` or lower max_*.
 
@@ -172,7 +172,7 @@ Combine **all `tp*` dirs under the same `req_id` + same `wave_*` on last PP** fo
 | Dump empty / missing layers | `block_ids`; `dump_skipped.json`; logs `skip` / `skipped reason=` / `action queue full` |
 | Repeat arm, no second dump | Expected: same wave same req dedupe; log `skip enqueue: already pending` |
 | Missing one report | `max_per_req` / wave backoff; or log `skip report enqueue (dedupe or stopping)` |
-| Hot reload not applied | `runtime_config_reload_interval` >0; JSON path readable on all ranks |
+| Hot reload not applied | `runtime_config_hot_reload=true`; JSON path readable on all ranks |
 | Repeated report spam | `report.max_per_req` (default 1, stop when full); confirm `on_trigger` includes `report` |
 | Manual not firing | reload interval; idle dummy wave; `manual_dump` count exhausted |
 | Performance regression | Disable all detectors, keep reload only, re-enable one by one (see feature guide) |
@@ -192,7 +192,7 @@ Combine **all `tp*` dirs under the same `req_id` + same `wave_*` on last PP** fo
 
 - Each auto `dump_kv` consumes quota (`auto_max_times` is per-process cumulative cap; need **refund** or **restart** after exhausted. `auto_cooldown_seconds` only spaces two **successful consume** events, does not raise cap).
 - After successful `try_consume`, if enqueue fails (e.g. queue unavailable) or whole arm drains without D2H, **refund** (restore count and **clear cooldown**), avoiding empty deduct stuck in cooldown.
-- Free space threshold: leader single-GPU payload estimate × `tp_size` + `free_headroom_bytes` (all TP write).
+- Free space threshold: leader single-GPU payload estimate × `tp_size` + fixed internal headroom (5GiB) (all TP write).
 - Manual path does not consume auto quota.
 - Long-running `dump_kv`: watch `{report_dir}/kv_cache/` disk; archive periodically or lower `auto_max_times`.
 

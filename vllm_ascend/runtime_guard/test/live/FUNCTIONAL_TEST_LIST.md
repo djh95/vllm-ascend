@@ -144,12 +144,12 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | F-01 | 同步传输（固定，无 JSON `sync_mode`） | last-PP×TP | TP≥2、last-PP 起服，reload>0 | 波头走 **TP0 `sync_due_bits_from_src` due-broadcast**（`broadcast([wave_idx,config_due,dump_due])`）+ DueBitsBusWorker；**无**全 world AR；无 due 时无 `broadcast_object` |
 | F-02 | 非 last-PP / tp≤1 | file poll | PP≥2 非 last stage，或 TP=1 | config **本地 JSON poll**；不进 merged due-bus；dump 仍仅 last-PP TP |
 | F-03 | `wave_idx` 对齐 | — | 产品 UT `test_task_bus` +（可选）人为 skip 一波 | receiver `wave_idx` 不一致 → `RuntimeError` misalignment；正常路径无报错 |
-| F-04 | `reload_interval_seconds` | `0` | 默认不起 `--additional-config` | `refresh_config` 走 early-return，无轮询，detector 全关 |
-| F-05 | `reload_interval_seconds>0` | — | 设 3，改配置内容 | 热重载在 ≤interval 内生效（detector 开关/阈值变化）；apply 在 **end-of-wave drain** |
-| F-06 | `reload_interval_seconds` 非法 | — | 写 `"abc"` / `-1` | 软警告，回退默认，服务不崩 |
+| F-04 | `runtime_config_hot_reload` | `false` | 默认不起 `--additional-config` | `refresh_config` 走 early-return，无轮询，detector 全关 |
+| F-05 | `runtime_config_hot_reload=true` | — | 开启后固定 3s 轮询，改配置内容 | 热重载在 ≤3s 内生效（detector 开关/阈值变化）；apply 在 **end-of-wave drain** |
+| F-06 | `runtime_config_hot_reload` 非法 | — | 写 `"abc"` / `5`（旧 interval） | 启动报错 / 拒绝；旧 `runtime_config_reload_interval` 明确 retired |
 | F-07 | 未知顶层/子键 | — | 写 `{"windw": 10}` 或 `detector.*.windw` | **CLOSED（W2-1 / V10b）**：重载响亮拒绝，旧配置保留，日志 `unknown top-level key` / unknown detector key |
 | F-08 | `additional_config.runtime_config` 启动 overlay | — | 起服务时传 overlay 设 `detector.token_repeat.enabled=true` | 启动即生效（不经 JSON/热重载），`ensure_persisted` 把有效配置写回 JSON |
-| F-09 | 启动参数优先级 | — | 同时传 `runtime_config_reload_interval` / `runtime_dump_dir` 与 overlay 同名字段不同值 | 启动参数 authoritative，overlay 同名字段被忽略（日志确认 ctor 覆盖）；**已无 `sync_mode` 启动参** |
+| F-09 | 启动参数优先级 | — | 同时传 `runtime_config_hot_reload` / `runtime_dump_dir` 与 overlay 同名字段不同值 | 启动参数 authoritative，overlay 同名字段被忽略（日志确认 ctor 覆盖）；**已无 `sync_mode` 启动参** |
 | F-01b | JSON 残留 `sync_mode` | — | JSON 写 `"sync_mode":"file"` | **拒绝/忽略**（产品已删该旋钮）；不得再出现 `PP>1: forcing sync_mode=file` 日志 |
 | F-10a | 启动 overlay 非法 | — | overlay 传未知键 `detector.fatal_error`，或传非 dict（如 list） | 软失败回退默认，服务不崩，detector 全关 |
 | F-11 | pre-bootstrap 旧 JSON | — | 起服前在 JSON 里手工设 `token_repeat.enabled=true`，起服不传 overlay | 被 defaults+overlay 覆盖写回（`enabled=false`），首个热重载周期不读回旧值 |
@@ -164,7 +164,7 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | F-13 | `manual_dump` | `False` | `False` 时发 manual_trigger | 不落盘（manual 未启用） |
 | F-14 | `manual_dump=True` | — | 发 manual_trigger | 落盘，scope 强制 `all_requests`（覆盖 request 默认） |
 | F-15 | `dump_dir` | `None` | 不设 / 设自定义路径 | 默认 `kv_cache/`；自定义路径下文件正确写入 |
-| F-16 | `free_headroom_bytes` | `5GiB` | 调大到超过磁盘空闲 | dump `prepare` 因 free_headroom 不足拒 arm（无写满盘风险） |
+| F-16 | ~~`free_headroom_bytes`~~ | — | **REMOVED**（产品 tip `e826b20fa`；固定内部 5GiB） | 旧 JSON 键 soft-pop；不足仍拒 arm |
 | F-17 | `dump` 手动/自动互斥 | — | 同时给非法组合 | 校验拒绝（V4 关联），日志报错，不 arm |
 
 ### 1.3 `ascend_log` 子块（详见 §8）
@@ -181,13 +181,11 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | ID | 字段 | 默认 | 验证方法 | 预期 |
 |----|------|------|----------|------|
 | F-30 | `save_sensitive_info` | `False` | 默认触发 token_repeat | report 里 token-id 列表被 `sanitize_report_detail` 丢弃，只留 count |
-| F-31 | `save_sensitive_info=True` | — | 同上 | token-id 列表保留 |
-| F-32 | `decode_token_ids` | `True` | 命中 detector | report 带 `token_text` 解码文本 |
-| F-33 | `decode_token_ids=False` | — | 同上 | 无 `token_text`（隐私/成本） |
+| F-31 | `save_sensitive_info=True` | — | 同上 | token-id 列表保留 **且** 解码为 text |
+| F-32/F-33 | ~~`decode_token_ids`~~ | — | **REMOVED**（产品 tip `e826b20fa`；跟随 `save_sensitive_info`） | 无独立开关 |
 | F-34 | `max_prompt_token_ids` | `1000` | 长 prompt 触发 | prompt 被截断到上限（0=不限制），不超 |
 | F-35 | `max_output_token_ids` | `1000` | 长输出触发 | output 截断到上限（0=不限制） |
-| F-36 | `include_block_ids` | `True` | dump 或 report | 含 `block_ids` |
-| F-37 | `include_block_ids=False` | — | 同上 | 不含 `block_ids` |
+| F-36/F-37 | ~~`include_block_ids`~~ | — | **REMOVED**（产品 tip `e826b20fa`；始终附带） | report detail 总含 `block_ids` |
 | F-38/F-39 | ~~`include_slot_mapping`~~ | — | **REMOVED** | report 不再保存 `slot_mapping`；分析用 `block_ids` 即可；配置出现该键 → unknown reject |
 | F-40 | `max_per_req` | `1` | 同 req 反复命中 | 该 req 只写 1 条 report，之后 `_stop_detect_for_req`（V15） |
 
@@ -201,27 +199,21 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 
 ### 1.6 detector 子块（阈值/窗口级，详见 §2）
 
-> `output_substring` / `token_repeat` / `logits_finite` / `spec_acceptance` 各自字段
-> 在 §2 表内逐条列，此处不重复。
+> `token_repeat` / `logits_finite` / `spec_acceptance` 各自字段
+> 在 §2 表内逐条列，此处不重复。`output_substring` **REMOVED**（产品 tip `e826b20fa`）。
 
 ---
 
-## 2. 检测器行为（4 个 detector，逐字段 + 边界）
+## 2. 检测器行为（3 个 detector，逐字段 + 边界）
 
 > 统一前提：detector 只在 **last-PP TP0** 做检测（`anomaly_check_rank_skip_reason`）。
 > 非该 rank 静默跳过，日志 `skip_reason` 可观测。
 
-### 2.1 output_substring（风险字串）
+### 2.1 ~~output_substring~~（REMOVED）
 
 | ID | 配置/场景 | 预期 |
 |----|-----------|------|
-| D-01 | pattern 为 str，命中输出 | 告警一次（该 req 不再重复告警，`_alerted`） |
-| D-02 | pattern 为 `list[int]` token id，命中 | 同上 |
-| D-03 | `match_prefix=True` | 只匹配输出前缀；中段出现不告警 |
-| D-04 | `match_prefix=False`（默认） | 任意位置命中即告警 |
-| D-05 | 解码漂移（token 前导空格） | text 回退路径仍能命中，不因再 tokenize 漂移漏报 |
-| D-06 | 不命中 | 不告警，无 report |
-| D-07 | `add_special_tokens=True` | pattern 编码时追加特殊 token，命中含特殊 token 序列 |
+| D-01–D-07 | ~~output_substring~~ | **REMOVED**（产品 tip `e826b20fa`）；旧 JSON section soft-pop |
 
 ### 2.2 token_repeat（重复 token）
 

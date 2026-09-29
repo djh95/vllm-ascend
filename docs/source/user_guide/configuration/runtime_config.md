@@ -2,21 +2,21 @@
 
 JSON schema for Runtime Guard. Default path: `<cwd>/runtime/config/runtime_config.json`.
 
-Annotated example: `vllm_ascend/runtime_config/templates/runtime_config.example.jsonc`.
+Annotated example: `vllm_ascend/runtime_config/templates/runtime_config.example.jsonc (product tip: observability/…)`.
 
-Startup keys (`runtime_config_path`, `runtime_config_reload_interval`, overlay dict) are documented in [Additional Configuration](./additional_config.md#runtime_guard).
+Startup keys (`runtime_config_path`, `runtime_config_hot_reload`, overlay dict) are documented in [Additional Configuration](./additional_config.md#runtime_guard).
 
 ## Top-level keys
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `sync_mode` | str | `"broadcast"` | `"broadcast"` (PP==1: end-of-wave `all_reduce([config_due, dump_due])` + per-lane broadcast) or `"file"` (each rank polls). **PP>1 always forces `file`**. |
-| `reload_interval_seconds` | number | `0` | Display only; effective interval is `runtime_config_reload_interval` at process start |
 | `actions` | object | see below | Default incident actions |
 | `dump` | object | see below | Auto dump quota and manual dump controls |
 | `ascend_log` | object | see below | Ascend logger level overrides |
 | `report` | object | see below | Report content and truncation |
 | `detector` | object | see below | Detector sections + shared flags |
+
+Hot-reload is **startup-only** (`additional_config.runtime_config_hot_reload`); it is not a JSON field. Sync transport is fixed: **last-PP × all TP** use the merged due bus; other processes poll this JSON file.
 
 ## actions
 
@@ -24,7 +24,7 @@ Startup keys (`runtime_config_path`, `runtime_config_reload_interval`, overlay d
 |-----|------|---------|-------------|
 | `defaults.on_trigger` | list[str] | `["report"]` | Actions when a detector section omits `on_trigger` |
 
-Valid action names: `report`, `dump_kv`.
+Valid action names: `report`, `dump_kv`. ActionQueue capacity is a fixed internal constant (not exposed in JSON).
 
 ## dump
 
@@ -34,20 +34,21 @@ Valid action names: `report`, `dump_kv`.
 | `auto_cooldown_seconds` | float | `300` | Minimum seconds between auto dumps after a **successful** quota consume (refund clears this cooldown) |
 | `manual_dump` | bool \| int | `false` | Manual dump: `false`, positive int N (armed waves; **prefer `1` — one shot is enough**), or `true` (continuous every wave until hot-reload false; **not recommended** — little debug value, floods ActionQueue/disk). Each armed wave decrements in memory whether dump queued or failed (`dump_skipped.json`); JSON rewritten only when count reaches 0. Multi-DP sharing one file: each DP may dump up to N times while the file still shows N. |
 | `dump_dir` | str \| null | derived | KV dump root (default `<report_dir>/kv_cache`). Layout: `<dump_root>/<incident_type>/<req_id>/dp*_tp*_pp*_cp*/*.pt`. Coverage is last PP × all TP (not other PP). |
-| `free_headroom_bytes` | int | `5368709120` (5 GiB) | Skip `dump_kv` when `statvfs` free space is below **estimated payload + this headroom**. Not a fixed free-space floor. |
 
-Manual dump / manual trigger skip auto quota and cooldown. Requires hot-reload interval &gt; 0.
+Free-space headroom for `dump_kv` (`estimated payload + headroom`) is a fixed internal constant (5 GiB), not a JSON field.
+
+Manual dump / manual trigger skip auto quota and cooldown. Requires `runtime_config_hot_reload=true`.
 
 ## report
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `save_sensitive_info` | bool | `false` | Persist prompt/output token ids in reports |
-| `decode_token_ids` | bool | `true` | Decode ids to text when sensitive info saved |
+| `save_sensitive_info` | bool | `false` | Persist prompt/output token ids **and** decode them to text |
 | `max_prompt_token_ids` | int | `1000` | Truncate persisted prompt ids (`0` = unlimited) |
 | `max_output_token_ids` | int | `1000` | Truncate persisted output ids |
-| `include_block_ids` | bool | `true` | Include GPU block ids in report detail |
 | `max_per_req` | int | `1` | Max report files per `(incident_type, req_id)`; at cap, stop detecting that request. Wave backoff (64×2ⁿ) between writes when cap &gt; 1 |
+
+GPU `block_ids` are always included in report detail. Decoding token ids to text follows `save_sensitive_info` (no separate toggle).
 
 `[SamplingMeta]` is emitted at DEBUG on the after-sample path (TP0 + last PP). Enable with `ascend_log` / logger level for `vllm_ascend.observability.runtime_guard` — there is no JSON toggle.
 
@@ -82,13 +83,7 @@ Each nested detector section supports:
 | `high_threshold` | float | `0.96` | High acceptance rate threshold |
 | `len_high_threshold` | float | `2.8` | Length ratio at high rate |
 
-### output_substring
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `patterns` | list | `[]` | Token-id subsequences or string patterns to match |
-| `add_special_tokens` | bool | `false` | Include special tokens when encoding string patterns |
-| `match_prefix` | bool | `false` | Match only at output prefix vs anywhere |
+Per-req INFO short-log throttle is a fixed internal interval (2s), not a JSON field.
 
 ### token_repeat
 
@@ -105,12 +100,16 @@ Each nested detector section supports:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Alert on NaN/Inf logits before sampling |
+| `item_sync` | bool | `false` | `false`: async `.item()` — non-blocking D2H of the all-finite gate at pre-sample; wait in after-sample / `get_output`. **Logits may be mutated afterward** (e.g. grammar bitmask writes `-inf`); the gate still uses precomputed `row_finite`, but hit-time `finite_kind` may reflect post-mutation values. `true`: blocking `.item()` (+ hit resolve) at pre-sample so gate and kind match **pre-grammar** logits. |
 
-Each step runs a device ``isfinite`` reduction and one ``.item()`` gate on the
-pre-sample hook. On a hit only, bad rows / ``logits_indices`` / ``finite_kind``
-are resolved while tensors are live and host ``Incident``s are enqueued.
-``check_deferred`` on after-sample / ``get_output`` drains that queue (for dump
-timing). Retired: ``check_every_tokens`` (multi-step window) — ignored if present.
+Deferred alert-batch queue cap is a fixed internal constant, not a JSON field.
+
+Each step runs a device ``isfinite`` reduction and one all-finite gate. Default
+path launches a non-blocking host copy of that gate and waits in
+``check_deferred``. On a hit only, bad rows / ``logits_indices`` / ``finite_kind``
+are resolved (indices are snapshotted at pre-sample when needed). Set
+``item_sync: true`` when you need kind/attribution against pristine pre-sample
+logits. Retired: ``check_every_tokens`` (multi-step window) — ignored if present.
 
 ### manual_trigger
 
@@ -125,11 +124,11 @@ Each armed wave with scheduled tokens decrements `manual_dump` **in memory** aft
   "on_trigger": ["report", "dump_kv"]
 }
 ```
+
 ## Example (detection + dump on repeat)
 
 ```json
 {
-  "sync_mode": "broadcast",
   "dump": {
     "auto_max_times": 5,
     "auto_cooldown_seconds": 300
@@ -153,5 +152,4 @@ Each armed wave with scheduled tokens decrements `manual_dump` **in memory** aft
 ## Related docs
 
 - [Runtime Guard feature guide](../feature_guide/runtime_guard.md)
-- [runtime_guard_design.md](../../../zh/design/runtime_guard_design.md)
-- [runtime_guard_ops.md](../../../zh/design/runtime_guard_ops.md)
+- Design / ops (analysis branch): `docs/source/developer_guide/Design_Documents/runtime_guard_{design,ops}.md`

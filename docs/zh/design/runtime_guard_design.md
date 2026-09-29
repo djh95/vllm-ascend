@@ -23,7 +23,7 @@
 
 ```text
 additional_config
-  ├─ runtime_config_path / runtime_config_reload_interval
+  ├─ runtime_config_path / runtime_config_hot_reload
   └─ AscendConfig.runtime_config (RuntimeConfig)
          │
 Worker: RuntimeGuardProcessor.bind(runner)
@@ -73,7 +73,7 @@ Worker: RuntimeGuardProcessor.bind(runner)
 成功排队后 last-PP TP0 在 `{dump_root}/<type>/<req_id>/wave_<N>/request_info.json` 写请求元信息（字段策略与 report 一致：counts 必有，token ids 受 `report.save_sensitive_info` 控制）。  
 `.pt` 保持 `[n_sel_blocks, block_size, …]`。
 
-写盘前按 **leader 单卡估计 × `tp_size` + `dump.free_headroom_bytes`（默认 5GiB）** 查目标目录空闲空间（last-PP 全 TP 都会写盘），不足则跳过排队（不扣 auto quota）。`try_consume` 成功后若 queue 失败或 drain 整 arm 未 D2H 会 **refund**（还次数并清除 cooldown）。  
+写盘前按 **leader 单卡估计 × `tp_size` + 固定内部 headroom（5GiB）** 查目标目录空闲空间（last-PP 全 TP 都会写盘），不足则跳过排队（不扣 auto quota）。`try_consume` 成功后若 queue 失败或 drain 整 arm 未 D2H 会 **refund**（还次数并清除 cooldown）。  
 after-sample CPU 检测在 ActionQueue 上稍后才告警。任意路径上若请求已 `finished` 或已 reap，**一律跳过 dump**（KV 可能已释放/复用）。`logits_finite` 在 before-sample 已 `.item()` 并（hit 时）解析入队；`check_deferred` 仍在 `get_output` / after-sample drain。
 
 ### dump_kv 的 rank 覆盖（last PP × 全部 TP）
@@ -139,7 +139,7 @@ sync 路径上 after-sample 已 arm 的 job 可同波 D2H；async `get_output` �
 
 ### 2.3 热更新
 
-- 生效开关：`additional_config.runtime_config_reload_interval > 0`（进程启动时设定；JSON 内 `reload_interval_seconds` 仅作展示）。
+- 生效开关：`additional_config.runtime_config_hot_reload=true`（进程启动时设定；固定 3s 轮询；不是 JSON 字段）。
 - `interval = 0`：启动后配置静态，仅保留启动 overlay 与一次性 `manual_trigger`。
 - 热更失败（ malformed JSON）：保留旧配置，服务继续。
 
@@ -177,12 +177,11 @@ Report 只在 last PP + TP0 写。`dump_kv` 的 rank 覆盖见上一节（last P
 | incident_type | 钩子阶段 | 说明 |
 |---------------|----------|------|
 | `spec_acceptance` | after spec | 投机解码接受率异常 |
-| `output_substring` | after sample | 输出 token 子序列匹配 |
 | `token_repeat` | after sample | 滑动窗口复读分数 |
 | `logits_finite` | before sample | logits NaN/Inf：每步 `isfinite` + `.item()`；仅 hit 时当场解析 bad row / indices / kind，入队 host `Incident`；`get_output` / after-sample 再 drain（便于 dump）。 |
 
 共享行为：停检由 ``report.max_per_req`` 写满触发（默认 ``actions.defaults.on_trigger`` 含 ``report``）。  
-`output_substring` / `token_repeat` 在 `ActionQueue` 上跑；`logits_finite` 在 before-sample 做 `.item()` 门闩，hit 当场解析后入队，after-sample drain。
+`token_repeat` 在 `ActionQueue` 上跑；`logits_finite` 在 before-sample 做 `.item()` 门闩，hit 当场解析后入队，after-sample drain。
 
 > 在线 KV / position meta 检测器见后续 PR。
 
@@ -219,7 +218,7 @@ Quota：`dump.auto_max_times > 0` 启用自动 dump 配额；`dump.auto_cooldown
 
 常见字段：`incident_type`、`req_id`、`rank`、`detail`、`dump_attempted`、`dump_arm_wave`、`dump_dir`、`dump_count` / `dump_max_times`。  
 同 `(incident_type, req_id)`：`report.max_per_req`（**默认 1**）限制份数；**写满后停止该 req 的全部检测**。多份之间按 **wave** 退避（首间隔 64，之后翻倍）。默认 `on_trigger` 含 `report`；若 detector 覆盖掉 `report`，则不会因写满而停检。  
-`report.save_sensitive_info=true` 时持久化 prompt/output token ids（可截断、`decode_token_ids` 控制是否解码文本）。
+`report.save_sensitive_info=true` 时持久化 prompt/output token ids **并**解码为文本（可截断）。GPU `block_ids` 始终写入 report detail。
 
 ## 6. Model Runner 接入
 

@@ -877,6 +877,19 @@ C1 无需优化: 36821945f 之后 t1 基础设施开销 ~0 (1.00523, 在噪声�
 | `[SamplingMeta]` | after-sample logger DEBUG（无 JSON 开关） | live 用 `ascend_log.debug` / modules 开 `runtime_guard` DEBUG 验收 |
 
 设计/ops 与 user_guide 旁支副本已对齐；C1/C2 仍以当前 tip 为 PRODUCT 重测目标。
+
+## 2026-09-29 产品 tip `e826b20fa`（prune JSON + drop output_substring）
+
+相对 `4d9f2c67c` 之后最新产品 tip **`e826b20fa`**：
+
+| 变点 | 产品行为 | analysis 影响 |
+|------|----------|---------------|
+| `runtime_config_hot_reload` bool | startup-only；固定内部 3s；JSON 无 interval | F-06 已对齐；旧 `runtime_config_reload_interval` retired |
+| 删 JSON：`queue_max_size` / `free_headroom_bytes` / `short_log_interval_seconds` / `deferred_queue_max` | 固定内部常量；旧键 soft-pop | **F-16 REMOVED**；headroom 行为仍在 |
+| `decode_token_ids` / `include_block_ids` | 跟随 `save_sensitive` / 始终附带 | **F-32/33、F-36/37 REMOVED** |
+| 删除 `output_substring` | DETECTOR_SECTIONS 仅 spec / token_repeat / logits_finite | **D-01–07 / g03_forbidden REMOVED**；inject 场景改走 token_repeat |
+
+设计/ops / user_guide / FUNCTIONAL_TEST_LIST 已 tip-align。analysis 代码 fork 仍可能含旧 detector；跑产品行为请挂 **config worktree**。
 ---
 
 ## 2026-09-28 (III) 方案 D async due-bus：v1 死锁 postmortem + v2 双阶段实现 + 验证

@@ -32,7 +32,7 @@ Public entry: `from vllm_ascend.observability.runtime_guard import RuntimeGuardP
 
 ```text
 additional_config
-  ├─ runtime_config_path / runtime_config_reload_interval
+  ├─ runtime_config_path / runtime_config_hot_reload
   └─ AscendConfig.runtime_config (RuntimeConfig)
          │
 Worker: RuntimeGuardProcessor.bind(runner)
@@ -86,7 +86,7 @@ By default `dump_kv` dumps only the **paged blocks** the request occupies (`bloc
 After successful queue, last-PP TP0 writes request metadata to `{dump_root}/<type>/<req_id>/wave_<N>/request_info.json` (field policy matches report: counts always; token ids gated by `report.save_sensitive_info`).  
 `.pt` tensors stay `[n_sel_blocks, block_size, …]`.
 
-Before write, free space on the target directory is checked using **leader single-GPU estimate × `tp_size` + `dump.free_headroom_bytes` (default 5GiB)** (all last-PP TP ranks write). Insufficient space skips queue (does not consume auto quota). After successful `try_consume`, if queue fails or the whole arm drains without D2H, **refund** (restore count and clear cooldown).  
+Before write, free space on the target directory is checked using **leader single-GPU estimate × `tp_size` + fixed internal headroom (5GiB)** (all last-PP TP ranks write). Insufficient space skips queue (does not consume auto quota). After successful `try_consume`, if queue fails or the whole arm drains without D2H, **refund** (restore count and clear cooldown).  
 After-sample CPU detection alerts slightly later on the ActionQueue. On any path, if the request is already `finished` or reaped, **always skip dump** (KV may be freed/reused). `logits_finite` already `.item()`’d at before-sample when `item_sync=true`; with default async gate the wait completes at `get_output` / after-sample drain (`check_deferred`). On hit, parse and enqueue; `check_deferred` still runs at after-sample for dump timing.
 
 ### dump_kv rank coverage (last PP × all TP)
@@ -133,7 +133,7 @@ wave N+1   wave head: submit dump-list sync (TP0 due-bcast BusWorker / TP claim)
            → wave tail end_of_wave_sync: drain bus → each last-PP TP local D2H
 ```
 
-Config hot-reload on last-PP TP is **submitted** at wave head and **applied at end-of-wave** after the due broadcast completes (so detectors on this wave may still see the previous JSON; the next wave sees the update — acceptable with `reload_interval_seconds` throttling). Non-last PP polls the JSON file. Manual dump skips the job bus and D2H's locally at that wave's tail.
+Config hot-reload on last-PP TP is **submitted** at wave head and **applied at end-of-wave** after the due broadcast completes (so detectors on this wave may still see the previous JSON; the next wave sees the update — acceptable with the fixed 3s poll). Non-last PP polls the JSON file. Manual dump skips the job bus and D2H's locally at that wave's tail.
 
 On disk:
 
@@ -169,7 +169,7 @@ No JSON `sync_mode` knob. Transport is decided by rank role:
 
 ### 2.3 Hot reload
 
-- Enable: `additional_config.runtime_config_reload_interval > 0` (set at process start; `reload_interval_seconds` in JSON is display-only).
+- Enable: `additional_config.runtime_config_hot_reload=true` (set at process start; fixed 3s poll; not a JSON field).
 - `interval = 0`: config is static after startup; only startup overlay and one-shot `manual_trigger` remain.
 - Hot reload failure (malformed JSON): keep old config; service continues.
 
@@ -207,12 +207,11 @@ Reports are written only on last PP + TP0. `dump_kv` rank coverage is in the pre
 | incident_type | Hook phase | Description |
 |---------------|----------|------|
 | `spec_acceptance` | after spec | Speculative decoding acceptance rate anomaly |
-| `output_substring` | after sample | Output token subsequence match |
 | `token_repeat` | after sample | Sliding-window repetition score |
 | `logits_finite` | before sample | Logits NaN/Inf: per-step `isfinite` + all-finite gate. Default **async** `.item()` (non-blocking D2H at pre-sample, wait at `get_output` / after-sample). **Logits may be mutated** afterward (grammar → `-inf`); gate uses precomputed `row_finite`, but `finite_kind` may see post-mutation values. Set `item_sync: true` for blocking pre-sample `.item()` + hit resolve on pristine logits. On hit, parse bad row / indices / kind and enqueue host `Incident`; drain again at after-sample. |
 
 Shared behavior: stop detection when ``report.max_per_req`` reports are full (default ``actions.defaults.on_trigger`` includes ``report``).  
-`output_substring` / `token_repeat` run on the `ActionQueue`; `logits_finite` defaults to async gate `.item()` (wait after-sample; see `item_sync`), parses and enqueues on hit, drains after-sample.
+`token_repeat` runs on the `ActionQueue`; `logits_finite` defaults to async gate `.item()` (wait after-sample; see `item_sync`), parses and enqueues on hit, drains after-sample.
 
 > Online KV / position meta detectors are planned in a follow-up PR.
 
@@ -249,7 +248,7 @@ On disk: `{report_dir}/<incident_type>/report_<timestamp_ms>[_<req_id>]_pid<pid>
 
 Common fields: `incident_type`, `req_id`, `rank`, `detail`, `dump_attempted`, `dump_arm_wave`, `dump_dir`, `dump_count` / `dump_max_times`.  
 Same `(incident_type, req_id)`: `report.max_per_req` (**default 1**) caps report count; **after full, stop all detection for that req**. Multiple reports use **wave** backoff (first interval 64, then double). Default `on_trigger` includes `report`; if a detector overrides away `report`, detection does not stop on report cap.  
-With `report.save_sensitive_info=true`, persist prompt/output token ids (truncation; `decode_token_ids` controls text decode).
+With `report.save_sensitive_info=true`, persist prompt/output token ids **and** decode them to text (truncation via max_*). GPU `block_ids` are always included in report detail.
 
 ## 6. Model Runner Integration
 

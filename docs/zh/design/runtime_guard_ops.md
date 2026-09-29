@@ -11,7 +11,7 @@
 ```bash
 vllm serve <model> --additional-config '{
   "runtime_config_path": "/data/runtime/config/runtime_config.json",
-  "runtime_config_reload_interval": 5
+  "runtime_config_hot_reload": true
 }'
 ```
 
@@ -31,7 +31,7 @@ vllm serve <model> --additional-config '{
 
 ```bash
 vllm serve <model> --additional-config '{
-  "runtime_config_reload_interval": 5,
+  "runtime_config_hot_reload": true,
   "runtime_config": {
     "detector": {
       "token_repeat": { "enabled": true, "on_trigger": ["report", "dump_kv"] },
@@ -67,7 +67,7 @@ Detector 默认全关；逐项 `enabled: true` 开启。
 
 **建议：用 `1`（或偶发 `2`）拍一次就够。** 连续 / `true` 收益很小——同批请求重复落盘、挤满 ActionQueue（`.pt` heavy）、占盘，对排查帮助有限；需要再抓时再热更一次即可。
 
-**要求 `runtime_config_reload_interval > 0`**。manual 事件 **跳过 auto quota/cooldown**。
+**要求 `runtime_config_hot_reload=true`**。manual 事件 **跳过 auto quota/cooldown**。
 
 manual 触发 incident_type 为 `manual_trigger`。**始终**注入 `dump_kv`，且 **强制** `scope=all_requests`（配置里的 `dump_kv.scope` 无效）。`on_trigger` 仍可配 `report`；省略时默认含 `report`，再自动补上 `dump_kv`。
 
@@ -93,12 +93,12 @@ manual 触发 incident_type 为 `manual_trigger`。**始终**注入 `dump_kv`，
 
 | 字段 | 作用 |
 |------|------|
-| `report.save_sensitive_info` | 是否写 prompt/output token ids |
+| `report.save_sensitive_info` | 是否写 prompt/output token ids **并**解码文本 |
 | `report.max_prompt_token_ids` | 截断上限（0=不限） |
 | `report.max_output_token_ids` | 截断上限 |
 | `report.max_per_req` | 同 (type, req) 最多几份；写满停检（默认 1） |
-| `report.include_block_ids` | detail 中带 GPU block_ids |
-| `report.decode_token_ids` | 敏感信息模式下是否解码文本 |
+
+GPU `block_ids` 始终写入 report detail。解码跟随 `save_sensitive_info`（无独立开关）。
 
 查命中时若 report 过大，先关 `save_sensitive_info` 或降低 max_*。
 
@@ -170,7 +170,7 @@ manual 触发 incident_type 为 `manual_trigger`。**始终**注入 `dump_kv`，
 | dump 文件空/缺层 | `block_ids`；`dump_skipped.json`；日志 `skip` / `skipped reason=` / `action queue full` |
 | 重复 arm 无第二份 dump | 预期：同 wave 同 req 去重；日志 `skip enqueue: already pending` |
 | report 缺一份 | `max_per_req` / wave 退避；或日志 `skip report enqueue (dedupe or stopping)` |
-| 热更不生效 | `runtime_config_reload_interval` 是否 >0；JSON 路径各 rank 是否可读 |
+| 热更不生效 | `runtime_config_hot_reload` 是否为 true；JSON 路径各 rank 是否可读 |
 | 重复刷屏 report | `report.max_per_req`（默认 1，写满停检）；确认 `on_trigger` 含 `report` |
 | manual 不触发 | reload interval；是否 idle dummy wave；`manual_dump` 计数是否用尽 |
 | 性能下降 | 先关全部 detector 仅留 reload，再逐项开启（见 feature guide） |
@@ -190,7 +190,7 @@ manual 触发 incident_type 为 `manual_trigger`。**始终**注入 `dump_kv`，
 
 - 每次 auto `dump_kv` 消耗 quota（`auto_max_times` 为进程内累计上限；用尽后需 **refund** 或 **重启** 才再放行。`auto_cooldown_seconds` 只限制两次**成功 consume** 的间隔，不解 cap）。
 - `try_consume` 成功后若未能入队（例如 queue 不可用）或 drain 整 arm 未 D2H 会 **refund**（还次数并 **清除 cooldown**），避免空扣后卡冷却。
-- 空闲空间门槛：leader 单卡 payload 估计 × `tp_size` + `free_headroom_bytes`（全 TP 写盘）。
+- 空闲空间门槛：leader 单卡 payload 估计 × `tp_size` + 固定内部 headroom（5GiB）（全 TP 写盘）。
 - manual 路径不消耗 auto quota。
 - 长期开 `dump_kv` 注意 `{report_dir}/kv_cache/` 磁盘；定期归档或调低 `auto_max_times`。
 
