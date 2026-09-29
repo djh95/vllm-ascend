@@ -64,8 +64,7 @@ RuntimeGuardProcessor.bind(runner)
   → ActionExecutor         # report | dump_kv | set_log_level (async queue)
 ```
 
-Design details: [runtime_guard_design.md](../../developer_guide/Design_Documents/runtime_guard_design.md)  
-Operations runbook: [runtime_guard_ops.md](../../developer_guide/Design_Documents/runtime_guard_ops.md)
+Design / ops runbooks live on the analysis branch (`docs/source/developer_guide/Design_Documents/runtime_guard_{design,ops}.md`), not in this product tree.
 
 ## On-disk layout
 
@@ -127,5 +126,4 @@ Throughput A/B (with vs without Runtime Guard) should be measured on Ascend hard
 ## Related docs
 
 - [runtime_config.md](../configuration/runtime_config.md) — JSON field reference  
-- [runtime_guard_design.md](../../developer_guide/Design_Documents/runtime_guard_design.md) — full design  
-- [runtime_guard_ops.md](../../developer_guide/Design_Documents/runtime_guard_ops.md) — ops / troubleshooting
+- Design / ops (analysis branch): `docs/source/developer_guide/Design_Documents/runtime_guard_{design,ops}.md`

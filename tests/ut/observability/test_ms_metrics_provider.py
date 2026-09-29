@@ -13,7 +13,7 @@ from unittest.mock import Mock
 import yaml
 
 _REPOSITORY_ROOT = Path(__file__).parents[3]
-_PACKAGE_ROOT = _REPOSITORY_ROOT / "vllm_ascend" / "observability" / "metrics"
+_PACKAGE_ROOT = _REPOSITORY_ROOT / "vllm_ascend" / "observability"
 
 
 def _load_all_provider_configs(config_paths):
@@ -61,7 +61,7 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
     assert provider.framework_package == "vllm_ascend"
     assert provider.ownership_mode == "overlay"
     assert provider.owned_symbol_prefixes == ("vllm_ascend.",)
-    assert provider.handler_module_prefixes == ("vllm_ascend.observability.metrics.",)
+    assert provider.handler_module_prefixes == ("vllm_ascend.observability.",)
     assert provider.config_paths == tuple(sorted(provider.config_paths))
     assert [Path(path).name for path in provider.config_paths] == [
         "base_metrics.yaml",
@@ -76,7 +76,7 @@ def test_get_metric_provider_returns_packaged_yaml(monkeypatch):
         item.get("handler", "").startswith(
             (
                 "ms_service_metric.provider_handlers:",
-                "vllm_ascend.observability.metrics.handlers:",
+                "vllm_ascend.observability.handlers:",
             )
         )
         for item in config
@@ -98,7 +98,7 @@ def test_setup_registers_provider_entry_point_and_yaml_package_data():
     assert entry_points["ms_service_metric.providers"] == [
         "vllm-ascend = vllm_ascend.observability:get_metric_provider"
     ]
-    assert package_data["vllm_ascend.observability.metrics"] == ["config/*.yaml"]
+    assert package_data["vllm_ascend.observability"] == ["config/*.yaml"]
 
 
 def test_provider_entry_point_loads_without_metric_core(monkeypatch):
@@ -129,14 +129,13 @@ def test_ascend_handler_module_loads_from_yaml_path(monkeypatch):
     monkeypatch.setitem(sys.modules, "vllm_ascend", package)
     for module_name in (
         "vllm_ascend.observability",
-        "vllm_ascend.observability.metrics",
-        "vllm_ascend.observability.metrics.provider",
-        "vllm_ascend.observability.metrics.handlers",
+        "vllm_ascend.observability.provider",
+        "vllm_ascend.observability.handlers",
     ):
         monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     handler_module = __import__(
-        "vllm_ascend.observability.metrics.handlers",
+        "vllm_ascend.observability.handlers",
         fromlist=["eplb_do_update_hotness_handler"],
     )
 

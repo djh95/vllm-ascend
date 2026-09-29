@@ -165,5 +165,4 @@ Each armed wave with scheduled tokens decrements `manual_dump` **in memory** aft
 ## Related docs
 
 - [Runtime Guard feature guide](../feature_guide/runtime_guard.md)
-- [runtime_guard_design.md](../../developer_guide/Design_Documents/runtime_guard_design.md)
-- [runtime_guard_ops.md](../../developer_guide/Design_Documents/runtime_guard_ops.md)
+- Design / ops (analysis branch): `docs/source/developer_guide/Design_Documents/runtime_guard_{design,ops}.md`

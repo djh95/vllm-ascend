@@ -121,8 +121,7 @@ vllm serve Qwen/Qwen3-8B --additional-config '{
 }'
 ```
 
-Design: [runtime_guard_design.md](../../developer_guide/Design_Documents/runtime_guard_design.md).  
-Operations: [runtime_guard_ops.md](../../developer_guide/Design_Documents/runtime_guard_ops.md).
+Design / ops (analysis branch): `docs/source/developer_guide/Design_Documents/runtime_guard_{design,ops}.md`.
 
 **xlite_graph_config**
 

@@ -104,7 +104,7 @@ Store-side `sample_waves` FIFO removed — drain gating via `WaveTracker.pending
 ## P0 — logging (UCM bypass, 2026-09-12)
 
 Ascend containers may unconditionally replace `vllm.logger.init_logger` (see
-`docs/source/developer_guide/Design_Documents/runtime_guard_design.md` §2.5).
+analysis-branch `runtime_guard_design.md` §2.5).
 `init_logger_ascend` uses `logging.getLogger` + `_METHODS_TO_PATCH` so Ascend /
 runtime_guard loggers stay on the stdlib tree.
 
