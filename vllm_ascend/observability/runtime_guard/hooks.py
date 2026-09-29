@@ -64,7 +64,7 @@ def runtime_guard_step(execute_model_fn):
     """Wave-level runtime_guard sync for ``execute_model`` (shared by v1/v2).
 
     - before the step body: ``sync_for_step`` (config bus, wave arm, reap)
-    - ``finally``: ``end_of_wave_sync(allow_arm=False)`` on no-sample paths
+    - ``finally``: ``end_of_wave_sync(allow_manual_dump=False)`` on no-sample paths
       (early return / exception / dummy wave) so the lockstep collectives can
       never be skipped.
 
@@ -78,14 +78,14 @@ def runtime_guard_step(execute_model_fn):
         if guard is None:
             return execute_model_fn(self, scheduler_output, *args, **kwargs)
         dummy_run = kwargs.get("dummy_run", args[1] if len(args) > 1 else False)
-        allow_arm = int(getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0) > 0
-        guard.sync_for_step(scheduler_output=scheduler_output, allow_arm=allow_arm)
+        allow_manual_dump = int(getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0) > 0
+        guard.sync_for_step(scheduler_output=scheduler_output, allow_manual_dump=allow_manual_dump)
         try:
             return execute_model_fn(self, scheduler_output, *args, **kwargs)
         finally:
             # Collectives must stay lockstep — do not soft-fail this gate.
             if dummy_run or self.execute_model_state is None:
-                guard.end_of_wave_sync(allow_arm=False)
+                guard.end_of_wave_sync(allow_manual_dump=False)
 
     return wrapper
 
@@ -131,7 +131,7 @@ def runtime_guard_idle_step(dummy_batch_fn):
         runner = getattr(self, "model_runner", None)
         guard = getattr(runner, "runtime_guard", None)
         if guard is not None:
-            guard.sync_for_step(allow_arm=False)
+            guard.sync_for_step(allow_manual_dump=False)
         return dummy_batch_fn(self, *args, **kwargs)
 
     return wrapper

@@ -130,16 +130,16 @@ def test_sync_for_step_skips_refresh_when_reload_off_idle(tmp_path: Path):
         ),
     ):
         proc = _bind(cfg)
-        proc.sync_for_step(allow_arm=True, scheduler_output=None)
-        proc.wave_tracker.advance.assert_called_once_with(allow_arm=True)
+        proc.sync_for_step(allow_manual_dump=True, scheduler_output=None)
+        proc.wave_tracker.advance.assert_called_once_with(allow_manual_dump=True)
         refresh.assert_not_called()
         # dump defaults off → skip TP claim bus entirely (lockstep).
         claim.assert_not_called()
     RuntimeGuardProcessor.reset_for_tests()
 
 
-def test_idle_allow_arm_defers_end_of_wave_to_sample(tmp_path: Path):
-    """Static idle + allow_arm=True must not end_of_wave at sync; sample does once."""
+def test_idle_allow_manual_dump_defers_end_of_wave_to_sample(tmp_path: Path):
+    """Static idle + allow_manual_dump=True must not end_of_wave at sync; sample does once."""
     cfg = _cfg(tmp_path, reload=0.0)
     assert cfg.needs_sample_phase_hooks() is False
     with (
@@ -151,7 +151,7 @@ def test_idle_allow_arm_defers_end_of_wave_to_sample(tmp_path: Path):
         ),
     ):
         proc = _bind(cfg)
-        proc.sync_for_step(allow_arm=True, scheduler_output=None)
+        proc.sync_for_step(allow_manual_dump=True, scheduler_output=None)
         eow.assert_not_called()
 
         def sample_fn():
@@ -172,7 +172,7 @@ def test_idle_allow_arm_defers_end_of_wave_to_sample(tmp_path: Path):
             need_accepted_tokens=False,
             use_async=False,
         )
-        eow.assert_called_once_with(allow_arm=True)
+        eow.assert_called_once_with(allow_manual_dump=True)
     RuntimeGuardProcessor.reset_for_tests()
 
 
@@ -192,7 +192,7 @@ def test_sync_for_step_claims_dump_when_idle_but_dump_on(tmp_path: Path):
         ),
     ):
         proc = _bind(cfg)
-        proc.sync_for_step(allow_arm=True, scheduler_output=None)
+        proc.sync_for_step(allow_manual_dump=True, scheduler_output=None)
         refresh.assert_not_called()
         claim.assert_called_once()
     RuntimeGuardProcessor.reset_for_tests()
@@ -211,8 +211,8 @@ def test_sync_for_step_refreshes_when_reload_on_idle(tmp_path: Path):
         ),
     ):
         proc = _bind(cfg)
-        proc.sync_for_step(allow_arm=True, scheduler_output=None)
-        proc.wave_tracker.advance.assert_called_once_with(allow_arm=True)
+        proc.sync_for_step(allow_manual_dump=True, scheduler_output=None)
+        proc.wave_tracker.advance.assert_called_once_with(allow_manual_dump=True)
         refresh.assert_called_once()
     RuntimeGuardProcessor.reset_for_tests()
 
@@ -257,13 +257,13 @@ def test_sync_for_step_marks_finished_on_empty_batch(tmp_path: Path):
         ),
     ):
         proc = _bind(cfg)
-        proc.sync_for_step(allow_arm=True, scheduler_output=so_empty)
+        proc.sync_for_step(allow_manual_dump=True, scheduler_output=so_empty)
         mark_calls = [c for c in calls if c[0] == "mark"]
         assert mark_calls, "mark_finished must fire on the empty final batch"
         # bound method: _mark(self, finished_req_ids) → args[1] is the id set.
         assert mark_calls[0][1][1] == {"r_final"}
         calls.clear()
-        proc.sync_for_step(allow_arm=True, scheduler_output=so_busy)
+        proc.sync_for_step(allow_manual_dump=True, scheduler_output=so_busy)
         assert not [c for c in calls if c[0] == "mark"]
     RuntimeGuardProcessor.reset_for_tests()
 

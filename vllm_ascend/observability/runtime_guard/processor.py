@@ -234,7 +234,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         """All-rank runtime_config sync. Must not be skipped on early PP.
 
         Manual-dump arming is gated by ``sync_for_step`` /
-        ``end_of_wave_sync(allow_arm=…)``, not by this method.
+        ``end_of_wave_sync(allow_manual_dump=…)``, not by this method.
         """
         logger.debug("[runtime_guard sync] enter stage=refresh_config")
         prev_so = getattr(self, "_scheduler_output_for_step", None)
@@ -254,7 +254,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
     def sync_for_step(
         self,
         *,
-        allow_arm: bool = True,
+        allow_manual_dump: bool = True,
         scheduler_output: Any | None = None,
     ) -> None:
         """Lockstep runtime_guard sync for one engine wave (real step or idle dummy).
@@ -283,15 +283,15 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
             except Exception:
                 pp = "?"
             logger.debug(
-                "[runtime_guard sync] enter sync_for_step allow_arm=%s dp=%s tp=%s pp=%s",
-                allow_arm,
+                "[runtime_guard sync] enter sync_for_step allow_manual_dump=%s dp=%s tp=%s pp=%s",
+                allow_manual_dump,
                 dp,
                 tp,
                 pp,
             )
         self._scheduler_output_for_step = scheduler_output
         try:
-            self.wave_tracker.advance(allow_arm=allow_arm)
+            self.wave_tracker.advance(allow_manual_dump=allow_manual_dump)
             cfg = self.runtime_config
             idle = not cfg.manual_trigger() and not cfg.needs_sample_phase_hooks()
             if idle and not cfg.hot_reload_enabled:
@@ -303,7 +303,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
                     # Dump inactive: drop with per-arm refund (quota was
                     # consumed at arm time; no D2H will happen).
                     self._drop_pending_dump_jobs()
-                self._end_of_wave_sync_if_no_sample(allow_arm=allow_arm)
+                self._end_of_wave_sync_if_no_sample(allow_manual_dump=allow_manual_dump)
                 return
             self.refresh_config(scheduler_output=scheduler_output)
             if self.needs_sample_phase_hooks():
@@ -312,23 +312,23 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
                 if finished and int(getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0) == 0:
                     self.mark_finished(finished)
                 self._reap_finished_requests()
-            self._end_of_wave_sync_if_no_sample(allow_arm=allow_arm)
+            self._end_of_wave_sync_if_no_sample(allow_manual_dump=allow_manual_dump)
         finally:
             self._scheduler_output_for_step = None
             if debug_on:
                 logger.debug(
-                    "[runtime_guard sync] leave sync_for_step allow_arm=%s dp=%s tp=%s pp=%s",
-                    allow_arm,
+                    "[runtime_guard sync] leave sync_for_step allow_manual_dump=%s dp=%s tp=%s pp=%s",
+                    allow_manual_dump,
                     dp,
                     tp,
                     pp,
                 )
 
-    def _end_of_wave_sync_if_no_sample(self, *, allow_arm: bool) -> None:
+    def _end_of_wave_sync_if_no_sample(self, *, allow_manual_dump: bool) -> None:
         """Safety-net end-of-wave when this wave will not ``run_sample_phase``."""
-        if allow_arm:
+        if allow_manual_dump:
             return
-        self.end_of_wave_sync(allow_arm=False)
+        self.end_of_wave_sync(allow_manual_dump=False)
 
     def _cache_prompt_token_ids_from_scheduler_output(
         self,
@@ -509,7 +509,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
             if routed_experts_fn is not None:
                 routed_experts_result = routed_experts_fn(result)
             # End-of-wave gate uses collectives — do not soft-fail (desync/hang).
-            self.end_of_wave_sync(allow_arm=True)
+            self.end_of_wave_sync(allow_manual_dump=True)
             return result, routed_experts_result
 
         # Runner's sample work (sample + draft + bookkeeping + output + profiling + eplb)
@@ -563,7 +563,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         if not use_async and routed_experts_fn is not None:
             routed_experts_result = routed_experts_fn(result)
         # Hook 7: end-of-wave config+dump gate (collectives — no soft-fail).
-        self.end_of_wave_sync(allow_arm=True)
+        self.end_of_wave_sync(allow_manual_dump=True)
         return result, routed_experts_result
 
     def check_before_sample(

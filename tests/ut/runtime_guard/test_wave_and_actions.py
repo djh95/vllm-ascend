@@ -34,7 +34,7 @@ class _Cfg:
 
 def test_wave_tracker_sample_stamp():
     wt = WaveTracker()
-    wt.advance(allow_arm=True)
+    wt.advance(allow_manual_dump=True)
     wt.record_sample_waves(["a", "b"])
     assert wt.take_sample_wave("a") == 1
     assert wt.take_sample_wave("a") is None

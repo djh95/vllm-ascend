@@ -216,7 +216,7 @@ def test_v5_bootstrap_invalid_content_falls_back_to_defaults(tmp_path: Path):
 
 def test_v8a_wave_tracker_discard():
     wt = WaveTracker()
-    wt.advance(allow_arm=True)
+    wt.advance(allow_manual_dump=True)
     wt.record_sample_waves(["r1"])
     assert wt.take_sample_wave("r1") == 1
     wt.record_sample_waves(["r1"])
@@ -228,9 +228,9 @@ def test_v8a_wave_tracker_discard():
 def test_v8a3_wave_tracker_fifo_under_async_lag():
     """W1-3: later record must not erase an untaken earlier stamp."""
     wt = WaveTracker()
-    wt.advance(allow_arm=True)
+    wt.advance(allow_manual_dump=True)
     wt.record_sample_waves(["r1"])  # wave 1
-    wt.advance(allow_arm=True)
+    wt.advance(allow_manual_dump=True)
     wt.record_sample_waves(["r1"])  # wave 2 (must queue, not overwrite)
     assert wt.take_sample_wave("r1") == 1
     assert wt.take_sample_wave("r1") == 2
@@ -240,7 +240,7 @@ def test_v8a3_wave_tracker_fifo_under_async_lag():
 
 def test_v8a2_wave_tracker_lock_record_take_concurrent():
     wt = WaveTracker()
-    wt.advance(allow_arm=True)
+    wt.advance(allow_manual_dump=True)
     errs: list[BaseException] = []
 
     def _record() -> None:
@@ -269,7 +269,7 @@ def test_v8a2_wave_tracker_lock_record_take_concurrent():
 def test_v8b_reap_discards_wave_stamps():
     p = _bare_processor()
     wt = WaveTracker()
-    wt.advance(allow_arm=True)
+    wt.advance(allow_manual_dump=True)
     wt.record_sample_waves(["r1", "r2"])
     p.wave_tracker = wt
     p.runtime_config = MagicMock()
@@ -289,7 +289,7 @@ def test_v8c_async_skips_sample_wave_stamp_on_non_tp0():
 
     p = _bare_processor()
     wt = WaveTracker()
-    wt.advance(allow_arm=True)
+    wt.advance(allow_manual_dump=True)
     p.wave_tracker = wt
     p.runner = SimpleNamespace(tp_rank=1)
     p.needs_sample_phase_hooks = lambda: True  # type: ignore[method-assign]
@@ -2218,7 +2218,7 @@ def test_v28e_static_idle_drop_refunds_quota(monkeypatch):
     p._deferred_kv_dump_jobs = []
     p._end_of_wave_sync_if_no_sample = MagicMock()
 
-    RuntimeGuardProcessor.sync_for_step(p, allow_arm=True)
+    RuntimeGuardProcessor.sync_for_step(p, allow_manual_dump=True)
     p.quota.refund.assert_called_once_with(consume_quota=True)
     assert p._kv_dump_jobs == []
 

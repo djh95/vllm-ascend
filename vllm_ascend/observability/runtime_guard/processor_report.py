@@ -54,7 +54,7 @@ class RuntimeGuardReportMixin:
     # Defined on RuntimeGuardDumpMixin / RuntimeGuardProcessor.
     _run_kv_dumps: Any
 
-    def _maybe_fire_manual_local(self, *, allow_arm: bool) -> None:
+    def _maybe_fire_manual_local(self, *, allow_manual_dump: bool) -> None:
         """Fire ``manual_dump`` locally on each last-PP TP (no job bcast).
 
         Config update (or already-armed in-memory count) → every dump rank
@@ -62,7 +62,7 @@ class RuntimeGuardReportMixin:
         dumps still use the TP dump lane. All dump ranks decrement in-memory
         ``manual_dump`` together (JSON writer persists at 0).
         """
-        if not allow_arm:
+        if not allow_manual_dump:
             return
         if not should_dump_kv_on_rank():
             return

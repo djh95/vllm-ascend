@@ -38,8 +38,8 @@ class WaveTracker:
         self._wave = 0
         self._sample_waves: dict[str, deque[int]] = {}
 
-    def advance(self, *, allow_arm: bool = True) -> None:
-        if not allow_arm:
+    def advance(self, *, allow_manual_dump: bool = True) -> None:
+        if not allow_manual_dump:
             return
         with self._lock:
             self._wave += 1
