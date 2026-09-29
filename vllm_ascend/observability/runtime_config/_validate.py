@@ -22,14 +22,12 @@ from typing import Any
 from vllm_ascend.observability.runtime_config._defaults import (
     _RETIRED_ACTIONS_KEYS,
     _RETIRED_DETECTOR_KEYS,
-    _RETIRED_DETECTOR_SECTIONS,
     _RETIRED_DUMP_KEYS,
     _RETIRED_REPORT_KEYS,
     _RETIRED_TOP_LEVEL_KEYS,
     ACTIONS_KEYS,
     ASCEND_LOG_KEYS,
     DETECTOR_KEYS,
-    DETECTOR_SECTIONS,
     DUMP_KEYS,
     MANUAL_TRIGGER_SECTION_KEYS,
     REPORT_KEYS,
@@ -40,7 +38,13 @@ from vllm_ascend.observability.runtime_config._merge import (
     dump_auto_on,
     manual_dump_active,
 )
-from vllm_ascend.observability.runtime_config.detector_catalog import validate_registered_detectors
+from vllm_ascend.observability.runtime_config.detector_catalog import (
+    DETECTOR_SECTIONS,
+    validate_registered_detectors,
+)
+from vllm_ascend.observability.runtime_config.detector_catalog import (
+    RETIRED_DETECTOR_SECTIONS as _RETIRED_DETECTOR_SECTIONS,
+)
 from vllm_ascend.observability.runtime_config.schema import coerce_list_int
 
 

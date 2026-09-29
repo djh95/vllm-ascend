@@ -257,9 +257,9 @@ def test_retired_p0_p1_keys_soft_popped(tmp_path: Path):
     from copy import deepcopy
 
     from vllm_ascend.observability.runtime_config._defaults import (
+        _DEFAULTS,
         ACTION_QUEUE_MAX_SIZE,
         DUMP_FREE_HEADROOM_BYTES,
-        _DEFAULTS,
     )
     from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
 

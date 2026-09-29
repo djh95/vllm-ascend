@@ -19,17 +19,18 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from vllm_ascend.observability.runtime_config._defaults import DETECTOR_SECTIONS, _DEFAULTS
+from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
 from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
 from vllm_ascend.observability.runtime_config.detector_catalog import (
     DETECTOR_SCHEMAS,
+    DETECTOR_SECTIONS,
     REGISTERED_DETECTOR_TYPES,
     control_panel_detectors,
 )
 
 
 def test_catalog_sections_match_defaults_and_classes():
-    assert DETECTOR_SECTIONS == tuple(s.section_key for s in DETECTOR_SCHEMAS)
+    assert tuple(s.section_key for s in DETECTOR_SCHEMAS) == DETECTOR_SECTIONS
     assert set(DETECTOR_SECTIONS) == set(_DEFAULTS["detector"])
     for cls, schema in zip(REGISTERED_DETECTOR_TYPES, DETECTOR_SCHEMAS, strict=True):
         assert cls.section_key == schema.section_key

@@ -57,7 +57,6 @@ from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config._defaults import (
     _DEFAULTS,
     ACTION_QUEUE_MAX_SIZE,
-    DETECTOR_SECTIONS as _DETECTOR_SECTIONS,
     HOT_RELOAD_INTERVAL_SECONDS,
 )
 from vllm_ascend.observability.runtime_config._dist import (
@@ -81,6 +80,9 @@ from vllm_ascend.observability.runtime_config._paths import (
     resolve_runtime_report_dir,
 )
 from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+from vllm_ascend.observability.runtime_config.detector_catalog import (
+    DETECTOR_SECTIONS as _DETECTOR_SECTIONS,
+)
 from vllm_ascend.observability.runtime_config.jsonc_io import loads_jsonc
 
 logger = init_logger_ascend(__name__)
@@ -149,8 +151,7 @@ class RuntimeConfig:
         )
         if self.hot_reload_enabled:
             logger.info_once(
-                "[runtime_config] hot-reload enabled path=%s "
-                "(last-PP TP bus when available, else file poll)",
+                "[runtime_config] hot-reload enabled path=%s (last-PP TP bus when available, else file poll)",
                 str(self.config_path),
             )
         else:
@@ -424,8 +425,7 @@ class RuntimeConfig:
         """
         return bool(self._hot_path_gates_cached()["needs_sample_phase_hooks"])
 
-    # Schema key sets live in ``_defaults``; ``DETECTOR_SECTIONS`` is re-exported
-    # for hot-path gates / callers that scan enabled detectors.
+    # Detector section order comes from ``detector_catalog``.
     DETECTOR_SECTIONS = _DETECTOR_SECTIONS
 
     @staticmethod

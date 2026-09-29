@@ -38,8 +38,6 @@ _RETIRED_ACTIONS_KEYS: frozenset[str] = frozenset({"queue_max_size"})
 
 # Detector catalog (imports detector classes; only needs constants above).
 from vllm_ascend.observability.runtime_config.detector_catalog import (  # noqa: E402
-    DETECTOR_SECTIONS,
-    RETIRED_DETECTOR_SECTIONS as _RETIRED_DETECTOR_SECTIONS,
     build_detector_defaults,
     detector_param_keys,
     retired_detector_keys,
