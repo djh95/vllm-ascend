@@ -138,7 +138,7 @@ docker exec test-mrv2 bash -lc '
 | Metric | Bar | How |
 |---|---|---|
 | **C1** (T0 vs T1) gap | ≤0.1% per tag (short/medium/long) | `perf_t0.jsonl` avg tps vs `perf_baseline.jsonl` avg tps |
-| **C2** (T1 vs T2) gap | ≤0.1% per tag (post-`110ff191e` idle short-circuit should drop from 0.4% → ~0.1%) | T2 = perf_ab_quick A rounds avg tps vs T1 |
+| **C2** (T1 vs T2) gap | ≤0.1% per tag；**须对产品 tip `ad6e06bcd`（TP0 due-broadcast）重测**（旧数字属 due-AR 时代） | T2/T1 from `run_c1_c2_cross_rotate.sh` |
 | **C3** (T2 vs T3) gap | ≤1% per tag | T3 = perf_ab_quick B rounds avg tps vs T2 A |
 | **Phase B monotonic RSS growth** | per-round delta ≤20 MB | Compare `post_rss_kb - pre_rss_kb` across rounds within same state |
 | **Phase C leak-back** | end-of-leakback `rss_delta_kb` ≤ 30 MB (30720) | `leakback_*.jsonl` last line `rss_delta_kb` field |

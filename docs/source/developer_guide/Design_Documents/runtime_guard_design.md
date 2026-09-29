@@ -115,7 +115,7 @@ sync 路径上 after-sample 已 arm 的 job 可同波 D2H；async `get_output` �
 
 拼 last-PP 下各 `tp*` 目录得到该 stage 的完整 head 切分；**没有**其它 `pp*` 目录是预期行为。
 
-代价：PP==1 broadcast 时 dump 与 config 共用一趟 `all_reduce` 的 due bit；无 due 则不做 `broadcast_object`。**PP>1 强制 `sync_mode=file`**（config 各 rank 读 JSON）；dump 在 last-PP TP 组 `all_reduce(has_job)`。不改 `SchedulerOutput`，也不在 PP 组上 collective。
+代价：last-PP×TP 上 dump 与 config 共用一趟 **TP0 源** `broadcast([wave_idx, config_due, dump_due])`（`sync_due_bits_from_src`）；无 due 则不做 `broadcast_object`。非 last-PP / `tp_size≤1` 走 JSON poll。不改 `SchedulerOutput`，也不在 PP 组上 collective。产品 tip `ad6e06bcd` 已删除 `sync_mode`。
 
 ## 2. Runtime Config
 
@@ -126,14 +126,14 @@ sync 路径上 after-sample 已 arm 的 job 可同波 D2H；async `get_output` �
 | 默认文件 | `<cwd>/runtime/config/runtime_config.json` |
 | 显式路径 | `additional_config.runtime_config_path` |
 | 报告根目录 | 默认 `<cwd>/runtime/report`；可 `runtime_report_dir` 覆盖 |
-| 示例 | `vllm_ascend/runtime_config/templates/runtime_config.example.jsonc` |
+| 示例 | `vllm_ascend/observability/runtime_config/templates/runtime_config.example.jsonc` |
 
-### 2.2 同步模式 `sync_mode`
+### 2.2 同步传输（固定，无 JSON `sync_mode`）
 
-| 值 | 行为 |
+| Rank | 行为 |
 |----|------|
-| `broadcast`（默认） | **仅 PP==1**：波头一次 `all_reduce([config_due, dump_due])`，各 due lane 各自 `broadcast_object`。**PP>1 强制改为 file**。 |
-| `file` | 各 rank 轮询 `runtime_config_path`（共享盘或每节点副本）；dump 走 last-PP TP `all_reduce(has_job)` |
+| **Last-PP × all TP**（`tp_size>1`） | 波头 TP0 due-broadcast + due-lane `broadcast_object`；波尾 drain/apply |
+| **其余** | 轮询 JSON；dump 仍仅 last-PP TP |
 
 **注意**：配置热更 **不跨 DP replica 做全 world collective**。多 DP 时每个 EngineCore 各自维护可读 JSON。
 
@@ -153,7 +153,6 @@ sync 路径上 after-sample 已 arm 的 job 可同波 D2H；async `get_output` �
 
 | 段 | 作用 |
 |----|------|
-| `sync_mode` | 配置同步方式 |
 | `actions.defaults.on_trigger` | 未指定时的默认 action 列表 |
 | `dump` | 自动 dump 配额、`manual_dump` |
 | `detector.*` | 各 detector 开关与阈值；可 per-type 覆盖 `on_trigger` |

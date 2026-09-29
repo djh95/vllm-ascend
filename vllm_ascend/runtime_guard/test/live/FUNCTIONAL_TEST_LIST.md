@@ -142,15 +142,16 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 
 | ID | 字段 | 默认 | 验证方法 | 预期 |
 |----|------|------|----------|------|
-| F-01 | `sync_mode` | `broadcast` | 单 DP 起服务，日志看同步组选择 | `broadcast` 走 in-DP 广播组，无全量 world all_reduce |
-| F-02 | `sync_mode=file` | — | 显式设 `file` | 每 rank 独立轮询配置文件，无集合通信；多 rank 各自 reload |
-| F-03 | `sync_mode` PP>1 | — | PP=2 起服务（不显式设；JSON/overlay 即使写 `broadcast`） | 强制回退 `file`：serve.log 出现 `PP>1: forcing sync_mode=file`（`_pp_forces_file_sync()` → `get_pp_group().world_size>1`）；无死锁 |
+| F-01 | 同步传输（固定，无 JSON `sync_mode`） | last-PP×TP | TP≥2、last-PP 起服，reload>0 | 波头走 **TP0 `sync_due_bits_from_src` due-broadcast**（`broadcast([wave_idx,config_due,dump_due])`）+ DueBitsBusWorker；**无**全 world AR；无 due 时无 `broadcast_object` |
+| F-02 | 非 last-PP / tp≤1 | file poll | PP≥2 非 last stage，或 TP=1 | config **本地 JSON poll**；不进 merged due-bus；dump 仍仅 last-PP TP |
+| F-03 | `wave_idx` 对齐 | — | 产品 UT `test_task_bus` +（可选）人为 skip 一波 | receiver `wave_idx` 不一致 → `RuntimeError` misalignment；正常路径无报错 |
 | F-04 | `reload_interval_seconds` | `0` | 默认不起 `--additional-config` | `refresh_config` 走 early-return，无轮询，detector 全关 |
-| F-05 | `reload_interval_seconds>0` | — | 设 3，改配置内容 | 热重载在 ≤interval 内生效（detector 开关/阈值变化） |
+| F-05 | `reload_interval_seconds>0` | — | 设 3，改配置内容 | 热重载在 ≤interval 内生效（detector 开关/阈值变化）；apply 在 **end-of-wave drain** |
 | F-06 | `reload_interval_seconds` 非法 | — | 写 `"abc"` / `-1` | 软警告，回退默认，服务不崩 |
 | F-07 | 未知顶层/子键 | — | 写 `{"windw": 10}` 或 `detector.*.windw` | **CLOSED（W2-1 / V10b）**：重载响亮拒绝，旧配置保留，日志 `unknown top-level key` / unknown detector key |
 | F-08 | `additional_config.runtime_config` 启动 overlay | — | 起服务时传 overlay 设 `detector.token_repeat.enabled=true` | 启动即生效（不经 JSON/热重载），`ensure_persisted` 把有效配置写回 JSON |
-| F-09 | 启动参数优先级 | — | 同时传 `runtime_config_reload_interval` / `runtime_dump_dir` / `sync_mode` 与 overlay 同名字段不同值 | 启动参数 authoritative，overlay 同名字段被忽略（日志确认 ctor 覆盖） |
+| F-09 | 启动参数优先级 | — | 同时传 `runtime_config_reload_interval` / `runtime_dump_dir` 与 overlay 同名字段不同值 | 启动参数 authoritative，overlay 同名字段被忽略（日志确认 ctor 覆盖）；**已无 `sync_mode` 启动参** |
+| F-01b | JSON 残留 `sync_mode` | — | JSON 写 `"sync_mode":"file"` | **拒绝/忽略**（产品已删该旋钮）；不得再出现 `PP>1: forcing sync_mode=file` 日志 |
 | F-10 | 启动 overlay 非法 | — | overlay 传未知键 `detector.fatal_error`，或传非 dict（如 list） | 软失败回退默认，服务不崩，detector 全关 |
 | F-11 | pre-bootstrap 旧 JSON | — | 起服前在 JSON 里手工设 `token_repeat.enabled=true`，起服不传 overlay | 被 defaults+overlay 覆盖写回（`enabled=false`），首个热重载周期不读回旧值 |
 
@@ -310,14 +311,15 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | T-02 | TP=2 | dump_kv | last-PP 全 TP 各落一份，`tp_rank` 正确标记 |
 | T-03 | PP=2 | detector | last-PP 才检测；非 last-PP skip |
 | T-04 | PP=2 | dump | 只在 last-PP dump；`pp_rank` 标记正确 |
-| T-05 | PP=2 | sync_mode | 强制回退 file（serve.log 出现 `PP>1: forcing sync_mode=file`）；dump 走 last-PP TP all_reduce（`_drain_kv_dump` 两阶段），无跨 PP collective 死锁 |
-| T-06 | DP=2 | 配置同步 | broadcast 走 in-DP 组，不 full-world |
+| T-05 | PP=2 | 传输 | 非 last-PP：**file poll**；last-PP×TP：TP0 due-broadcast + dump list；**无**跨 PP collective / 无 `forcing sync_mode=file` |
+| T-06 | DP=2 | 配置同步 | 各 DP 独立 JSON；last-PP TP 组内 due-broadcast；**不** full-world |
 | T-07 | DP=2 | dump | DP 独立；每个 DP 副本独立 arm/drain |
 | T-08 | DP=2 | report 去重 | 各 DP 独立 `max_per_req`，不跨 DP 去重 |
 | T-09 | TP×PP×DP 组合 | 全模块 | 门禁/同步/dump/report 全符合；无 hang |
 | T-10 | CP>1 | dump | `cp_rank` 正确进 `rank_tag`；`dp{D}_tp{T}_pp{P}_cp{C}` |
-| T-11 | 多 DP + 多 PP | sync_mode | 永不 full-world collective（多 DP 安全） |
+| T-11 | 多 DP + 多 PP | 传输安全 | 永不 full-world collective；config 不跨 DP 同步 |
 | T-12 | TP0 崩 / 非 TP0 触发 | rank gate | 非 leader 不重复 arm/detect |
+| T-13 | TP≥2 | due 单源 | `dump_due`/`config_due` 仅 TP0 打包；非 TP0 本地 due 不影响总线（产品 UT v18f/g + 实卡 reload 日志） |
 
 ---
 
@@ -525,7 +527,7 @@ skills 与 `summarize_reports.KNOWN_DETECTORS` 已标注：`token_logprob` /
 
 | 缺口 | 说明 |
 |------|------|
-| C1/C2 交叉轮换正式数 | 历史 pending；**须分 v1/v2**；`run_c1_c2_cross_rotate.sh` 已给步骤 |
+| C1/C2 交叉轮换正式数 | **须对产品 tip `ad6e06bcd`（TP0 due-broadcast）重跑**；旧 C2 数字属 AR 时代；脚本 `run_c1_c2_cross_rotate.sh`；**分 v1/v2** |
 | C5 dump_kv 开销 | `run_c5_dump.sh` 骨架；正式阈值待定 |
 | C6 leak-back 门禁 | `run_c6_leakback.sh` 骨架 |
 | 起服脚本未入库 | `serve_t0`…`t3` 已入库；`START_CMD` 由机房填充 |

@@ -46,7 +46,6 @@ def _cfg(tmp_path: Path, *, reload: float) -> RuntimeConfig:
         report_dir=tmp_path / "report",
         ensure_file=True,
         reload_interval_seconds=reload,
-        sync_mode="file",
     )
 
 
