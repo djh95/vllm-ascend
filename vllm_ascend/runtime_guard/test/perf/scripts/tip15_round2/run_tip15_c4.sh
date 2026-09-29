@@ -53,11 +53,11 @@ write_cfg(){
   local kind=$1 cfg=$ROOT/cfg_$1.json
   if [ "$kind" = t2 ]; then
     cat > "$cfg" <<EOF
-{"reload_interval_seconds": 3, "dump": {"dump_dir": "$ROOT/dump_t2", "auto_max_times": 0, "auto_cooldown_seconds": 300, "manual_dump": false}, "detector": {"logits_finite": {"enabled": false}, "token_repeat": {"enabled": false}, "spec_acceptance": {"enabled": false}}}
+{"dump": {"dump_dir": "$ROOT/dump_t2", "auto_max_times": 0, "auto_cooldown_seconds": 300, "manual_dump": false}, "detector": {"logits_finite": {"enabled": false}, "token_repeat": {"enabled": false}, "spec_acceptance": {"enabled": false}}}
 EOF
   else
     cat > "$cfg" <<EOF
-{"reload_interval_seconds": 3, "dump": {"dump_dir": "$ROOT/dump_t3", "auto_max_times": 0, "auto_cooldown_seconds": 300, "manual_dump": false}, "actions": {"defaults": {"on_trigger": ["report"]}}, "detector": {"logits_finite": {"enabled": true}, "token_repeat": {"enabled": true}, "spec_acceptance": {"enabled": true}}}
+{"dump": {"dump_dir": "$ROOT/dump_t3", "auto_max_times": 0, "auto_cooldown_seconds": 300, "manual_dump": false}, "actions": {"defaults": {"on_trigger": ["report"]}}, "detector": {"logits_finite": {"enabled": true}, "token_repeat": {"enabled": true}, "spec_acceptance": {"enabled": true}}}
 EOF
   fi
   echo "$cfg"
@@ -67,7 +67,7 @@ boot(){
   local tree=$1 cfg=$2 reload=$3
   local add=()
   if [ -n "$cfg" ]; then
-    add=(--additional-config "{\"runtime_config_path\": \"$cfg\", \"runtime_config_reload_interval\": $reload, \"runtime_report_dir\": \"$ROOT/report_state\"}")
+    add=(--additional-config "{\"runtime_config_path\": \"$cfg\", \"runtime_config_hot_reload\": $reload, \"runtime_report_dir\": \"$ROOT/report_state\"}")
   fi
   ( cd "$tree"
     env PYTHONPATH="$V030:$tree:${PYTHONPATH:-}" ASCEND_RT_VISIBLE_DEVICES=$CARDS \

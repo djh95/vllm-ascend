@@ -51,7 +51,7 @@ residual_check(){
 }
 write_cfg(){
   cat > "$ROOT/runtime_config.json" <<CFG
-{"reload_interval_seconds": 3, "dump": {"dump_dir": "$ROOT/dump", "auto_max_times": 0, "auto_cooldown_seconds": 300, "manual_dump": $1}, "actions": {"defaults": {"on_trigger": ["report"]}}, "detector": {"logits_finite": {"enabled": true}, "token_repeat": {"enabled": true}, "spec_acceptance": {"enabled": true}}}
+{"dump": {"dump_dir": "$ROOT/dump", "auto_max_times": 0, "auto_cooldown_seconds": 300, "manual_dump": $1}, "actions": {"defaults": {"on_trigger": ["report"]}}, "detector": {"logits_finite": {"enabled": true}, "token_repeat": {"enabled": true}, "spec_acceptance": {"enabled": true}}}
 CFG
 }
 
@@ -67,7 +67,7 @@ pid=$( cd "$PRODUCT"
     --model "$MODEL" --served-model-name t5 --port "$PORT" \
     --tensor-parallel-size 1 \
     --gpu-memory-utilization 0.85 --enforce-eager \
-    --additional-config "{\"runtime_config_path\": \"$ROOT/runtime_config.json\", \"runtime_config_reload_interval\": 3, \"runtime_report_dir\": \"$ROOT/report\"}" \
+    --additional-config "{\"runtime_config_path\": \"$ROOT/runtime_config.json\", \"runtime_config_hot_reload\": true, \"runtime_report_dir\": \"$ROOT/report\"}" \
     > "$ROOT/serve.log" 2>&1 & echo $! )
 log "boot pid=$pid card=$CARD"
 if [ "$(wait_health)" != 1 ]; then

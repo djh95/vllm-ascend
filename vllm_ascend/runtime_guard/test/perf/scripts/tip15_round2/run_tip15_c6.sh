@@ -43,7 +43,7 @@ wait_health(){
 stop_pgid(){ kill -- -"$1" 2>/dev/null || true; sleep 3; kill -9 -- -"$1" 2>/dev/null || true; sleep 2; }
 write_cfg_t3(){
   cat > "$ROOT/cfg_t3.json" <<EOF
-{"reload_interval_seconds": 3, "dump": {"dump_dir": "$ROOT/dump", "auto_max_times": 0, "auto_cooldown_seconds": 300, "manual_dump": false}, "actions": {"defaults": {"on_trigger": ["report"]}}, "detector": {"logits_finite": {"enabled": true}, "token_repeat": {"enabled": true}, "spec_acceptance": {"enabled": true}}}
+{"dump": {"dump_dir": "$ROOT/dump", "auto_max_times": 0, "auto_cooldown_seconds": 300, "manual_dump": false}, "actions": {"defaults": {"on_trigger": ["report"]}}, "detector": {"logits_finite": {"enabled": true}, "token_repeat": {"enabled": true}, "spec_acceptance": {"enabled": true}}}
 EOF
 }
 
@@ -56,7 +56,7 @@ pid=$( cd "$TREE"
   setsid "$PY" -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --served-model-name dsv2 --port "$PORT" \
     --tensor-parallel-size 2 --gpu-memory-utilization 0.85 --enforce-eager \
-    --additional-config "{\"runtime_config_path\": \"$ROOT/cfg_t3.json\", \"runtime_config_reload_interval\": 3, \"runtime_report_dir\": \"$ROOT/report\"}" \
+    --additional-config "{\"runtime_config_path\": \"$ROOT/cfg_t3.json\", \"runtime_config_hot_reload\": true, \"runtime_report_dir\": \"$ROOT/report\"}" \
     > "$ROOT/serve.log" 2>&1 & echo $! )
 log "boot pgid=$pid"
 if [ "$(wait_health)" != 1 ]; then
