@@ -634,7 +634,7 @@ vllm_ascend/runtime_guard/test/live/golden/
 
 ## 附：tip15 round-2 验证脚本登记（2026-09-29，适配产品 tip 0645cf331）
 
-> round-2 结论主记录：RUN_NOTES（新条目）与容器侧结果目录 ；
+> round-2 结论主记录：RUN_NOTES（新条目）与容器侧结果目录 rg_*_tip15_* 目录；
 > 本节只登记脚本位置与状态，不重复数值。
 
 | 脚本 | 位置 | 用途 | 状态 |
