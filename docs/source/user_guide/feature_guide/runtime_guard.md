@@ -61,7 +61,7 @@ See [Additional Configuration](../configuration/additional_config.md#runtime_gua
 RuntimeGuardProcessor.bind(runner)
   → sync_for_step()        # config + wave + manual triggers
   → detector hooks         # before/after sample (and after spec)
-  → ActionExecutor         # report | dump_kv | set_log_level (async queue)
+  → ActionExecutor         # report | dump_kv (async queue)
 ```
 
 Design details (Chinese): [runtime_guard_design.md](../../../zh/design/runtime_guard_design.md)  
@@ -100,7 +100,6 @@ Online KV / position meta detectors are **not** in this release; use `dump_kv` f
 |--------|--------|
 | `report` | Write JSON incident report (+ metric counter) |
 | `dump_kv` | D2H paged KV for the request. **Last PP × all TP** (not other PP stages): TP0 records dump jobs this step and writes `request_info.json` (report-like metadata); every last-PP TP rank (including TP0) dumps on the next `sync_for_step` via TP `broadcast_object`. Same arm wave: each `req_id` at most once (`queue_kv_dump` dedupes by `(wave, req_id)`; duplicate enqueue logs INFO). Files: `{dump_root}/{type}/{req_id}/wave_<N>/request_info.json` and `{dump_root}/{type}/{req_id}/wave_<N>/dp*_tp*_pp*_cp*/*.pt` |
-| `set_log_level` | Raise log verbosity synchronously on trigger |
 
 Default `on_trigger` is `["report"]`. Per-detector overrides:
 

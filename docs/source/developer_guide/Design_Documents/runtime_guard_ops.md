@@ -54,7 +54,6 @@ Hot reload re-reads the JSON file only; it does not re-apply the startup overlay
 |------|------|
 | Report only | `"on_trigger": ["report"]` or omit (default) |
 | Report + KV | `"on_trigger": ["report", "dump_kv"]` and `dump.auto_max_times > 0` |
-| Log level only | `"on_trigger": ["set_log_level"]` + nested `set_log_level` |
 
 All detectors default off; set `enabled: true` per detector.
 
@@ -71,7 +70,7 @@ All detectors default off; set `enabled: true` per detector.
 
 **Requires `runtime_config_reload_interval > 0`**. Manual events **skip auto quota/cooldown**.
 
-Manual triggers use incident_type `manual_trigger`. **`dump_kv` is always injected** and **forced** to `scope=all_requests` (configured `dump_kv.scope` is ignored). `on_trigger` can still include `report` / `set_log_level`; when omitted, default includes `report`, then `dump_kv` is added automatically.
+Manual triggers use incident_type `manual_trigger`. **`dump_kv` is always injected** and **forced** to `scope=all_requests` (configured `dump_kv.scope` is ignored). `on_trigger` can still include `report`; when omitted, default includes `report`, then `dump_kv` is added automatically.
 
 **Counting and on-disk behavior:**
 
@@ -148,17 +147,15 @@ Combine **all `tp*` dirs under the same `req_id` + same `wave_*` on last PP** fo
     - **Static idle** (`reload_interval=0`, no detectors / print / manual): skip config bus entirely; call the TP dump claim bus **only when** `dump_enabled` (shared gate so all ranks agree). Dump inactive → drop stray local jobs, no due collective.
 - D2H timing: arm queues only; **same wave** at end of `run_sample_phase` (`check_after_sample` then) via `end_of_wave_sync` (after bus drain); when no sample this step, sync path uses the same end entry.
 
-### 2.5 Logging switches and UCM
+### 2.5 Logging and UCM
 
 | Config | Purpose |
 |------|------|
-| `log.print_output_on_finish` | Log output token ids / decoded text when request finishes (TP0) |
-| `ascend_log.level` / `modules` | Module log levels; `[SamplingMeta]` at DEBUG after sample (enable DEBUG on `runtime_guard` to see) |
-| `set_log_level` action | Temporarily raise logs on incident (nested `set_log_level` under detector section) |
+| `ascend_log.level` / `modules` / `debug` | Module log levels; `[SamplingMeta]` at DEBUG after sample (enable DEBUG on `runtime_guard` to see) |
 
 **UCM hijack (common in Ascend containers)**
 
-- Symptom: `ascend_log` / `set_log_level` level changes have no effect; DEBUG missing; UT `caplog` cannot capture `vllm_ascend.*` warnings.
+- Symptom: `ascend_log` level changes have no effect; DEBUG missing; UT `caplog` cannot capture `vllm_ascend.*` warnings.
 - Cause: container UCM may replace `vllm.logger.init_logger`; loggers from that entry can have levels locked in C extensions.
 - This repo: runtime_guard / Ascend modules use `init_logger_ascend` (stdlib + once methods), unaffected by UCM replacement.
 - Note: upstream code still using `vllm.logger.init_logger` may remain affected by UCM.

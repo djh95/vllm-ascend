@@ -13,8 +13,7 @@ Priorities: **P0** every PR / smoke; **P1** full suite; **P2** env-dependent.
 | I4 | Soft-fail | Malformed JSON on hot-reload | Keep old config; service alive |
 | I5 | Soft-fail | Unknown / wrong-type fields | Soft warn; no crash |
 | I6 | dump_kv | Empty `block_ids` | **No** full-cache D2H; skip / no dump |
-| I7 | Output | Report / print_output must not mutate sampler outputs | HTTP body unchanged vs I1 |
-| O1 | Output integrity | `print_output_on_finish` text vs HTTP (no MTP) | String-equal (trim) |
+| I7 | Output | Report must not mutate sampler outputs | HTTP body unchanged vs I1 |
 
 ## P0 — function smoke (UT + short e2e)
 
@@ -80,7 +79,7 @@ CI proves **CPU hot-path bounds** and **functional isolation**.
 | V3a–d | P0-1 | soft-fail contract | Detector/hook exceptions never reach engine loop / async copy thread / sampler |
 | V4 | P0-2 | Shipped `runtime_config.example.jsonc` | Loads + validates as-is; reload(force) succeeds |
 | V5 | P0-3 | Bootstrap invalid content | Falls back to defaults; service starts |
-| V6 | — | ~~`sync_mode` freeze~~ | **Obsolete on product tip `d36597ee6`**（无 `sync_mode`）；analysis 旧 fork UT 勿当产品门禁 |
+| V6 | — | ~~`sync_mode` freeze~~ | **Obsolete on product tip `d36597ee6`+**（无 `sync_mode`）；analysis 旧 fork UT 勿当产品门禁 |
 | V8a/b | B2 | Wave stamps lifecycle | discard on reap; no unbounded `_sample_waves` growth |
 | V9a/b | B3 | ActionQueue full/stop | Heavy (dump) jobs dropped, never inline; stop works with full queue (drain + sentinel) |
 | V9d | — | ActionQueue `dedupe_key` | Same key while queued/running → skip + INFO; different wave key still enqueues |

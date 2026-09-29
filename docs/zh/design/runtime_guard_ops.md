@@ -53,7 +53,6 @@ vllm serve <model> --additional-config '{
 |------|------|
 | 仅 report | `"on_trigger": ["report"]` 或省略（默认） |
 | report + KV | `"on_trigger": ["report", "dump_kv"]`，且 `dump.auto_max_times > 0` |
-| 仅 log 级别 | `"on_trigger": ["set_log_level"]` + nested `set_log_level` |
 
 Detector 默认全关；逐项 `enabled: true` 开启。
 
@@ -70,7 +69,7 @@ Detector 默认全关；逐项 `enabled: true` 开启。
 
 **要求 `runtime_config_reload_interval > 0`**。manual 事件 **跳过 auto quota/cooldown**。
 
-manual 触发 incident_type 为 `manual_trigger`。**始终**注入 `dump_kv`，且 **强制** `scope=all_requests`（配置里的 `dump_kv.scope` 无效）。`on_trigger` 仍可配 `report` / `set_log_level` 等；省略时默认含 `report`，再自动补上 `dump_kv`。
+manual 触发 incident_type 为 `manual_trigger`。**始终**注入 `dump_kv`，且 **强制** `scope=all_requests`（配置里的 `dump_kv.scope` 无效）。`on_trigger` 仍可配 `report`；省略时默认含 `report`，再自动补上 `dump_kv`。
 
 **计数与落盘：**
 
@@ -146,17 +145,15 @@ manual 触发 incident_type 为 `manual_trigger`。**始终**注入 `dump_kv`，
     - **非 last-PP / file poll**：config 本地 poll；auto dump 在波头 TP claim → 末尾 D2H。
 - D2H 时机：arm 只排队；**同波** `run_sample_phase` 末尾（`check_after_sample` 之后）由 `end_of_wave_sync` 做 D2H；本步无 sample 时在 sync 路径走同一末尾入口。
 
-### 2.5 日志开关与 UCM
+### 2.5 日志与 UCM
 
 | 配置 | 作用 |
 |------|------|
-| `log.print_output_on_finish` | 请求结束时打 output token ids / 解码文本（TP0） |
-| `ascend_log.level` / `modules` | 模块日志级别；`[SamplingMeta]` 在 after-sample 打 DEBUG（开 `runtime_guard` DEBUG 即可见） |
-| `set_log_level` action | incident 时临时提 log（detector 段可嵌套 `set_log_level`） |
+| `ascend_log.level` / `modules` / `debug` | 模块日志级别；`[SamplingMeta]` 在 after-sample 打 DEBUG（开 `runtime_guard` DEBUG 即可见） |
 
 **UCM 劫持（Ascend 容器常见）**
 
-- 现象：`ascend_log` / `set_log_level` 改级别无效；DEBUG 打不出来；UT `caplog` 抓不到 `vllm_ascend.*` warning。
+- 现象：`ascend_log` 改级别无效；DEBUG 打不出来；UT `caplog` 抓不到 `vllm_ascend.*` warning。
 - 原因：容器 UCM 可能替换 `vllm.logger.init_logger`，经该入口拿到的 logger 级别锁在 C 扩展侧。
 - 本仓库处理：runtime_guard / Ascend 模块用 `init_logger_ascend`（stdlib + once 方法），不受 UCM 替换影响。
 - 注意：仍走 `vllm.logger.init_logger` 的上游日志可能继续受 UCM 影响。

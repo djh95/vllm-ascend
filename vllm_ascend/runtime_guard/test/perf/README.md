@@ -58,8 +58,8 @@ machine before quoting numbers.
 
 | ID | Compare | What it proves | Status |
 |----|---------|----------------|--------|
-| **C1** | T0 vs T1 | Guard infra zero-ish overhead when default-off | v2=1.00411 ✅ · v1=0.98466（~1.5%）→ **待对 tip `d36597ee6` 重测** |
-| **C2** | T1 vs T2 | Hot-reload due-bus cost（last-PP TP0 due-broadcast） | **待对 tip `d36597ee6`（TP0 due-broadcast）重测**；旧 v2=0.99920 / v1=1.00644 为 due-`all_reduce` 时代；产品侧曾报 C2≈1.000，analysis 需复验入库 |
+| **C1** | T0 vs T1 | Guard infra zero-ish overhead when default-off | v2=1.00411 ✅ · v1=0.98466（~1.5%）→ **待对 tip `4d9f2c67c` 重测** |
+| **C2** | T1 vs T2 | Hot-reload due-bus cost（last-PP TP0 due-broadcast） | **待对 tip `4d9f2c67c`（TP0 due-broadcast）重测**；旧 v2=0.99920 / v1=1.00644 为 due-`all_reduce` 时代；产品侧曾报 C2≈1.000，analysis 需复验入库 |
 | **C3** | T2 vs T3 | Detector enable cost | v2=0.97678 ❌ · v1=0.98816 ❌（见下方 C3-spec 归因） |
 | **C4** | Functional isolation | `temp=0` outputs bit-identical across T0–T3 | ✅ v1/v2 均 bit-identical |
 | **C5** | T3 vs T3+`dump_kv` on_trigger | Dump arm/D2H 开销（命中路径） | ⚠️ 0.98462/0.98303（dump 未命中 0 .pt，属噪声） |

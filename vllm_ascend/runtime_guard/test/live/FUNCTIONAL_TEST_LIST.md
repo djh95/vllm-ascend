@@ -197,7 +197,7 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 |----|------|------|----------|------|
 | F-50 | `on_trigger=["report"]` | 默认 | 命中 detector | 只上报不 dump |
 | F-51 | `on_trigger=["report","dump_kv"]` | — | 命中 detector | report + dump 都执行，report 先于 dump（executor 排序） |
-| F-52 | `on_trigger` 含 `set_log_level` | — | 命中 | sync_only 内联执行，立即调级 |
+| F-52 | ~~`on_trigger` 含 `set_log_level`~~ | — | **REMOVED**（产品 tip `4d9f2c67c`） | 已删除该 action；调级用 `ascend_log` / logger DEBUG |
 
 ### 1.6 detector 子块（阈值/窗口级，详见 §2）
 
@@ -259,7 +259,7 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 
 ---
 
-## 3. 动作行为（report / dump_kv / set_log_level）
+## 3. 动作行为（report / dump_kv）
 
 ### 3.1 report（异步上报）
 
@@ -268,7 +268,7 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | A-01 | 命中 detector | 异步写 report，不阻塞推理线程 |
 | A-02 | `dumps_report_json` 遇 np.int64/torch scalar/NaN | report 不丢，`.item()`/`.tolist()`/`repr()` 兜底（V2） |
 | A-03 | `max_per_req=1` 连续命中 | 去重，只写 1 条；写满后 wave backoff（64,×2） |
-| A-04 | report 不改变采样输出 | HTTP body 与无 guard 完全一致（I7/O1） |
+| A-04 | report 不改变采样输出 | HTTP body 与无 guard 完全一致（I7） |
 
 ### 3.2 dump_kv（KV 落盘）
 
@@ -283,12 +283,11 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | A-16 | 跨 TP 对齐 | payload 带 `tp_rank`/`num_kv_heads`/`rank_tag`，可跨 TP 对比（V18） |
 | A-17 | `free_bytes_at` 不足 | 拒绝 arm（free_headroom 保护） |
 
-### 3.3 set_log_level（sync_only）
+### 3.3 ~~set_log_level~~（REMOVED）
 
 | ID | 场景 | 预期 |
 |----|------|------|
-| A-20 | 触发 | 内联同步执行，`apply_ascend_log_level` 立即生效 |
-| A-21 | 非 sync_only 环境 | 不进入异步队列（sync_only 语义） |
+| A-20/A-21 | ~~set_log_level~~ | **REMOVED**（产品 tip `4d9f2c67c`）；用 `ascend_log` / SamplingMeta DEBUG |
 
 ### 3.4 ActionQueue
 
@@ -365,7 +364,7 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 
 ---
 
-## 8. 日志级别调整（ascend_log + set_log_level + UCM 绕过）
+## 8. 日志级别调整（ascend_log + SamplingMeta DEBUG + UCM 绕过）
 
 > 与 TEST_MATRIX L1–L5（CPU UT）对应，这里是 **live 侧** 验证。
 
@@ -376,7 +375,7 @@ KV dump 体积大，**实卡测试必须管磁盘**，否则会把共享盘打�
 | L-03 | 热改 `level=WARNING` | INFO 被抑制（UCM 锁死被 bypass） |
 | L-04 | `debug=["detector"]` | 命中模块 DEBUG 出现，其余不出现 |
 | L-05 | `modules={"x":"DEBUG"}` | 分模块调级生效 |
-| L-06 | set_log_level 动作触发 | 立即调级，不等异步 |
+| L-06 | ~~set_log_level 动作触发~~ | **REMOVED**；改用 `ascend_log` / logger DEBUG（含 `[SamplingMeta]`） |
 | L-07 | 日志无 `ucm` 前缀污染 | 输出回 stdlib handler，capsys/caplog 都能抓 |
 
 ---
@@ -526,7 +525,7 @@ skills 与 `summarize_reports.KNOWN_DETECTORS` 已标注：`token_logprob` /
 
 | 缺口 | 说明 |
 |------|------|
-| C1/C2 交叉轮换正式数 | **须对产品 tip `d36597ee6`（TP0 due-broadcast）重跑**；旧 C2 数字属 AR 时代；脚本 `run_c1_c2_cross_rotate.sh`；**分 v1/v2** |
+| C1/C2 交叉轮换正式数 | **须对产品 tip `4d9f2c67c`（TP0 due-broadcast）重跑**；旧 C2 数字属 AR 时代；脚本 `run_c1_c2_cross_rotate.sh`；**分 v1/v2** |
 | C5 dump_kv 开销 | `run_c5_dump.sh` 骨架；正式阈值待定 |
 | C6 leak-back 门禁 | `run_c6_leakback.sh` 骨架 |
 | 起服脚本未入库 | `serve_t0`…`t3` 已入库；`START_CMD` 由机房填充 |

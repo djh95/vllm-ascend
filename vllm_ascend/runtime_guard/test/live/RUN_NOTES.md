@@ -835,14 +835,14 @@ C1 无需优化: 36821945f 之后 t1 基础设施开销 ~0 (1.00523, 在噪声�
 
 ## 2026-09-29 产品 tip `d36597ee6`（单 commit squash + SOB）对 analysis 用例的影响
 
-产品 `feat/runtime-guard-config` 当前 tip **`d36597ee6`**（此前同线 squash 曾记
+产品 `feat/runtime-guard-config` tip **`d36597ee6`**（此前同线 squash 曾记
 `ad6e06bcd` / `6513317ee`）；历史明细在 `feat/runtime-guard-config-history`。
 相对本旁支旧假设的关键变点：
 
 | 变点 | 产品行为 | analysis 影响 |
 |------|----------|---------------|
 | 删除 `sync_mode` | 传输按 rank 固定：last-PP×TP → TP0 due-broadcast；其余 file poll | **F-01/02/03、T-05/06/11、中文 design §2.2 已改**；勿再验收 `forcing sync_mode=file` |
-| due `all_reduce` → `sync_due_bits_from_src` | TP0 打包 `[wave_idx,config_due,dump_due]` 再 `broadcast`；DueBitsBusWorker 异步 | **C2 必须对 `d36597ee6` 重跑入库**（旧 0.99920 属 AR 时代；产品侧 N=3 报 ≈1.0，analysis 未复验） |
+| due `all_reduce` → `sync_due_bits_from_src` | TP0 打包 `[wave_idx,config_due,dump_due]` 再 `broadcast`；DueBitsBusWorker 异步 | **C2 必须对产品 tip 重跑入库**（旧 0.99920 属 AR 时代；产品侧 N=3 报 ≈1.0，analysis 未复验） |
 | `wave_idx` | receiver 错波 → `RuntimeError` | 产品 UT `tests/ut/runtime_config/test_task_bus.py` 已覆盖；实卡补 **F-03 / T-13** |
 | 无 RG-BUS-STATS | 验证打点已从产品删除 | analysis **不必**补 stats 用例 |
 
@@ -856,7 +856,7 @@ C1 无需优化: 36821945f 之后 t1 基础设施开销 ~0 (1.00523, 在噪声�
 
 **要跑、尚未出数（实卡）：**
 
-1. **C1+C2 交叉轮换** × v1/v2，对 PRODUCT=`d36597ee6`（`run_c1_c2_cross_rotate.sh`，N≥3，正式门禁 N=6）。  
+1. **C1+C2 交叉轮换** × v1/v2，对 PRODUCT tip（`run_c1_c2_cross_rotate.sh`，N≥3，正式门禁 N=6）。  
 2. **T-05（PP=2）**：确认非 last-PP file poll + last-PP due-bcast，无 hang。  
 3. **T-13 / F-01**：TP=2 reload 热路径日志无 world AR、idle 无 `broadcast_object`。  
 
@@ -865,6 +865,18 @@ C1 无需优化: 36821945f 之后 t1 基础设施开销 ~0 (1.00523, 在噪声�
 
 **旁支代码树注意：**  
 `vllm_ascend/runtime_config|runtime_guard` 仍是旧 fork（含 `sync_mode`）；analysis 本地 UT（如 V6 sync_mode freeze）**不**代表产品 tip。跑产品行为请挂 **config worktree**；本旁支只维护 live/perf 清单与脚本。`test_refresh_config_cost.py` 已去掉 `sync_mode=` 传参以便跟新产品 ctor。
+
+## 2026-09-29 产品 tip `4d9f2c67c`（drop set_log_level / print_output）
+
+相对 `6ec13d80e`（metrics un-nest）之后最新产品 tip **`4d9f2c67c`**：
+
+| 变点 | 产品行为 | analysis 影响 |
+|------|----------|---------------|
+| 删除 `log.print_output_on_finish` | 无 `log` JSON 段；finish 不再 INFO 打 output | **O1 / A-04 print 路径作废**；敏感输出靠 `report.save_sensitive_info` |
+| 删除 `set_log_level` action | 合法 action 仅 `report` / `dump_kv` | **F-52 / A-20/21 / L-06 标 REMOVED**；调级用 `ascend_log` |
+| `[SamplingMeta]` | after-sample logger DEBUG（无 JSON 开关） | live 用 `ascend_log.debug` / modules 开 `runtime_guard` DEBUG 验收 |
+
+设计/ops 与 user_guide 旁支副本已对齐；C1/C2 仍以当前 tip 为 PRODUCT 重测目标。
 ---
 
 ## 2026-09-28 (III) 方案 D async due-bus：v1 死锁 postmortem + v2 双阶段实现 + 验证

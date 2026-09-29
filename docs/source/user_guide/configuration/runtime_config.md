@@ -15,7 +15,6 @@ Startup keys (`runtime_config_path`, `runtime_config_reload_interval`, overlay d
 | `actions` | object | see below | Default incident actions |
 | `dump` | object | see below | Auto dump quota and manual dump controls |
 | `ascend_log` | object | see below | Ascend logger level overrides |
-| `log` | object | see below | Ops logging switches (not stored in report JSON) |
 | `report` | object | see below | Report content and truncation |
 | `detector` | object | see below | Detector sections + shared flags |
 
@@ -25,7 +24,7 @@ Startup keys (`runtime_config_path`, `runtime_config_reload_interval`, overlay d
 |-----|------|---------|-------------|
 | `defaults.on_trigger` | list[str] | `["report"]` | Actions when a detector section omits `on_trigger` |
 
-Valid action names: `report`, `dump_kv`, `set_log_level`.
+Valid action names: `report`, `dump_kv`.
 
 ## dump
 
@@ -50,13 +49,7 @@ Manual dump / manual trigger skip auto quota and cooldown. Requires hot-reload i
 | `include_block_ids` | bool | `true` | Include GPU block ids in report detail |
 | `max_per_req` | int | `1` | Max report files per `(incident_type, req_id)`; at cap, stop detecting that request. Wave backoff (64×2ⁿ) between writes when cap &gt; 1 |
 
-## log
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `print_output_on_finish` | bool | `false` | Log output token ids/text when any request finishes |
-
-`[SamplingMeta]` is emitted at DEBUG on the after-sample path (TP0 + last PP). Enable with `ascend_log` / logger level for `vllm_ascend.runtime_guard` — there is no JSON toggle.
+`[SamplingMeta]` is emitted at DEBUG on the after-sample path (TP0 + last PP). Enable with `ascend_log` / logger level for `vllm_ascend.observability.runtime_guard` — there is no JSON toggle.
 
 ## ascend_log
 
@@ -78,7 +71,6 @@ Each nested detector section supports:
 | `enabled` | bool | Master switch (default `false`) |
 | `on_trigger` | list[str] | Override actions for this incident type |
 | `dump_kv` | object | Per-type dump options: `scope` (`request` \| `all_requests`) |
-| `set_log_level` | object | For `set_log_level` action: `level`, `modules` |
 
 ### spec_acceptance
 

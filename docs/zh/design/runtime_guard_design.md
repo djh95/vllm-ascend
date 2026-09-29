@@ -10,7 +10,7 @@
 |------|------|------|
 | Runtime Config | `runtime_config/config.py`（`RuntimeConfig`） | 一份 JSON；可选热更新（启动项控制周期） |
 | Detector | `detector/` | 异常检测，产出 `Incident` |
-| Action | `action/` | 异步处置：`report`、`dump_kv`、`set_log_level` |
+| Action | `action/` | 异步处置：`report`、`dump_kv` |
 | Report | `report.py`（`ReportWriter`） | 异常短报告落盘到 `runtime/report/` |
 | KV dump | `kv_cache_reader.py`（`KvCacheReader`） | 按请求 block 做 native D2H，异步写 `.pt` |
 | Processor | `processor.py`（`RuntimeGuardProcessor`） | runner 侧编排：bind / `sync_for_step` / sample hooks / `_handle_alert` → ActionExecutor；`[SamplingMeta]` 在 after-sample 以 DEBUG 输出（靠日志级别，无 JSON 开关） |
@@ -135,7 +135,7 @@ sync 路径上 after-sample 已 arm 的 job 可同波 D2H；async `get_output` �
 | **Last-PP × all TP**（`tp_size>1`） | 波头 submit TP0 `broadcast([wave_idx, config_due, dump_due])` + due-lane `broadcast_object`（DueBitsBusWorker）；**波尾 drain/apply** |
 | **其余** | 轮询 `runtime_config_path`；dump 仍仅 last-PP TP |
 
-**注意**：配置热更 **不跨 DP replica 做全 world collective**。多 DP 时每个 EngineCore 各自维护可读 JSON。产品 tip `d36597ee6` 已删除 `sync_mode` 旋钮。
+**注意**：配置热更 **不跨 DP replica 做全 world collective**。多 DP 时每个 EngineCore 各自维护可读 JSON。产品 tip `d36597ee6` 起已删除 `sync_mode` 旋钮。
 
 ### 2.3 热更新
 
@@ -202,7 +202,6 @@ Report 只在 last PP + TP0 写。`dump_kv` 的 rank 覆盖见上一节（last P
 |------|-----------|------|
 | `report` | 否 | 写 `runtime/report/<type>/report_*.json` |
 | `dump_kv` | 否 | last PP × 全部 TP：各写 `{dump_root}/<type>/<req_id>/wave_<N>/<rank_tag>/*.pt`（见「dump_kv 的 rank 覆盖」） |
-| `set_log_level` | 是 | 即时调整 Ascend 日志级别 |
 
 `dump_kv` 配置（per detector）：
 

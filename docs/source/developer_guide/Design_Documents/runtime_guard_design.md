@@ -13,7 +13,7 @@
 |------|------|------|
 | Runtime Config | `runtime_config/config.py` (`RuntimeConfig`) | Single JSON file; optional hot reload (interval set at startup) |
 | Detector | `detector/` | Anomaly detection; produces `Incident` |
-| Action | `action/` (`executor`, `queue`, `actions`) | Async handling: `report`, `dump_kv`, `set_log_level` |
+| Action | `action/` (`executor`, `queue`, `actions`) | Async handling: `report`, `dump_kv` |
 | Report | `report.py` (`ReportWriter`) | Short incident reports written under `runtime/report/` |
 | KV dump | `kv_cache_reader.py` (`KvCacheReader`) | Native D2H per request blocks; async `.pt` writes |
 | Processor | `processor.py` (+ bus/dump/report mixins) | Runner-side orchestration: bind / `sync_for_step` / sample hooks / `_handle_alert` → ActionExecutor |
@@ -232,7 +232,6 @@ Each detector can override actions via nested `on_trigger`, for example:
 |------|-----------|------|
 | `report` | no | Write `runtime/report/<type>/report_*.json` |
 | `dump_kv` | no | last PP × all TP: each writes `{dump_root}/<type>/<req_id>/wave_<N>/<rank_tag>/*.pt` (see “dump_kv rank coverage”) |
-| `set_log_level` | yes | Adjust Ascend log levels immediately |
 
 `dump_kv` config (per detector):
 
