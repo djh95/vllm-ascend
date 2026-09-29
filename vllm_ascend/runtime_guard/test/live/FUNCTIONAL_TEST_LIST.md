@@ -5,7 +5,7 @@
 >
 > 分工（均在本旁支，**需 NPU** 的项标出）：
 > - **`test/live/`** — 实卡功能行为清单 + 启动脚本/配置（`scripts/`、`configs/`）
-> - **`test/perf/`** — 吞吐/开销对比（T0–T3、C1–C6）；**强制 ModelRunner v1+v2**；脚本在 `perf/scripts/`
+> - **`test/perf/`** — 吞吐/开销对比（T0–T3、C1–C6）；**ModelRunner v2-only**（自产品 1fe4e97bf 起）；脚本在 `perf/scripts/`
 > - **`test/analysis/`** — 后处理脚本 CPU UT（可不需 NPU）
 >
 > config 侧 `TEST_MATRIX.md` 只描述产品 CPU UT；perf/live 以本旁支为准。
@@ -16,7 +16,7 @@
 > **禁止**写回 `feat/runtime-guard-config`。现有占位 README 不算完成，须落到可跑文件。
 
 功能测试回答「功能对不对」，不是「跑得快不快」。  
-**强制双跑 ModelRunner v1 + v2**（先 v2 后 v1，见 §0.1）；拓扑/模型：M1/M2/T4/T5/T6。  
+**ModelRunner v2-only**（产品 1fe4e97bf 删除 v1 wiring，v1 上 guard hooks 不存在，双跑作废，见 §0.1）；拓扑/模型：M1/M2/T4/T5/T6。  
 启动脚本与配置路径约定见 §0.3（正文脚本后续按用例补齐）。  
 **磁盘 / dump 结构 / 标杆 / 注入定位** 见 §0.4、§10、§15（强制）。
 
@@ -37,7 +37,12 @@
 
 下文「P0-x」指 §0.2 冒烟子集里的条目；正文各表若未标优先级，默认按章节进 **P1**（§13 环境门槛另限）。
 
-### 0.1 ModelRunner v1 / v2（强制双跑）
+### 0.1 ModelRunner（v2-only，自 1fe4e97bf）
+
+> **[SUPERSEDED 2026-09-29]** 产品提交 1fe4e97bf 将 runtime_guard 改为 ModelRunner
+> v2-only（删除 v1 bind/step/sample wiring 与 v1 async output helpers）。v1 runner 上
+> guard hooks 不存在，本节 v1+v2 双跑要求**作废**，功能/perf 验收只在 v2 执行。
+> 下方原文保留作历史规则参考。
 
 runtime_guard 挂在 model runner 路径上，**v1 与 v2 都是正式验收对象**，不能只测其中一个。
 
@@ -623,3 +628,24 @@ vllm_ascend/runtime_guard/test/live/golden/
   在本容器起不来（见 `run_tip9_matrix.sh` 头注），T0 定责实验放 162（新镜像）。
 - **实现**：`test/perf/scripts/run_tip12_smoke.sh`、`run_tip12_matrix.sh` 内置；后续 smoke/matrix/launcher
   脚本必须继承该函数（§0.3 缺则必补约定）。
+
+
+---
+
+## 附：tip15 round-2 验证脚本登记（2026-09-29，适配产品 tip 0645cf331）
+
+> round-2 结论主记录：RUN_NOTES（新条目）与容器侧结果目录 ；
+> 本节只登记脚本位置与状态，不重复数值。
+
+| 脚本 | 位置 | 用途 | 状态 |
+|---|---|---|---|
+| run_tip15_c4.sh | perf/scripts/tip15_round2/ | C4 四状态输出一致性（v2） | b1b58921f PASS（bit-identical） |
+| run_tip15_c123.sh | perf/scripts/tip15_round2/ | C1/C2/C3 交叉轮换 N=3 | C3 PASS；C1/C2 FAIL（详见同目录 c123_summary.txt） |
+| run_tip15_c5.sh | perf/scripts/tip15_round2/ | C5 dump 命中路径开销 | 2ca3cdab5 BLOCKED（客户端挂死，已加固待新 tip 重跑） |
+| run_tip15_c6.sh | perf/scripts/tip15_round2/ | C6 idle 泄漏（pgid 作用域采样） | 待跑 |
+| run_tip15_c4_v1.sh | perf/scripts/tip15_round2/ | v1 runner C4 | **DEPRECATED**（v2-only 后作废） |
+| run_tip15_pp2_smoke.sh | live/scripts/tip15_round2/ | PP=2×TP=2 广播+file-poll 双路径冒烟 | b1b58921f PASS |
+| run_tip15_tp1_smoke.sh | live/scripts/tip15_round2/ | TP=1 file-poll 单 lane 冒烟 | b1b58921f PASS |
+
+脚本 cfg 已按新 schema 清理（output_substring 已 RETIRED，soft-pop）；dump 字段名
+未变（manual_dump）。0645cf331 上的重验以本表状态列为准更新。

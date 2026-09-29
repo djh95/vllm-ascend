@@ -1,0 +1,60 @@
+# C123 verdict summary — tip15 product tip (round 2, 2026-09-29)
+
+## Version pins
+- Product tip: 2ca3cdab5 -> b1b58921f -> d36597ee6 (worktree rg-tip15-8f5e3, branch feat/runtime-guard-config)
+- T0 baseline: merge-base 8a2c3182c, no runtime_guard (worktree rg-t0-b1b58)
+- Runner: v2 (VLLM_USE_V2_MODEL_RUNNER=1), Qwen2.5-7B-Instruct, TP=2, cards 4,5, port 8182, enforce-eager, batch-invariant
+- Protocol: N=3 cross-rotation rounds, fixed order t0->t1->t2->t3 per round (server time 07:09-07:57)
+  - t0 = merge-base, no guard
+  - t1 = product tip, no runtime_config_path (reload off), detectors off
+  - t2 = product tip, reload=3s (merged due-broadcast hot path), detectors off
+  - t3 = product tip, reload=3s, 4 detectors on (report-only)
+
+## Verdict (verbatim from master.log 07:57:41)
+TIP15_C123_VERDICT RUNNER=v2
+  state=t0 gm=9.263 tok/s  rounds=r1:9.22,r2:9.26,r3:9.31  spread=+0.94%
+  state=t1 gm=9.181 tok/s  rounds=r1:9.20,r2:9.24,r3:9.11  spread=+1.43%
+  state=t2 gm=9.139 tok/s  rounds=r1:9.13,r2:9.18,r3:9.11  spread=+0.77%
+  state=t3 gm=9.081 tok/s  rounds=r1:9.05,r2:9.11,r3:9.08  spread=+0.63%
+  C1 T1/T0=0.99110 (>=0.999) FAIL
+  C2 T2/T1=0.99541 (>=0.999) FAIL
+  C3 T3/T2=0.99369 (>=0.990) PASS
+  OVERALL=FAIL
+MERGED_BUS_UNFINISHED: t1=0, t2=6 (rate-limited end-of-wave drain waits)
+WAVE_MISALIGNMENT_TOTAL=0 (all states), residual none every state, health=200 every boot
+
+## Paired per-tag stats (n=9 = 3 rounds x 3 tags short/medium/long)
+  C1 paired_gm=0.99110  min=0.97537 max=1.00979
+  C2 paired_gm=0.99541  min=0.97953 max=1.01100
+  C3 paired_gm=0.99369  min=0.98473 max=1.01443
+(Paired GM == state-level GM; per-tag range confirms noise floor ~±1.5-2.5%, known issue.)
+
+## Key evidence
+1. T1 (NO runtime_config_path) still starts bus worker ("bus worker started" x2 ranks in
+   serve_t1.log) and activates guard hooks — C1 measures the ALWAYS-ON infra cost, not
+   import-only. This is the FIRST-EVER C1 measurement (no historical baseline in RUN_NOTES).
+2. Adjacent-state GM declines monotonically by fixed-order position:
+   t0 9.263 > t1 9.181 > t2 9.139 > t3 9.081 (-0.89% / -0.46% / -0.63%).
+   Two competing explanations, NOT discriminable at N=3 with ±1.5% noise:
+   (a) real cost stacking (guard infra + reload broadcast + detectors)
+   (b) within-round positional drift (fixed-order serial bias — documented failure mode;
+       project memory: serial T0->T1->T2 causes systemic bias ±1.5~2.5%)
+3. C2 contradiction: this morning's t1<->t2 alternating protocol on near-identical code
+   (19abdd3ac content) measured C2=1.00001 PASS (rg_c2_tip15_r3); today's fixed-order
+   4-state serial measures 0.99541 FAIL on the stripped product tip.
+4. Gate protocol requires N>=6 for C1/C2 gating; this run is N=3 (below gate).
+
+## Next steps (agreed order)
+1. C5 / C6 / P1 v1-C4 continue per plan (different metrics, unaffected).
+2. C123 rerun with N>=6 AND order-shuffled rounds (e.g. r1 t0..t3, r2 t3..t0, ...) to
+   cancel positional bias and discriminate hypothesis (a) vs (b) — PENDING user decision.
+3. Regardless of measurement: profile T1 always-on per-wave cost (bus worker wakeup,
+   io-snapshot bookkeeping, wave bookkeeping) — target <=0.1% for C1 gate; T1 with no
+   config doing per-wave work is a real optimization target on fast/small models.
+
+## Artifacts in this directory
+- master.log      full timeline incl. verdict line (07:09-07:57)
+- perf.jsonl      108 request records (12 state-rounds x 3 tags x 3 reqs)
+- serve_t?.log    LAST ROUND ONLY (each boot overwrites; r1/r2 serve logs not kept)
+- cfg_t2.json cfg_t3.json  runtime_config used by t2/t3
+- nohup.out       launcher stdout
