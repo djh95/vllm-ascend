@@ -26,7 +26,10 @@ import numpy as np
 import torch
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
+from vllm_ascend.observability.runtime_config._defaults import (
+    _DEFAULTS,
+    LOGITS_FINITE_DEFERRED_QUEUE_MAX,
+)
 from vllm_ascend.observability.runtime_guard.detector.base import ConfigBackedDetector
 from vllm_ascend.observability.runtime_guard.incident import ILL_TYPE_NAN, Incident
 
@@ -110,16 +113,12 @@ class LogitsFiniteDetector(ConfigBackedDetector):
         super().__init__(runtime_config=runtime_config, runner=runner, enabled=False)
         self._deferred: deque[list[Incident]] = deque()
         self._pending_gates: deque[_PendingAsyncGate] = deque()
-        self._deferred_queue_max = int(_DEFAULTS["detector"]["logits_finite"]["deferred_queue_max"])
+        self._deferred_queue_max = LOGITS_FINITE_DEFERRED_QUEUE_MAX
         self._item_sync = bool(_DEFAULTS["detector"]["logits_finite"]["item_sync"])
         if runtime_config is not None:
             self.refresh_from_config()
 
     def _apply_detector_values(self, getter: Callable[[str, Any], Any]) -> None:
-        self._deferred_queue_max = max(
-            1,
-            int(getter("deferred_queue_max", self._deferred_queue_max)),
-        )
         self._item_sync = bool(getter("item_sync", self._item_sync))
 
     def clear_finished(self, req_id: str) -> None:

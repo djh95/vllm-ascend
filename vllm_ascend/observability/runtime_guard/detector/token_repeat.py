@@ -94,10 +94,10 @@ def push_token_repeat(
 class TokenRepeatDetector(ConfigBackedDetector):
     """Detect local token re-reading via sliding-window ``repeat_sum``.
 
-    Consumes the same cumulative output stream as ``OutputSubstringDetector``
-    (``RequestIoSnapshotManager``). IO is appended once in after-sample (not in
-    ``check_after_spec``). A per-req cursor tracks how far the stream has been
-    folded into the repeat window so each id is pushed once.
+    Consumes the cumulative output stream from ``RequestIoSnapshotManager``
+    (IO is appended once in after-sample, not in ``check_after_spec``). A
+    per-req cursor tracks how far the stream has been folded into the repeat
+    window so each id is pushed once.
     """
 
     incident_type = "token_repeat"
@@ -160,9 +160,8 @@ class TokenRepeatDetector(ConfigBackedDetector):
 
         Prefer ``sampled_token_ids=None`` after
         ``DetectorManager.after_sample_hot_path`` / ``check_after_spec`` have
-        already written into the IO buffer (same path as substring). When
-        provided (standalone callers / unit tests), tokens are appended here
-        first so the stream matches substring.
+        already written into the IO buffer. When provided (standalone callers /
+        unit tests), tokens are appended here first.
 
         Always advances via Store ``cumulative_output_since`` + ``_consumed_len``
         so a second call in the same wave cannot re-score ids that append

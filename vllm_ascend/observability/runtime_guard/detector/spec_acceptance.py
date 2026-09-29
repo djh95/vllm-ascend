@@ -25,7 +25,10 @@ import torch
 from vllm.distributed.parallel_state import get_pp_group
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
+from vllm_ascend.observability.runtime_config._defaults import (
+    _DEFAULTS,
+    SPEC_SHORT_LOG_INTERVAL_SECONDS,
+)
 from vllm_ascend.observability.runtime_guard.detector.base import ConfigBackedDetector, resolve_batch_req_ids
 from vllm_ascend.observability.runtime_guard.incident import ILL_TYPE_NONE, Incident
 from vllm_ascend.observability.runtime_guard.io_snapshot import output_token_count_for_request
@@ -63,7 +66,7 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         self._len_high_threshold = float(_section["len_high_threshold"])
         # Throttle INFO short logs (per req) so TP0 is not flooded.
         self._short_log_ts: dict[str, float] = {}
-        self._short_log_interval_s = float(_section["short_log_interval_seconds"])
+        self._short_log_interval_s = SPEC_SHORT_LOG_INTERVAL_SECONDS
         # Live knobs from runtime_config JSON only.
         if runtime_config is not None:
             self.refresh_from_config()
@@ -74,7 +77,6 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         self._len_low_threshold = float(getter("len_low_threshold", self._len_low_threshold))
         self._high_threshold = float(getter("high_threshold", self._high_threshold))
         self._len_high_threshold = float(getter("len_high_threshold", self._len_high_threshold))
-        self._short_log_interval_s = float(getter("short_log_interval_seconds", self._short_log_interval_s))
 
     def clear_finished(self, req_id: str) -> None:
         self._history.pop(req_id, None)

@@ -56,9 +56,9 @@ from typing import Any
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config._defaults import (
     _DEFAULTS,
-)
-from vllm_ascend.observability.runtime_config._defaults import (
+    ACTION_QUEUE_MAX_SIZE,
     DETECTOR_SECTIONS as _DETECTOR_SECTIONS,
+    HOT_RELOAD_INTERVAL_SECONDS,
 )
 from vllm_ascend.observability.runtime_config._dist import (
     _bg_reload_paths,
@@ -99,7 +99,7 @@ class RuntimeConfig:
         *,
         report_dir: str | Path | None = None,
         ensure_file: bool = False,
-        reload_interval_seconds: float | int | None = None,
+        hot_reload: bool = False,
         dump_dir: str | Path | None = None,
         startup_overlay: dict[str, Any] | None = None,
     ) -> None:
@@ -110,14 +110,9 @@ class RuntimeConfig:
             self.config_path,
             str(report_dir) if report_dir is not None else None,
         )
-        # Startup override: None → default 0 (off); >0 → every N seconds.
-        # This is authoritative and is not re-enabled by JSON after load.
-        if reload_interval_seconds is None:
-            self._reload_interval = 0.0
-        else:
-            self._reload_interval = float(reload_interval_seconds)
-        if self._reload_interval < 0:
-            raise ValueError(f"runtime_config_reload_interval must be >= 0, got {self._reload_interval}")
+        # Startup override: False → off; True → fixed HOT_RELOAD_INTERVAL_SECONDS.
+        # Authoritative; JSON cannot re-enable after load.
+        self._reload_interval = HOT_RELOAD_INTERVAL_SECONDS if bool(hot_reload) else 0.0
         self._mtime: float | None = None
         # Bug #11 / S8: same-second edits need a content fingerprint. File size
         # alone is insufficient (e.g. window 10→33, true→false keep st_size).
@@ -154,16 +149,15 @@ class RuntimeConfig:
         )
         if self.hot_reload_enabled:
             logger.info_once(
-                "[runtime_config] hot-reload enabled interval=%.3fs path=%s "
+                "[runtime_config] hot-reload enabled path=%s "
                 "(last-PP TP bus when available, else file poll)",
-                self.reload_interval_seconds,
                 str(self.config_path),
             )
         else:
             logger.info_once(
                 "[runtime_config] hot-reload disabled "
-                "(set additional_config.runtime_config_reload_interval > 0 to enable; "
-                "default is 0; dump.manual_dump also requires interval > 0)"
+                "(set additional_config.runtime_config_hot_reload=true to enable; "
+                "dump.manual_dump also requires hot-reload)"
             )
 
     def _read_json_object(self) -> dict[str, Any]:
@@ -196,7 +190,7 @@ class RuntimeConfig:
         merged = deepcopy(_DEFAULTS)
         if use_overlay and self._startup_overlay:
             overlay = deepcopy(self._startup_overlay)
-            # Startup path/interval still win over overlay copies of those keys.
+            # Hot-reload is startup-only; ignore any retired JSON key in overlay.
             overlay.pop("reload_interval_seconds", None)
             pre = deepcopy(merged)
             merged = _deep_merge(merged, overlay)
@@ -207,9 +201,8 @@ class RuntimeConfig:
                     len(overlay_changes),
                     "; ".join(overlay_changes[:12]) + (" ..." if len(overlay_changes) > 12 else ""),
                 )
-        # Persist startup hot-reload interval for visibility (runtime gate is still
-        # ``self._reload_interval`` only).
-        merged["reload_interval_seconds"] = self._reload_interval
+        # Strip retired display key if present (e.g. old on-disk JSON / overlay).
+        merged.pop("reload_interval_seconds", None)
         if self._startup_dump_dir:
             merged.setdefault("dump", {})["dump_dir"] = self._startup_dump_dir
         # validate_runtime_config normalizes ascend_log in place.
@@ -349,12 +342,12 @@ class RuntimeConfig:
 
     @property
     def hot_reload_enabled(self) -> bool:
-        """True when startup ``runtime_config_reload_interval`` > 0."""
+        """True when startup ``runtime_config_hot_reload`` is enabled."""
         return self._reload_interval > 0
 
     @property
     def reload_interval_seconds(self) -> float:
-        """Effective hot-reload period from startup; 0 means disabled."""
+        """Internal poll period when hot-reload is on; 0 when disabled."""
         return self._reload_interval
 
     @property
@@ -385,12 +378,11 @@ class RuntimeConfig:
 
         dump_on = dump_auto_on(dump) or manual_dump_active(dump.get("manual_dump", False))
         save_sensitive = bool(report.get("save_sensitive_info", False))
-        out_sub = bool((det.get("output_substring") or {}).get("enabled", False))
         tok_rep = bool((det.get("token_repeat") or {}).get("enabled", False))
 
         manual_count = manual_dump_count(dump.get("manual_dump", False))
 
-        needs_io = out_sub or tok_rep or (any_det and save_sensitive)
+        needs_io = tok_rep or (any_det and save_sensitive)
         needs_sample = any_det
 
         cached = {
@@ -450,7 +442,6 @@ class RuntimeConfig:
         """Short ops-facing mode tag for logs (detect / dump axes)."""
         _DISPLAY = {
             "spec_acceptance": "spec",
-            "output_substring": "output_substring",
             "token_repeat": "token_repeat",
             "logits_finite": "logits_finite",
         }
@@ -509,7 +500,7 @@ class RuntimeConfig:
         ``false``/``0`` → 0; ``true`` (continuous) → 1 as a positive sentinel;
         positive int → N. Continuous mode does not decrement on consume.
         Only observed after a successful hot-reload; requires
-        ``runtime_config_reload_interval > 0``.
+        ``runtime_config_hot_reload=true``.
         """
         return int(self._hot_path_gates_cached()["manual_trigger_count"])
 
@@ -635,22 +626,17 @@ class RuntimeConfig:
         return {str(k): str(v).upper() for k, v in raw.items() if str(k).strip()}
 
     def report_save_sensitive_info(self) -> bool:
-        """Whether anomaly reports persist plaintext token-id lists.
+        """Whether anomaly reports persist token ids and decode them to text.
 
-        Default False: only lengths (``*_token_count``). ``true`` keeps full
-        ``prompt_token_ids`` and cumulative ``output_token_ids``.
+        Default False: only lengths (``*_token_count``). ``true`` keeps
+        ``prompt_token_ids`` / cumulative ``output_token_ids`` and decodes them.
         """
         report = self._data.get("report") or {}
         return bool(report.get("save_sensitive_info", False))
 
     def report_decode_token_ids(self) -> bool:
-        """Whether to decode ``*_token_ids`` into text in reports.
-
-        Covers prompt/output and window/current evidence fields.
-        Only applies when ``save_sensitive_info`` is true. Default True.
-        """
-        report = self._data.get("report") or {}
-        return bool(report.get("decode_token_ids", True))
+        """Decode ``*_token_ids`` to text when ``save_sensitive_info`` is on."""
+        return self.report_save_sensitive_info()
 
     def report_max_prompt_token_ids(self) -> int:
         """Max ``prompt_token_ids`` length to persist (0 = unlimited). Default 1000."""
@@ -663,9 +649,8 @@ class RuntimeConfig:
         return int(report.get("max_output_token_ids", 1000))
 
     def report_include_block_ids(self) -> bool:
-        """Whether reports include the request's current GPU ``block_ids``."""
-        report = self._data.get("report") or {}
-        return bool(report.get("include_block_ids", True))
+        """Reports always include the request's current GPU ``block_ids``."""
+        return True
 
     def report_max_per_req(self) -> int:
         """Max report files per ``(incident_type, req_id)`` (default 1).
@@ -703,12 +688,8 @@ class RuntimeConfig:
         return ["report"]
 
     def action_queue_max_size(self) -> int:
-        """``actions.queue_max_size`` (ActionQueue capacity at bind / construct)."""
-        actions = self._data.get("actions") or {}
-        try:
-            return max(1, int(actions.get("queue_max_size", _DEFAULTS["actions"]["queue_max_size"])))
-        except (TypeError, ValueError):
-            return int(_DEFAULTS["actions"]["queue_max_size"])
+        """ActionQueue capacity at bind (fixed internal constant)."""
+        return ACTION_QUEUE_MAX_SIZE
 
     def dump_get(self, key: str, default: Any = None) -> Any:
         dump = self._data.get("dump") or {}

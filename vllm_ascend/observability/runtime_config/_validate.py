@@ -21,6 +21,12 @@ from typing import Any
 
 from vllm_ascend.observability.runtime_config._defaults import (
     _DEFAULTS,
+    _RETIRED_ACTIONS_KEYS,
+    _RETIRED_DETECTOR_KEYS,
+    _RETIRED_DETECTOR_SECTIONS,
+    _RETIRED_DUMP_KEYS,
+    _RETIRED_REPORT_KEYS,
+    _RETIRED_TOP_LEVEL_KEYS,
     ACTIONS_KEYS,
     ASCEND_LOG_KEYS,
     DETECTOR_KEYS,
@@ -35,35 +41,6 @@ from vllm_ascend.observability.runtime_config._merge import (
     dump_auto_on,
     manual_dump_active,
 )
-
-
-def _is_int_list(value: Any) -> bool:
-    """True when ``value`` is a non-empty ``list[int]`` (bool excluded)."""
-    return (
-        isinstance(value, list) and bool(value) and all(isinstance(x, int) and not isinstance(x, bool) for x in value)
-    )
-
-
-def normalize_raw_patterns(raw: Any) -> list[Any]:
-    """Validate/filter ``detector.output_substring.patterns`` entries (no tokenizer)."""
-    if raw is None:
-        return []
-    if not isinstance(raw, list):
-        raise ValueError("detector.output_substring.patterns must be a list of str or int lists")
-    out: list[Any] = []
-    for i, item in enumerate(raw):
-        if isinstance(item, str):
-            if item:
-                out.append(item)
-            continue
-        if _is_int_list(item):
-            out.append([int(x) for x in item])
-            continue
-        raise ValueError(
-            f"detector.output_substring.patterns[{i}] must be a non-empty str or "
-            f"non-empty list[int], got {type(item).__name__}"
-        )
-    return out
 
 
 def normalize_ignore_token_ids(raw: Any) -> list[int]:
@@ -140,6 +117,9 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     validation is safe regardless of whether the caller normalized first.
     """
     _normalize_config_sections_into(data)
+    # Drop retired keys so old on-disk JSON still loads.
+    for key in _RETIRED_TOP_LEVEL_KEYS:
+        data.pop(key, None)
     unknown_top = sorted(set(data) - TOP_LEVEL_KEYS)
     if unknown_top:
         raise ValueError(f"runtime config has unknown top-level key(s) {unknown_top}; allowed={sorted(TOP_LEVEL_KEYS)}")
@@ -152,17 +132,13 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     ):
         if section not in data or not isinstance(data[section], dict):
             raise ValueError(f"runtime config missing object section '{section}'")
+    for key in _RETIRED_ACTIONS_KEYS:
+        data["actions"].pop(key, None)
     unknown_actions = sorted(set(data["actions"]) - ACTIONS_KEYS)
     if unknown_actions:
         raise ValueError(f"actions has unknown key(s) {unknown_actions}; allowed={sorted(ACTIONS_KEYS)}")
-    data["actions"]["queue_max_size"] = int_field(
-        data["actions"].get("queue_max_size", _DEFAULTS["actions"]["queue_max_size"]),
-        "actions.queue_max_size",
-        min_value=1,
-    )
-    interval = data.get("reload_interval_seconds", 0)
-    if not isinstance(interval, (int, float)) or interval < 0:
-        raise ValueError(f"reload_interval_seconds must be >= 0, got {interval}")
+    for key in _RETIRED_DUMP_KEYS:
+        data["dump"].pop(key, None)
     unknown_dump = sorted(set(data["dump"]) - DUMP_KEYS)
     if unknown_dump:
         raise ValueError(f"dump has unknown key(s) {unknown_dump}; allowed={sorted(DUMP_KEYS)}")
@@ -182,17 +158,13 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     dump_dir_raw = data["dump"].get("dump_dir")
     if dump_dir_raw is not None and not isinstance(dump_dir_raw, str):
         raise ValueError("dump.dump_dir must be a string path or null")
-    data["dump"]["free_headroom_bytes"] = int_field(
-        data["dump"].get("free_headroom_bytes", _DEFAULTS["dump"]["free_headroom_bytes"]),
-        "dump.free_headroom_bytes",
-        min_value=0,
-    )
     validate_dump_mutual_exclusive(data["dump"])
+    for key in _RETIRED_REPORT_KEYS:
+        data["report"].pop(key, None)
     unknown_report = sorted(set(data["report"]) - REPORT_KEYS)
     if unknown_report:
         raise ValueError(f"report has unknown key(s) {unknown_report}; allowed={sorted(REPORT_KEYS)}")
     coerce_bool_field(data["report"], "save_sensitive_info", "report.save_sensitive_info")
-    coerce_bool_field(data["report"], "decode_token_ids", "report.decode_token_ids")
     for max_key in ("max_prompt_token_ids", "max_output_token_ids"):
         max_val = data["report"].get(max_key)
         if max_val is None:
@@ -204,7 +176,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         data["report"][max_key] = int(max_val)
     if "max_per_req" in data["report"] and data["report"]["max_per_req"] is not None:
         data["report"]["max_per_req"] = int_field(data["report"]["max_per_req"], "report.max_per_req", min_value=1)
-    coerce_bool_field(data["report"], "include_block_ids", "report.include_block_ids")
     level = data["ascend_log"].get("level", "INFO")
     if not isinstance(level, str):
         raise ValueError("ascend_log.level must be str")
@@ -226,6 +197,8 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         if not isinstance(val, str):
             raise ValueError("ascend_log.modules values must be strings")
     detector = data["detector"]
+    for key in _RETIRED_DETECTOR_SECTIONS:
+        detector.pop(key, None)
     known = set(DETECTOR_SECTIONS)
     for key, value in detector.items():
         if key == "manual_trigger":
@@ -247,6 +220,8 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
             )
         if not isinstance(value, dict):
             raise ValueError(f"detector.{key} must be an object")
+        for retired in _RETIRED_DETECTOR_KEYS.get(key, ()):
+            value.pop(retired, None)
         unknown_sub = sorted(set(value) - DETECTOR_KEYS[key])
         if unknown_sub:
             raise ValueError(f"detector.{key} has unknown key(s) {unknown_sub}; allowed={sorted(DETECTOR_KEYS[key])}")
@@ -255,11 +230,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         if not isinstance(sec, dict):
             raise ValueError(f"detector.{name} must be an object")
         coerce_bool_field(sec, "enabled", f"detector.{name}.enabled")
-
-    out_sub = detector["output_substring"]
-    out_sub["patterns"] = normalize_raw_patterns(out_sub.get("patterns", []))
-    coerce_bool_field(out_sub, "add_special_tokens", "detector.output_substring.add_special_tokens")
-    coerce_bool_field(out_sub, "match_prefix", "detector.output_substring.match_prefix")
 
     token_repeat = detector["token_repeat"]
     token_repeat["window"] = int_field(token_repeat.get("window", 32), "detector.token_repeat.window", min_value=1)
@@ -295,24 +265,8 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
             f"detector.spec_acceptance.{len_key}",
             min_value=0.0,
         )
-    spec["short_log_interval_seconds"] = float_field(
-        spec.get(
-            "short_log_interval_seconds",
-            _DEFAULTS["detector"]["spec_acceptance"]["short_log_interval_seconds"],
-        ),
-        "detector.spec_acceptance.short_log_interval_seconds",
-        min_value=0.0,
-    )
 
     logits = detector["logits_finite"]
-    logits["deferred_queue_max"] = int_field(
-        logits.get(
-            "deferred_queue_max",
-            _DEFAULTS["detector"]["logits_finite"]["deferred_queue_max"],
-        ),
-        "detector.logits_finite.deferred_queue_max",
-        min_value=1,
-    )
     if logits.get("item_sync") is None:
         logits["item_sync"] = _DEFAULTS["detector"]["logits_finite"]["item_sync"]
     coerce_bool_field(logits, "item_sync", "detector.logits_finite.item_sync")

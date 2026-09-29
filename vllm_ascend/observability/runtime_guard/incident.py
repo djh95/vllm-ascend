@@ -64,7 +64,7 @@ class Incident:
             out.setdefault("ill_type", self.ill_type)
             out.setdefault("ill_type_name", self.ill_type_name)
         out.setdefault("is_ill", self.is_ill)
-        # ``block_ids`` is emitted solely by RuntimeGuardProcessor.
-        # _enrich_detail_with_block_meta, which gates it on
-        # report.include_block_ids. Emitting it here bypassed that flag.
+        # ``block_ids`` is emitted solely by RuntimeGuardProcessor
+        # ``_enrich_detail_with_block_meta`` (always attached). Emitting it
+        # here would duplicate / race the processor enrichment path.
         return out

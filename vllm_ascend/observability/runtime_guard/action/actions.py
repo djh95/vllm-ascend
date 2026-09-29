@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
+from vllm_ascend.observability.runtime_config._defaults import DUMP_FREE_HEADROOM_BYTES
 from vllm_ascend.observability.runtime_config.config import RuntimeConfig
 from vllm_ascend.observability.runtime_guard.dump_io import (
     free_bytes_at,
@@ -210,15 +210,7 @@ class DumpKvAction(Action):
         # last-PP dumps every TP shard; scale single-rank estimate by tp_size.
         tp_size = runner_tp_world_size(ctx.runner)
         estimated *= tp_size
-        try:
-            headroom = int(
-                ctx.runtime_config.dump_get(
-                    "free_headroom_bytes",
-                    _DEFAULTS["dump"]["free_headroom_bytes"],
-                )
-            )
-        except (TypeError, ValueError):
-            headroom = int(_DEFAULTS["dump"]["free_headroom_bytes"])
+        headroom = DUMP_FREE_HEADROOM_BYTES
         # Skip free-space gate when estimate is unknown (deferred block_ids).
         if estimated > 0:
             needed = estimated + max(0, headroom)

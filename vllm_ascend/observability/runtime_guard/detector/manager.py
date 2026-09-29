@@ -29,7 +29,6 @@ from vllm_ascend.observability.runtime_guard.detector.base import (
     resolve_batch_req_ids,
 )
 from vllm_ascend.observability.runtime_guard.detector.logits_finite import LogitsFiniteDetector
-from vllm_ascend.observability.runtime_guard.detector.output_substring import OutputSubstringDetector
 from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
 from vllm_ascend.observability.runtime_guard.detector.token_repeat import TokenRepeatDetector
 from vllm_ascend.observability.runtime_guard.incident import Incident
@@ -65,7 +64,6 @@ class DetectorManager:
         *,
         runtime_config: RuntimeConfig,
         runner: Any,
-        tokenizer_provider: Callable[[], Any | None] | None = None,
         detection_gate: Callable[[], bool] | None = None,
         detection_skip_reason: Callable[[], str | None] | None = None,
     ) -> None:
@@ -76,11 +74,6 @@ class DetectorManager:
         self._spec_det = SpecAcceptanceDetector(
             runtime_config=runtime_config,
             runner=runner,
-        )
-        self._output_substring_det = OutputSubstringDetector(
-            runtime_config=runtime_config,
-            runner=runner,
-            tokenizer_provider=tokenizer_provider,
         )
         self._token_repeat_det = TokenRepeatDetector(
             runtime_config=runtime_config,
@@ -93,7 +86,6 @@ class DetectorManager:
         self._registry = DetectorRegistry()
         for det in (
             self._spec_det,
-            self._output_substring_det,
             self._token_repeat_det,
             self._logits_finite_det,
         ):
@@ -163,14 +155,11 @@ class DetectorManager:
         return bool(self._spec_det.enabled)
 
     def any_after_sample_cpu_enabled(self) -> bool:
-        """output_substring / token_repeat (not logits_finite)."""
+        """``token_repeat`` (not logits_finite)."""
         if self._runtime_config is not None and self._runtime_config.hot_reload_enabled:
-            # Live flags only; full refresh happens in check_all → _precheck.
-            return bool(
-                self._runtime_config.detector_get("output_substring", "enabled", False)
-                or self._runtime_config.detector_get("token_repeat", "enabled", False)
-            )
-        return bool(self._output_substring_det.enabled or self._token_repeat_det.enabled)
+            # Live flag only; full refresh happens in check_all → _precheck.
+            return bool(self._runtime_config.detector_get("token_repeat", "enabled", False))
+        return bool(self._token_repeat_det.enabled)
 
     def check_after_spec(
         self,
@@ -234,32 +223,20 @@ class DetectorManager:
         return alerts, snap
 
     def run_after_sample_cpu(self, snap: AfterSampleCpuSnapshot) -> list[Incident]:
-        """output_substring → token_repeat after hot-path Store append.
+        """``token_repeat`` after hot-path Store append.
 
-        Both detectors read :class:`RequestGuardStore` only. Do **not** re-fold
-        from a frozen sampled chunk: same-wave append dedupe can skip a
-        second Store write while a frozen chunk would still be scored twice
-        (W1-1 / R-04: ``content_tokens_seen`` > ``output_token_count`` on v2
-        when after-sample ran twice with width-1 identical rows).
+        Reads :class:`RequestGuardStore` only. Do **not** re-fold from a frozen
+        sampled chunk: same-wave append dedupe can skip a second Store write
+        while a frozen chunk would still be scored twice (W1-1 / R-04:
+        ``content_tokens_seen`` > ``output_token_count`` on v2 when after-sample
+        ran twice with width-1 identical rows).
         """
         skip = snap.skip_req_ids if snap.skip_req_ids is not None else RequestGuardStore.get().stopped_req_ids()
-        resolved_ids = snap.req_ids
-        alerts: list[Incident] = []
-        alerts.extend(
-            self._output_substring_det.check_all(
-                sampled_token_ids=None,
-                req_ids=resolved_ids,
-                skip_req_ids=skip,
-            )
+        return self._token_repeat_det.check_all(
+            sampled_token_ids=None,
+            req_ids=snap.req_ids,
+            skip_req_ids=skip,
         )
-        alerts.extend(
-            self._token_repeat_det.check_all(
-                sampled_token_ids=None,
-                req_ids=resolved_ids,
-                skip_req_ids=skip,
-            )
-        )
-        return alerts
 
     def _after_sample_setup(self, req_ids: list[str] | None) -> tuple[list[str], bool, bool, set[str]]:
         resolved_ids = resolve_batch_req_ids(self._runner, req_ids)

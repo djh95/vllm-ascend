@@ -40,10 +40,10 @@ from vllm_ascend.observability.runtime_guard.request_state import RequestGuardSt
 
 def _dump_rc(tmp_path: Path, **extra) -> SimpleNamespace:
     base = dict(
-        dump_get=lambda k, d=None: 0 if k == "free_headroom_bytes" else d,
+        dump_get=lambda k, d=None: d,
         dump_root=lambda: str(tmp_path),
         report_save_sensitive_info=lambda: False,
-        report_decode_token_ids=lambda: True,
+        report_decode_token_ids=lambda: False,
         report_max_prompt_token_ids=lambda: 1000,
         report_max_output_token_ids=lambda: 1000,
     )
@@ -116,7 +116,7 @@ def test_token_repeat_detector_hit_and_miss(tmp_path: Path):
         config_path=tmp_path / "c.json",
         report_dir=tmp_path / "r",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
     )
     tr = cfg._data["detector"]["token_repeat"]
     tr["enabled"] = True
@@ -127,18 +127,24 @@ def test_token_repeat_detector_hit_and_miss(tmp_path: Path):
 
     det = TokenRepeatDetector(runtime_config=cfg, runner=SimpleNamespace(tp_rank=0))
     det.refresh_from_config()
+    io = RequestIoSnapshotManager.get()
 
     miss: list = []
     for tid in range(10, 20):
+        # Simulate a new engine wave so same-wave append dedupe does not
+        # swallow consecutive single-token steps.
+        io.clear_wave_cache()
         miss = det.check_all([[tid]], req_ids=["uniq"])
     assert miss == []
 
     RequestGuardStore.reset_for_tests()
     RequestIoSnapshotManager.reset_for_tests()
     det.clear_finished("uniq")
+    io = RequestIoSnapshotManager.get()
     # Same token repeatedly → high repeat_sum after warmup.
     hit: list = []
     for _ in range(12):
+        io.clear_wave_cache()
         alerts = det.check_all([[7]], req_ids=["rep"])
         if alerts:
             hit = alerts
@@ -149,13 +155,16 @@ def test_token_repeat_detector_hit_and_miss(tmp_path: Path):
     assert hit[0].is_ill is True
 
     # Already alerted: further repeats do not re-emit.
+    io.clear_wave_cache()
     assert det.check_all([[7]], req_ids=["rep"]) == []
 
     RequestGuardStore.reset_for_tests()
     RequestIoSnapshotManager.reset_for_tests()
     tr["enabled"] = False
     det.refresh_from_config()
+    io = RequestIoSnapshotManager.get()
     for _ in range(20):
+        io.clear_wave_cache()
         assert det.check_all([[7]], req_ids=["off"]) == []
 
 
@@ -173,7 +182,7 @@ def test_w1_1_r04_same_wave_double_fold_keeps_seen_eq_oc(tmp_path: Path):
         config_path=tmp_path / "c.json",
         report_dir=tmp_path / "r",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
     )
     tr = cfg._data["detector"]["token_repeat"]
     tr["enabled"] = True
@@ -219,12 +228,11 @@ def test_w1_1_run_after_sample_cpu_folds_store_only(tmp_path: Path):
         config_path=tmp_path / "c.json",
         report_dir=tmp_path / "r",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
     )
     cfg._data["detector"]["token_repeat"]["enabled"] = True
     cfg._data["detector"]["token_repeat"]["repeat_sum_threshold"] = 9999
     cfg._data["detector"]["token_repeat"]["min_tokens"] = 1
-    cfg._data["detector"]["output_substring"]["enabled"] = False
 
     runner = SimpleNamespace(tp_rank=0, input_batch=None)
     mgr = DetectorManager(runtime_config=cfg, runner=runner)
@@ -363,14 +371,14 @@ def test_estimate_dump_bytes_scales_with_blocks():
 
 
 def test_dump_kv_skips_when_free_below_payload_plus_headroom(tmp_path, monkeypatch):
-    from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
+    from vllm_ascend.observability.runtime_config._defaults import DUMP_FREE_HEADROOM_BYTES
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
 
     cache = torch.zeros(4, 8, 2)
     reader = KvCacheReader(SimpleNamespace(kv_caches={"L0": cache}))
     estimated = reader.estimate_dump_bytes(block_ids=[0])
     tp_size = 4
-    headroom = int(_DEFAULTS["dump"]["free_headroom_bytes"])
+    headroom = DUMP_FREE_HEADROOM_BYTES
     monkeypatch.setattr(
         "vllm_ascend.observability.runtime_guard.action.actions.free_bytes_at",
         lambda _path: estimated + headroom - 1,
@@ -381,7 +389,7 @@ def test_dump_kv_skips_when_free_below_payload_plus_headroom(tmp_path, monkeypat
     )
     quota = MagicMock()
     rc = SimpleNamespace(
-        dump_get=lambda k, d=None: headroom if k == "free_headroom_bytes" else d,
+        dump_get=lambda k, d=None: d,
         dump_root=lambda: str(tmp_path),
     )
     ctx = _dump_ctx(
@@ -658,115 +666,3 @@ def test_bug4_block_ids_v2_gpu_row_when_no_host_np():
         req_states=SimpleNamespace(req_id_to_index={"r0": 0}),
     )
     assert block_ids_for_request(runner, "r0") == [7, 8]
-
-
-# ---- output_substring hit / miss (T1) --------------------------------------
-
-
-class _FakeTokenizer:
-    """Minimal encode/decode for substring UT (ord/chr round-trip)."""
-
-    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
-        return [ord(c) for c in text]
-
-    def decode(self, token_ids: list[int], skip_special_tokens: bool = False) -> str:
-        return "".join(chr(int(t)) for t in token_ids)
-
-
-def test_output_substring_helpers_subsequence_and_prefix():
-    from vllm_ascend.observability.runtime_guard.detector.output_substring import (
-        contains_prefix,
-        contains_token_subsequence,
-    )
-
-    hay = [1, 2, 3, 4, 5]
-    assert contains_token_subsequence(hay, [2, 3]) is True
-    assert contains_token_subsequence(hay, [2, 4]) is False
-    assert contains_token_subsequence(hay, []) is False
-    assert contains_prefix(hay, [1, 2]) is True
-    assert contains_prefix(hay, [2, 3]) is False
-
-
-def test_output_substring_token_ids_hit_and_miss(tmp_path: Path):
-    from vllm_ascend.observability.runtime_config.config import RuntimeConfig
-    from vllm_ascend.observability.runtime_guard.detector.output_substring import OutputSubstringDetector
-    from vllm_ascend.observability.runtime_guard.io_snapshot import RequestIoSnapshotManager
-    from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
-
-    RequestGuardStore.reset_for_tests()
-    RequestIoSnapshotManager.reset_for_tests()
-    try:
-        cfg = RuntimeConfig(
-            config_path=tmp_path / "c.json",
-            report_dir=tmp_path / "r",
-            ensure_file=True,
-            reload_interval_seconds=0,
-        )
-        sec = cfg._data["detector"]["output_substring"]
-        sec["enabled"] = True
-        sec["patterns"] = [[10, 11, 12]]
-        sec["match_prefix"] = False
-
-        det = OutputSubstringDetector(
-            runtime_config=cfg,
-            runner=SimpleNamespace(tp_rank=0, input_batch=SimpleNamespace(req_ids=["r1"])),
-            tokenizer_provider=lambda: _FakeTokenizer(),
-        )
-        det.refresh_from_config()
-        assert det._compiled  # noqa: SLF001
-
-        miss = det.check_all([[1, 2, 3, 4]], req_ids=["r1"])
-        assert miss == []
-
-        # Production clears the same-wave IO cache between steps.
-        RequestIoSnapshotManager.get().clear_wave_cache()
-        hit = det.check_all([[9, 10, 11, 12, 13]], req_ids=["r1"])
-        assert len(hit) == 1
-        assert hit[0].incident_type == "output_substring"
-        assert hit[0].req_id == "r1"
-
-        # Once per req.
-        RequestIoSnapshotManager.get().clear_wave_cache()
-        again = det.check_all([[10, 11, 12]], req_ids=["r1"])
-        assert again == []
-    finally:
-        RequestGuardStore.reset_for_tests()
-        RequestIoSnapshotManager.reset_for_tests()
-
-
-def test_output_substring_text_pattern_hit(tmp_path: Path):
-    from vllm_ascend.observability.runtime_config.config import RuntimeConfig
-    from vllm_ascend.observability.runtime_guard.detector.output_substring import OutputSubstringDetector
-    from vllm_ascend.observability.runtime_guard.io_snapshot import RequestIoSnapshotManager
-    from vllm_ascend.observability.runtime_guard.request_state import RequestGuardStore
-
-    RequestGuardStore.reset_for_tests()
-    RequestIoSnapshotManager.reset_for_tests()
-    try:
-        cfg = RuntimeConfig(
-            config_path=tmp_path / "c.json",
-            report_dir=tmp_path / "r",
-            ensure_file=True,
-            reload_interval_seconds=0,
-        )
-        sec = cfg._data["detector"]["output_substring"]
-        sec["enabled"] = True
-        sec["patterns"] = ["bad"]
-        sec["match_prefix"] = False
-
-        det = OutputSubstringDetector(
-            runtime_config=cfg,
-            runner=SimpleNamespace(tp_rank=0, input_batch=SimpleNamespace(req_ids=["r1"])),
-            tokenizer_provider=lambda: _FakeTokenizer(),
-        )
-        det.refresh_from_config()
-
-        # "xxbadxx" as ord codes
-        ids = [ord(c) for c in "xxbadxx"]
-        alerts = det.check_all([ids], req_ids=["r1"])
-        assert len(alerts) == 1
-        assert alerts[0].detail["matched_text"] == "bad"
-        assert alerts[0].detail["matched_source"] == "text"
-    finally:
-        RequestGuardStore.reset_for_tests()
-        RequestIoSnapshotManager.reset_for_tests()

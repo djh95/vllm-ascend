@@ -38,7 +38,7 @@ def test_defaults_dump_and_detectors_off(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
     )
     assert cfg.hot_reload_enabled is False
     assert cfg.dump_enabled() is False
@@ -53,7 +53,7 @@ def test_startup_overlay_enables_detector(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
         startup_overlay={
             "detector": {
                 "token_repeat": {"enabled": True, "window": 8, "repeat_sum_threshold": 4},
@@ -71,11 +71,12 @@ def test_malformed_json_keeps_previous(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=0.01,
+        hot_reload=True,
         startup_overlay={
             "detector": {"token_repeat": {"enabled": True, "window": 16}},
         },
     )
+    cfg._reload_interval = 0.01  # UT: avoid waiting fixed 3s
     assert cfg.detector_get("token_repeat", "enabled") is True
     # Corrupt file; reload must soft-fail and keep in-memory config.
     cfg_path.write_text("{not-json", encoding="utf-8")
@@ -92,8 +93,9 @@ def test_hot_reload_picks_up_detector_enable(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=0.01,
+        hot_reload=True,
     )
+    cfg._reload_interval = 0.01  # UT: avoid waiting fixed 3s
     assert cfg.detector_get("token_repeat", "enabled") is False
     _write(
         cfg_path,
@@ -120,7 +122,7 @@ def test_dump_auto_and_manual_exclusive_or_derived(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=1,
+        hot_reload=True,
     )
     assert cfg.dump_enabled() is False
     _write(cfg_path, {"dump": {"auto_max_times": 3, "manual_dump": False}})
@@ -150,7 +152,7 @@ def test_detector_on_trigger_override_accepted(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=1,
+        hot_reload=True,
         startup_overlay={
             "detector": {
                 "token_repeat": {
@@ -228,24 +230,92 @@ def test_ascend_log_enabled_unknown_key_rejected():
 
 
 def test_startup_overlay_reload_interval_overridden_by_ctor(tmp_path: Path):
+    from vllm_ascend.observability.runtime_config._defaults import HOT_RELOAD_INTERVAL_SECONDS
+
     cfg_path = tmp_path / "runtime_config.json"
     _write(cfg_path, {})
     cfg = RuntimeConfig(
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=5,
+        hot_reload=True,
         startup_overlay={
             "reload_interval_seconds": 999,
             "detector": {"token_repeat": {"enabled": True}},
         },
     )
-    # Ctor interval is authoritative; overlay's copy is ignored.
-    assert cfg.reload_interval_seconds == 5.0
+    # Ctor hot_reload is authoritative; overlay's retired interval key is ignored.
+    assert cfg.reload_interval_seconds == HOT_RELOAD_INTERVAL_SECONDS
     assert cfg.hot_reload_enabled is True
-    assert cfg._data["reload_interval_seconds"] == 5.0
+    assert "reload_interval_seconds" not in cfg._data
     # Overlay still applies other (non-frozen) keys.
     assert cfg.detector_get("token_repeat", "enabled") is True
+
+
+def test_retired_p0_p1_keys_soft_popped(tmp_path: Path):
+    """Old on-disk knobs are dropped so configs still validate / reload."""
+    from copy import deepcopy
+
+    from vllm_ascend.observability.runtime_config._defaults import (
+        ACTION_QUEUE_MAX_SIZE,
+        DUMP_FREE_HEADROOM_BYTES,
+        _DEFAULTS,
+    )
+    from vllm_ascend.observability.runtime_config._validate import validate_runtime_config
+
+    data = deepcopy(_DEFAULTS)
+    data["actions"]["queue_max_size"] = 128
+    data["dump"]["free_headroom_bytes"] = 1
+    data["report"]["decode_token_ids"] = False
+    data["report"]["include_block_ids"] = False
+    data["report"]["save_sensitive_info"] = True
+    data["detector"]["spec_acceptance"]["short_log_interval_seconds"] = 9.0
+    data["detector"]["logits_finite"]["deferred_queue_max"] = 1
+    data["detector"]["output_substring"] = {"enabled": True, "patterns": ["x"]}
+    validate_runtime_config(data)
+    assert "queue_max_size" not in data["actions"]
+    assert "free_headroom_bytes" not in data["dump"]
+    assert "decode_token_ids" not in data["report"]
+    assert "include_block_ids" not in data["report"]
+    assert "short_log_interval_seconds" not in data["detector"]["spec_acceptance"]
+    assert "deferred_queue_max" not in data["detector"]["logits_finite"]
+    assert "output_substring" not in data["detector"]
+
+    cfg_path = tmp_path / "runtime_config.json"
+    _write(cfg_path, {})
+    cfg = RuntimeConfig(
+        config_path=cfg_path,
+        report_dir=tmp_path / "report",
+        ensure_file=True,
+        hot_reload=True,
+    )
+    _write(
+        cfg_path,
+        {
+            "actions": {"queue_max_size": 128, "defaults": {"on_trigger": ["report"]}},
+            "dump": {"free_headroom_bytes": 1, "auto_max_times": 0},
+            "report": {
+                "decode_token_ids": False,
+                "include_block_ids": False,
+                "save_sensitive_info": True,
+            },
+            "detector": {
+                "spec_acceptance": {"short_log_interval_seconds": 9.0},
+                "logits_finite": {"deferred_queue_max": 1},
+                "output_substring": {"enabled": True},
+            },
+        },
+    )
+    assert cfg.reload(force=True) is True
+    assert cfg.action_queue_max_size() == ACTION_QUEUE_MAX_SIZE
+    assert cfg.report_decode_token_ids() is True  # follows save_sensitive
+    assert cfg.report_include_block_ids() is True
+    assert DUMP_FREE_HEADROOM_BYTES > 0
+    assert "queue_max_size" not in cfg._data.get("actions", {})
+    assert "free_headroom_bytes" not in cfg._data.get("dump", {})
+    assert "decode_token_ids" not in cfg._data.get("report", {})
+    assert "include_block_ids" not in cfg._data.get("report", {})
+    assert "output_substring" not in cfg._data.get("detector", {})
 
 
 def test_startup_overlay_dump_dir_overridden_by_ctor(tmp_path: Path):
@@ -308,7 +378,7 @@ def test_manual_dump_persist_only_when_count_reaches_zero(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=1,
+        hot_reload=True,
     )
     _write(cfg_path, {"dump": {"manual_dump": 3, "auto_max_times": 0}})
     assert cfg.reload(force=True) is True
@@ -334,7 +404,7 @@ def test_manual_dump_hand_edit_reloads_while_count_nonzero(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=1,
+        hot_reload=True,
     )
     _write(cfg_path, {"dump": {"manual_dump": 3, "auto_max_times": 0}})
     assert cfg.reload(force=True) is True
@@ -357,7 +427,7 @@ def test_same_mtime_content_change_reloads_via_digest(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=1,
+        hot_reload=True,
     )
     # Equal-length values so st_size can stay stable; pin mtime after rewrite.
     _write(cfg_path, {"detector": {"token_repeat": {"enabled": False, "window": 10}}})
@@ -383,7 +453,7 @@ def test_touch_same_content_skips_reload(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=1,
+        hot_reload=True,
     )
     _write(cfg_path, {"detector": {"token_repeat": {"enabled": True, "window": 8}}})
     assert cfg.reload(force=True) is True

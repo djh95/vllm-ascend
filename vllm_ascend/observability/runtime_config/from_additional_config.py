@@ -33,6 +33,8 @@ ADDITIONAL_CONFIG_STRIP_KEYS: frozenset[str] = frozenset(
         "runtime_config",
         "runtime_config_path",
         "runtime-config",
+        "runtime_config_hot_reload",
+        # Retired: interval is fixed at HOT_RELOAD_INTERVAL_SECONDS when enabled.
         "runtime_config_reload_interval",
         "runtime_report_dir",
         "runtime_dump_dir",
@@ -40,35 +42,43 @@ ADDITIONAL_CONFIG_STRIP_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _parse_hot_reload(raw: Any) -> bool:
+    """Coerce ``runtime_config_hot_reload`` to bool (default false)."""
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    # Accept 0/1 ints from JSON-ish configs; reject other numbers (old interval).
+    if isinstance(raw, int) and raw in (0, 1):
+        return bool(raw)
+    raise ValueError(
+        "additional_config.runtime_config_hot_reload must be a bool "
+        f"(true enables hot-reload at a fixed 3s interval), got {raw!r}."
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeConfigBootstrap:
     """AscendConfig fields derived from ``additional_config`` runtime_* keys."""
 
     path: str | None
-    reload_interval_seconds: float
+    hot_reload: bool
     runtime_config: RuntimeConfig
 
 
 def build_runtime_config_from_additional(additional_config: dict[str, Any]) -> RuntimeConfigBootstrap:
     """Validate runtime_* keys, construct :class:`RuntimeConfig`, start non-worker reload."""
+    if "runtime_config_reload_interval" in additional_config:
+        raise ValueError(
+            "additional_config.runtime_config_reload_interval is retired; "
+            "use runtime_config_hot_reload=true|false (fixed 3s poll when enabled)."
+        )
+
     raw_path = additional_config.get("runtime_config_path") or additional_config.get("runtime-config")
     if raw_path is not None and not isinstance(raw_path, str):
         raise ValueError(f"additional_config.runtime_config_path must be a string, got {type(raw_path).__name__}.")
 
-    raw_reload = additional_config.get("runtime_config_reload_interval")
-    if raw_reload is None:
-        raw_reload = 0
-    try:
-        reload_interval_seconds = float(raw_reload)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "additional_config.runtime_config_reload_interval must be a number of seconds "
-            f"(0 disables hot-reload; default 0), got {raw_reload!r}."
-        ) from exc
-    if reload_interval_seconds < 0:
-        raise ValueError(
-            f"additional_config.runtime_config_reload_interval must be >= 0, got {reload_interval_seconds}."
-        )
+    hot_reload = _parse_hot_reload(additional_config.get("runtime_config_hot_reload"))
 
     raw_overlay = additional_config.get("runtime_config")
     if raw_overlay is not None and not isinstance(raw_overlay, dict):
@@ -85,7 +95,7 @@ def build_runtime_config_from_additional(additional_config: dict[str, Any]) -> R
     runtime_cfg = RuntimeConfig(
         raw_path,
         report_dir=raw_report_dir,
-        reload_interval_seconds=reload_interval_seconds,
+        hot_reload=hot_reload,
         ensure_file=False,
         dump_dir=raw_dump_dir,
         startup_overlay=raw_overlay,
@@ -94,6 +104,6 @@ def build_runtime_config_from_additional(additional_config: dict[str, Any]) -> R
     runtime_cfg.start_non_worker_background_reload()
     return RuntimeConfigBootstrap(
         path=raw_path,
-        reload_interval_seconds=reload_interval_seconds,
+        hot_reload=hot_reload,
         runtime_config=runtime_cfg,
     )

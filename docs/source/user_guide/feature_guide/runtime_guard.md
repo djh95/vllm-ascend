@@ -16,7 +16,7 @@ Default deployment: **detectors off, hot-reload off** — negligible overhead un
 
 ```bash
 vllm serve Qwen/Qwen3-8B --additional-config '{
-  "runtime_config_reload_interval": 5,
+  "runtime_config_hot_reload": true,
   "runtime_config": {
     "detector": {
       "token_repeat": { "enabled": true },
@@ -31,7 +31,7 @@ vllm serve Qwen/Qwen3-8B --additional-config '{
 ```bash
 vllm serve Qwen/Qwen3-8B --additional-config '{
   "runtime_config_path": "/data/runtime/config/runtime_config.json",
-  "runtime_config_reload_interval": 5
+  "runtime_config_hot_reload": true
 }'
 ```
 
@@ -48,7 +48,7 @@ Configure through `--additional-config` (or `LLM(..., additional_config=...)`):
 | Key | Type | Description |
 |-----|------|-------------|
 | `runtime_config_path` | str | Path to `runtime_config.json`. Default: `<cwd>/runtime/config/runtime_config.json` |
-| `runtime_config_reload_interval` | float | Hot-reload period in seconds. `0` = static after startup (default) |
+| `runtime_config_hot_reload` | bool | Enable hot-reload (startup-only; not a JSON field). `false` = static after startup (default) |
 | `runtime_config` | dict | Startup overlay merged into JSON defaults |
 | `runtime_report_dir` | str | Override report root (default `<cwd>/runtime/report`) |
 | `runtime_dump_dir` | str | Seed KV dump root `dump.dump_dir` (default derived from report root). Hot-reload of `dump.dump_dir` in JSON wins after startup |
@@ -84,7 +84,6 @@ Report JSON top-level includes `dump_attempted` (whether `dump_kv` was in `on_tr
 | Type | Stage | Typical use |
 |------|-------|-------------|
 | `token_repeat` | after sample | Stutter / repetition |
-| `output_substring` | after sample | Forbidden or garbage token patterns |
 | `logits_finite` | before sample | NaN/Inf logits (``isfinite`` + gate; default **async** ``.item()`` wait at after-sample — logits may be mutated by grammar before wait; set ``item_sync: true`` for sync pre-sample gate/kind). Hit resolves indices/kind then enqueues; after-sample drains. Unattributable rows: warning only (no guessed / null-req report). |
 | `spec_acceptance` | after spec | Spec-decode acceptance drift (via `run_sample_phase` → `check_after_spec`; v2 stashes accept stats in `postprocess_sampled`) |
 
@@ -92,7 +91,7 @@ All detectors default to **disabled**. Enable individually under `detector.<name
 
 Online KV / position meta detectors are **not** in this release; use `dump_kv` for KV capture (offline compare tooling ships later).
 
-> **Wiring:** v1 calls `run_sample_phase` inline from `sample_tokens`; v2 reaches it via `@runtime_guard_sample_tokens`. Both cover post-pre-sample hooks (`mark_finished` / `check_after_spec` / waves / `check_after_sample` when host ids are ready). Pre-sample `check_before_sample` stays on the compute_logits wrap (v1: `@runtime_guard_pre_sample_logits` on `execute_model`; v2: inside the sample decorator; before grammar; `logits_finite` only — default async gate D2H there, wait in after-sample; `item_sync: true` for blocking `.item()`). After-sample for async scheduling **and** for v2 `AsyncOutput` (even under sync scheduling) runs in `AscendAsync*` `get_output()` after D2H + `num_sampled` trim — do not append padded `AsyncOutput.sampled_token_ids` in the sync hook (W2-3 / D-11). Then drain `logits_finite` incidents and enqueue CPU detectors (`token_repeat` / substring) on `ActionQueue` (finish does not wait). `dump_kv` is skipped if the request has already finished/reaped.
+> **Wiring:** v1 calls `run_sample_phase` inline from `sample_tokens`; v2 reaches it via `@runtime_guard_sample_tokens`. Both cover post-pre-sample hooks (`mark_finished` / `check_after_spec` / waves / `check_after_sample` when host ids are ready). Pre-sample `check_before_sample` stays on the compute_logits wrap (v1: `@runtime_guard_pre_sample_logits` on `execute_model`; v2: inside the sample decorator; before grammar; `logits_finite` only — default async gate D2H there, wait in after-sample; `item_sync: true` for blocking `.item()`). After-sample for async scheduling **and** for v2 `AsyncOutput` (even under sync scheduling) runs in `AscendAsync*` `get_output()` after D2H + `num_sampled` trim — do not append padded `AsyncOutput.sampled_token_ids` in the sync hook (W2-3 / D-11). Then drain `logits_finite` incidents and enqueue CPU detector (`token_repeat`) on `ActionQueue` (finish does not wait). `dump_kv` is skipped if the request has already finished/reaped.
 
 ## Actions
 
@@ -116,7 +115,7 @@ Default `on_trigger` is `["report"]`. Per-detector overrides:
 ## Performance
 
 - **No additional-config / defaults**: bind-only path; intended to be noise-free.
-- **Hot-reload only** (`reload_interval > 0`, all detectors off, dump off): on last-PP TP, the TP0 due-broadcast runs on the bus worker so the inference thread can overlap it with forward (C2); end-of-wave rate-limits a warning if the collective was not hidden. Other processes poll the config file.
+- **Hot-reload only** (`runtime_config_hot_reload=true`, all detectors off, dump off): on last-PP TP, the TP0 due-broadcast runs on the bus worker so the inference thread can overlap it with forward (C2); end-of-wave rate-limits a warning if the collective was not hidden. Other processes poll the config file.
 - **Detectors on**: cost depends on enabled checks (light: `token_repeat`; heavier: `logits_finite` — default async gate overlaps sample; `item_sync: true` pays sync `.item()` each step).
 - **dump_kv on hit**: detector arms queue for the **next** wave-head dump lane, then D2H at that wave's `end_of_wave_sync` (after bus drain / prepare). Manual dump D2H's locally at end-of-wave (no dump-job bcast). Idle/broadcast steps submit a cheap due-vector broadcast at wave-head; per-lane `broadcast_object` runs only when that lane is due.
 

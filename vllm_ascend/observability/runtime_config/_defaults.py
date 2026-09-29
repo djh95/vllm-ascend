@@ -19,12 +19,27 @@ from __future__ import annotations
 
 from typing import Any
 
+# Startup-only / internal knobs (not exposed in runtime_config.json).
+HOT_RELOAD_INTERVAL_SECONDS: float = 3.0
+ACTION_QUEUE_MAX_SIZE: int = 64
+DUMP_FREE_HEADROOM_BYTES: int = 5 * 1024 * 1024 * 1024
+SPEC_SHORT_LOG_INTERVAL_SECONDS: float = 2.0
+LOGITS_FINITE_DEFERRED_QUEUE_MAX: int = 256
+
+# Retired JSON keys: silently dropped on validate so old on-disk configs still load.
+_RETIRED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"reload_interval_seconds"})
+_RETIRED_DUMP_KEYS: frozenset[str] = frozenset({"free_headroom_bytes"})
+_RETIRED_REPORT_KEYS: frozenset[str] = frozenset({"decode_token_ids", "include_block_ids"})
+_RETIRED_ACTIONS_KEYS: frozenset[str] = frozenset({"queue_max_size"})
+_RETIRED_DETECTOR_SECTIONS: frozenset[str] = frozenset({"output_substring"})
+_RETIRED_DETECTOR_KEYS: dict[str, frozenset[str]] = {
+    "spec_acceptance": frozenset({"short_log_interval_seconds"}),
+    "logits_finite": frozenset({"deferred_queue_max"}),
+}
+
 _DEFAULTS: dict[str, Any] = {
-    # Kept in JSON for visibility; effective hot-reload interval is set at
-    # process start via additional_config.runtime_config_reload_interval (default 0).
-    # Set >0 at startup to enable. JSON field alone cannot re-enable after start.
-    # Sync transport is fixed: last-PP TP collectives when available, else file poll.
-    "reload_interval_seconds": 0,
+    # Hot-reload on/off is startup-only (additional_config.runtime_config_hot_reload);
+    # poll period is an internal constant — not exposed in this JSON.
     "dump": {
         # Auto dump (detector anomaly arm): quota >0 enables; mutually exclusive
         # with manual_dump. dump.enabled is derived at runtime (auto || manual).
@@ -33,7 +48,7 @@ _DEFAULTS: dict[str, Any] = {
         # Manual dump: false/0=off; positive int N = next N armed waves
         # (prefer N=1 — one shot is enough). true=continuous every wave until
         # hot-reload false (not recommended: little debug value, floods disk /
-        # ActionQueue). Needs runtime_config_reload_interval>0. Skips auto
+        # ActionQueue). Needs runtime_config_hot_reload=true. Skips auto
         # quota/cooldown/filters. Count is decremented in-memory each armed
         # wave; JSON is rewritten only when the count reaches 0 (false). While
         # the in-memory count is still >0, a hand-edit to this file still
@@ -47,9 +62,6 @@ _DEFAULTS: dict[str, Any] = {
         # Settable at startup (additional_config.runtime_dump_dir) and via
         # this JSON key (hot-reload); startup value seeds JSON when unset.
         "dump_dir": None,
-        # Extra free space required besides the estimated dump payload.
-        # Check is: statvfs(free) >= estimate + free_headroom_bytes.
-        "free_headroom_bytes": 5 * 1024 * 1024 * 1024,
     },
     "ascend_log": {
         "level": "INFO",
@@ -60,17 +72,15 @@ _DEFAULTS: dict[str, Any] = {
     },
     "report": {
         # Default False: anomaly reports store lengths only.
-        # Set true to persist prompt_token_ids + cumulative output_token_ids.
+        # Set true to persist prompt_token_ids + cumulative output_token_ids
+        # (always decoded to text when sensitive is on).
         "save_sensitive_info": False,
-        # When save_sensitive_info, decode prompt/output ids to text (lazy tokenizer).
-        "decode_token_ids": True,
         # Cap persisted token-id list lengths (0 = unlimited). Counts stay full.
         "max_prompt_token_ids": 1000,
         "max_output_token_ids": 1000,
-        # Persist each request's current GPU block_ids in report detail.
-        "include_block_ids": True,
         # Same (incident_type, req_id): max report files; at cap, stop detecting
         # that req (all detectors). Default 1 = one report then stop.
+        # GPU block_ids are always included in report detail.
         "max_per_req": 1,
     },
     # Nested detector sections under ``detector`` (each has ``enabled``).
@@ -79,8 +89,6 @@ _DEFAULTS: dict[str, Any] = {
             # Always includes report so max_per_req can stop-detect after writes.
             "on_trigger": ["report"],
         },
-        # ActionQueue capacity (bind-time). Raise under bursty dump_kv / CPU detect.
-        "queue_max_size": 64,
     },
     "detector": {
         # Stop-detect after report.max_per_req successful writes (see report).
@@ -91,16 +99,6 @@ _DEFAULTS: dict[str, Any] = {
             "len_low_threshold": 1.4,
             "high_threshold": 0.96,
             "len_high_threshold": 2.8,
-            # Throttle per-req INFO short logs (seconds).
-            "short_log_interval_seconds": 2.0,
-        },
-        "output_substring": {
-            "enabled": False,
-            "patterns": [],
-            "add_special_tokens": False,
-            # true: patterns match only at the start (prefix) of cumulative output;
-            # false (default): match anywhere as a contiguous token-id subsequence.
-            "match_prefix": False,
         },
         # Sliding-window token re-read detector (no logprobs). Per new token:
         # score = count of that id in the previous ``window`` content tokens;
@@ -121,8 +119,6 @@ _DEFAULTS: dict[str, Any] = {
         # (wait at after-sample); set item_sync=true to block at pre-sample.
         "logits_finite": {
             "enabled": False,
-            # Cap in-flight deferred alert batches (async keeps ~1-2 steps).
-            "deferred_queue_max": 256,
             # false: non-blocking D2H of the all-finite gate; wait in check_deferred.
             #   Logits may be mutated afterward (grammar bitmask → -inf); gate still
             #   uses precomputed row_finite, but hit-time finite_kind may see post-mutation
@@ -137,7 +133,6 @@ _DEFAULTS: dict[str, Any] = {
 # Known nested detector sections under ``detector``.
 DETECTOR_SECTIONS: tuple[str, ...] = (
     "spec_acceptance",
-    "output_substring",
     "token_repeat",
     "logits_finite",
 )

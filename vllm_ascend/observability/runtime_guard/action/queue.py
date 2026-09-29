@@ -23,7 +23,7 @@ from collections.abc import Callable
 from typing import Any
 
 from vllm_ascend.logger import init_logger_ascend
-from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
+from vllm_ascend.observability.runtime_config._defaults import ACTION_QUEUE_MAX_SIZE
 
 logger = init_logger_ascend(__name__)
 
@@ -52,7 +52,7 @@ class ActionQueue:
         name: str = "runtime-guard-actions",
     ) -> None:
         if maxsize is None:
-            maxsize = int(_DEFAULTS["actions"]["queue_max_size"])
+            maxsize = ACTION_QUEUE_MAX_SIZE
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=maxsize)
         self._name = name
         self._thread: threading.Thread | None = None

@@ -596,7 +596,7 @@ class AscendConfig:
     )
     dump_config_path: str | None = None
     runtime_config_path: str | None = None
-    runtime_config_reload_interval: float = 0.0
+    runtime_config_hot_reload: bool = False
     # Runtime object constructed in init_ascend_config (not from additional_config dict).
     runtime_config: Any = None
     mc2_comm_alg: Literal["", "fullmesh", "hierarchy", "fullmesh_v2"] = ""
@@ -1860,7 +1860,7 @@ def init_ascend_config(vllm_config: VllmConfig) -> AscendConfig:
         kvpp_config=kvpp_config,
         dump_config_path=dump_config_path,
         runtime_config_path=runtime_boot.path,
-        runtime_config_reload_interval=runtime_boot.reload_interval_seconds,
+        runtime_config_hot_reload=runtime_boot.hot_reload,
         runtime_config=runtime_boot.runtime_config,
         **kwargs,
     )

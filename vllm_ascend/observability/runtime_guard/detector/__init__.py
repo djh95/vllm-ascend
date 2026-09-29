@@ -20,7 +20,6 @@ from vllm_ascend.observability.runtime_guard.detector.base import (
 )
 from vllm_ascend.observability.runtime_guard.detector.logits_finite import LogitsFiniteDetector
 from vllm_ascend.observability.runtime_guard.detector.manager import DetectorManager
-from vllm_ascend.observability.runtime_guard.detector.output_substring import OutputSubstringDetector
 from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
 from vllm_ascend.observability.runtime_guard.detector.token_repeat import TokenRepeatDetector
 from vllm_ascend.observability.runtime_guard.incident import Incident
@@ -32,7 +31,6 @@ __all__ = [
     "DetectorManager",
     "DetectorRegistry",
     "LogitsFiniteDetector",
-    "OutputSubstringDetector",
     "SpecAcceptanceDetector",
     "TokenRepeatDetector",
 ]

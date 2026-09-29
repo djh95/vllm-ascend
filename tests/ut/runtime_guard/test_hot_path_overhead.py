@@ -28,15 +28,19 @@ from vllm_ascend.observability.runtime_config.config import RuntimeConfig
 from vllm_ascend.observability.runtime_guard.processor import RuntimeGuardProcessor, SamplePhaseResult
 
 
-def _cfg(tmp_path: Path, *, reload: float) -> RuntimeConfig:
+def _cfg(tmp_path: Path, *, reload: float = 0.0) -> RuntimeConfig:
     path = tmp_path / "runtime_config.json"
     path.write_text(json.dumps({}), encoding="utf-8")
-    return RuntimeConfig(
+    cfg = RuntimeConfig(
         config_path=path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=reload,
+        hot_reload=bool(reload),
     )
+    if reload and reload != cfg.reload_interval_seconds:
+        # UT may stretch/shorten the internal poll to exercise due/skip logic.
+        cfg._reload_interval = float(reload)
+    return cfg
 
 
 def _bind(cfg: RuntimeConfig, *, runner: MagicMock | None = None) -> RuntimeGuardProcessor:

@@ -184,7 +184,6 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         self.detectors = DetectorManager(
             runtime_config=runtime_config,
             runner=runner,
-            tokenizer_provider=self._get_detector_tokenizer,
             detection_gate=self.action_executor.can_run_detection,
             detection_skip_reason=self.action_executor.anomaly_check_skip_reason,
         )
@@ -598,7 +597,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         (async ``.item()`` wait completes here; ``item_sync`` resolved earlier);
         here we drain those incidents. Wave stamp + IO append stay on this
         thread (sync sample or async ``get_output``).
-        ``token_repeat`` / ``output_substring`` run later on ActionQueue;
+        ``token_repeat`` runs later on ActionQueue;
         request finish does not wait. ``dump_kv`` (any detector) is skipped
         if the request is already finished/reaped.
         """
@@ -685,7 +684,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         if not ok:
             logger.warning(
                 "[runtime_guard] after-sample CPU detect dropped (queue full or stopping); "
-                "token_repeat/output_substring may miss this step req_ids=%s",
+                "token_repeat may miss this step req_ids=%s",
                 req_ids_job,
             )
             store.finish_cpu_jobs(req_ids_job)

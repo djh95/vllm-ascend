@@ -161,7 +161,7 @@ def test_v4_example_template_loads_and_validates(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
     )
     assert cfg.detectors_enabled_in(cfg._data) is False
     assert cfg.dump_enabled() is False
@@ -173,7 +173,7 @@ def test_v13_jsonc_comments_and_trailing_commas(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=1,
+        hot_reload=True,
     )
     cfg_path.write_text(
         """{
@@ -204,7 +204,7 @@ def test_v5_bootstrap_invalid_content_falls_back_to_defaults(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
     )
     assert cfg.detectors_enabled_in(cfg._data) is False
     on_disk = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -423,7 +423,7 @@ def test_v10_unknown_detector_key_rejected_on_reload(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
     )
     # typo key "windw" must fail the reload loudly instead of silently defaulting
     cfg_path.write_text(
@@ -459,7 +459,7 @@ def test_v10b_unknown_top_level_key_rejected_on_reload(tmp_path: Path):
         config_path=cfg_path,
         report_dir=tmp_path / "report",
         ensure_file=True,
-        reload_interval_seconds=0,
+        hot_reload=False,
     )
     assert cfg.detector_get("token_repeat", "enabled") is False
     cfg_path.write_text(json.dumps({"windw": 10, "detector": {"token_repeat": {"enabled": True}}}), encoding="utf-8")
@@ -1155,7 +1155,7 @@ def test_v18h_apply_config_payload_bumps_follower_reload_ts(tmp_path: Path):
     path.write_text("{}", encoding="utf-8")
     cfg = RuntimeConfig(
         config_path=path,
-        reload_interval_seconds=5.0,
+        hot_reload=True,
         ensure_file=False,
     )
     cfg._initial_broadcast_done = True
@@ -1300,18 +1300,16 @@ class _ConsumeRecorder:
         return "/tmp/ut-rg-report/kv_cache"
 
     def dump_get(self, key, default=None):
-        if key == "free_headroom_bytes":
-            return 0
         return default
 
     def report_include_block_ids(self) -> bool:
-        return False
+        return True
 
     def report_save_sensitive_info(self) -> bool:
         return False
 
     def report_decode_token_ids(self) -> bool:
-        return False
+        return self.report_save_sensitive_info()
 
     def report_max_prompt_token_ids(self) -> int:
         return 1000
@@ -1675,7 +1673,7 @@ def test_v21_bootstrap_overwrites_existing_file_with_defaults(tmp_path: Path, mo
     on_disk = json.loads(cfg_file.read_text(encoding="utf-8"))
     assert on_disk["detector"]["token_repeat"]["enabled"] is False
     assert rc.detector_get("token_repeat", "window", 0) == int(cfg._DEFAULTS["detector"]["token_repeat"]["window"])
-    assert rc.detector_get("output_substring", "enabled", True) is False
+    assert "output_substring" not in on_disk.get("detector", {})
 
 
 def test_v21b_default_path_missing_file_pure_defaults(tmp_path: Path, monkeypatch):
@@ -1684,7 +1682,7 @@ def test_v21b_default_path_missing_file_pure_defaults(tmp_path: Path, monkeypatc
     monkeypatch.chdir(tmp_path)
     rc = cfg.RuntimeConfig(config_path=None)
     assert rc.detector_get("token_repeat", "enabled", True) is False
-    assert rc.detector_get("output_substring", "enabled", True) is False
+    assert "output_substring" not in (rc._data.get("detector") or {})
 
 
 def test_v21c_pre_bootstrap_file_ignored_on_reload(tmp_path: Path):
@@ -1703,7 +1701,7 @@ def test_v21c_pre_bootstrap_file_ignored_on_reload(tmp_path: Path):
         config_path=str(cfg_file),
         report_dir=tmp_path / "report",
         ensure_file=False,  # production: persist deferred to ensure_persisted
-        reload_interval_seconds=1,
+        hot_reload=True,
     )
     # Bootstrap ignores the stale file: detector stays at its default (off).
     assert rc.detector_get("token_repeat", "enabled", True) is False
@@ -1756,7 +1754,7 @@ def test_v23_dump_root_default_json_and_startup_seed(tmp_path: Path, monkeypatch
         config_path=str(cfg_file),
         dump_dir=str(tmp_path / "from_startup"),
         ensure_file=True,
-        reload_interval_seconds=1,
+        hot_reload=True,
     )
     assert seeded.dump_root() == (tmp_path / "from_startup").resolve()
     on_disk = json.loads(cfg_file.read_text(encoding="utf-8"))
@@ -1865,7 +1863,6 @@ def test_v23d_manual_handle_writes_one_report_per_req(tmp_path: Path):
             side_effect=lambda _r, rid, *_a, **_k: [10] if rid == "cmpl-a" else [20],
         ),
     ):
-        p.runtime_config.report_include_block_ids = lambda: True  # type: ignore[method-assign]
         io = MagicMock()
         snap = MagicMock()
         snap.as_detail_fields.return_value = {"prompt_token_count": 1}

@@ -286,9 +286,7 @@ class RuntimeGuardReportMixin:
         req_id: str,
         req_idx: int | None = None,
     ) -> dict[str, Any]:
-        """Attach ``block_ids`` when ``report.include_block_ids`` is on."""
-        if not self.runtime_config.report_include_block_ids():
-            return detail
+        """Always attach the request's current GPU ``block_ids``."""
         out = dict(detail)
         out["block_ids"] = block_ids_for_request(
             self.runner,

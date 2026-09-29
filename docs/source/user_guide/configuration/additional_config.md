@@ -56,7 +56,7 @@ The following table lists additional configuration options available in vLLM Asc
 | `scheduler_config`                  | dict | `{}`    | Configuration options for Ascend scheduler extensions, including balance scheduling, recompute scheduling, DyntraLB, ShortRequestFirst, and dynamic chunked pipeline parallel. |
 | `refresh`                           | bool | `false` | Whether to refresh global Ascend configuration content. This is usually used by rlhf or ut/e2e test case. |
 | `runtime_config_path`               | str  | `None`  | Path to Runtime Guard JSON config. Default: `<cwd>/runtime/config/runtime_config.json`. See [Runtime Guard](../feature_guide/runtime_guard.md). |
-| `runtime_config_reload_interval`    | float| `0`     | Hot-reload period in seconds for `runtime_config.json`. `0` disables hot-reload (static after startup). |
+| `runtime_config_hot_reload`         | bool | `false` | Enable hot-reload of `runtime_config.json` (startup-only; not a JSON field). |
 | `runtime_config`                    | dict | `None`  | Startup overlay merged into runtime config defaults (detectors, dump quota, report flags). |
 | `runtime_report_dir`                | str  | `None`  | Override report root directory. Default: `<cwd>/runtime/report`. |
 | `runtime_dump_dir`                 | str  | `None`  | Seed KV dump root (`dump.dump_dir`). Default derived from report root. |
@@ -101,7 +101,7 @@ Runtime Guard provides online anomaly detection, structured incident reports, an
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `runtime_config_path` | str | `None` | Path to `runtime_config.json`. When omitted, vLLM-Ascend uses `<cwd>/runtime/config/runtime_config.json` (created with defaults on first start). |
-| `runtime_config_reload_interval` | float | `0` | Poll interval in seconds for hot-reload. `0` = static config after startup. |
+| `runtime_config_hot_reload` | bool | `false` | Enable hot-reload (startup-only; not a JSON field). `false` = static config after startup. |
 | `runtime_config` | dict | `None` | Startup overlay: `defaults ← runtime_config`. Bootstrap overwrites the JSON file with this effective config. Hot-reload re-reads the JSON file only. |
 | `runtime_report_dir` | str | `None` | Report and KV dump root. Default `<cwd>/runtime/report`. |
 | `runtime_dump_dir` | str | `None` | Seed `dump.dump_dir` at startup; JSON hot-reload of `dump.dump_dir` wins afterwards. |
@@ -111,7 +111,7 @@ Example (online):
 ```bash
 vllm serve Qwen/Qwen3-8B --additional-config '{
   "runtime_config_path": "/data/runtime/config/runtime_config.json",
-  "runtime_config_reload_interval": 5,
+  "runtime_config_hot_reload": true,
   "runtime_config": {
     "detector": {
       "token_repeat": { "enabled": true, "on_trigger": ["report", "dump_kv"] }

@@ -32,8 +32,7 @@ Priorities: **P0** every PR / smoke; **P1** full suite; **P2** env-dependent.
 
 | ID | What | Expect |
 |----|------|--------|
-| T1–T3 | output_substring / token_repeat / logits_finite | Hit/miss; max_per_req stop-detect |
-| T1b | output_substring helpers + text/token_ids patterns | `test_detectors_and_kv.py` |
+| T1–T3 | token_repeat / logits_finite | Hit/miss; max_per_req stop-detect |
 | S4 | token_repeat hit/miss/disabled | `test_token_repeat_detector_hit_and_miss` |
 | T4 | spec_acceptance normal high accept (len below high) | no alert — `test_v17d_*` |
 | T4b | spec_acceptance low accept rate | alert — `test_v17e_*` |
