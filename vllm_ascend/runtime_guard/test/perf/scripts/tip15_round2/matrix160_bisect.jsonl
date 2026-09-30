@@ -1,0 +1,42 @@
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 1, "boot_s": 116, "wall": 1.73, "ct": 49, "tps": 28.34}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 1, "boot_s": 116, "wall": 9.29, "ct": 272, "tps": 29.28}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 1, "boot_s": 116, "wall": 16.68, "ct": 497, "tps": 29.79}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 2, "boot_s": 116, "wall": 1.67, "ct": 49, "tps": 29.3}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 2, "boot_s": 116, "wall": 8.85, "ct": 272, "tps": 30.75}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 2, "boot_s": 116, "wall": 16.69, "ct": 497, "tps": 29.78}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "boot_s": 116, "cards": "0 1 2 3", "gm_tok_s": 29.531, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 1, "boot_s": 115, "wall": 1.67, "ct": 49, "tps": 29.43}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 1, "boot_s": 115, "wall": 9.18, "ct": 272, "tps": 29.64}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 1, "boot_s": 115, "wall": 16.77, "ct": 497, "tps": 29.63}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 2, "boot_s": 115, "wall": 1.67, "ct": 49, "tps": 29.39}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 2, "boot_s": 115, "wall": 9.26, "ct": 272, "tps": 29.39}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 2, "boot_s": 115, "wall": 17.23, "ct": 497, "tps": 28.85}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "boot_s": 115, "cards": "0 1 2 3", "gm_tok_s": 29.387, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 1, "boot_s": 106, "wall": 1.68, "ct": 49, "tps": 29.23}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 1, "boot_s": 106, "wall": 9.11, "ct": 272, "tps": 29.84}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 1, "boot_s": 106, "wall": 16.39, "ct": 497, "tps": 30.32}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 2, "boot_s": 106, "wall": 1.78, "ct": 49, "tps": 27.56}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 2, "boot_s": 106, "wall": 9.27, "ct": 272, "tps": 29.34}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 2, "boot_s": 106, "wall": 16.65, "ct": 497, "tps": 29.85}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "boot_s": 106, "cards": "0 1 2 3", "gm_tok_s": 29.343, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 1, "boot_s": 115, "wall": 1.65, "ct": 49, "tps": 29.69}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 1, "boot_s": 115, "wall": 9.45, "ct": 272, "tps": 28.77}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 1, "boot_s": 115, "wall": 16.73, "ct": 497, "tps": 29.7}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 2, "boot_s": 115, "wall": 1.69, "ct": 49, "tps": 29.01}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 2, "boot_s": 115, "wall": 9.09, "ct": 272, "tps": 29.93}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 2, "boot_s": 115, "wall": 16.83, "ct": 497, "tps": 29.54}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t1", "tp": 2, "pp": 2, "dp": 1, "boot_s": 115, "cards": "0 1 2 3", "gm_tok_s": 29.437, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 1, "boot_s": 116, "wall": 1.66, "ct": 49, "tps": 29.51}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 1, "boot_s": 116, "wall": 9.28, "ct": 272, "tps": 29.32}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 1, "boot_s": 116, "wall": 16.74, "ct": 497, "tps": 29.69}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 2, "boot_s": 116, "wall": 1.67, "ct": 49, "tps": 29.4}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 2, "boot_s": 116, "wall": 8.93, "ct": 272, "tps": 30.46}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 2, "boot_s": 116, "wall": 16.5, "ct": 497, "tps": 30.12}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t2", "tp": 2, "pp": 2, "dp": 1, "boot_s": 116, "cards": "0 1 2 3", "gm_tok_s": 29.747, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 1, "boot_s": 105, "wall": 1.71, "ct": 49, "tps": 28.73}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 1, "boot_s": 105, "wall": 9.63, "ct": 272, "tps": 28.26}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 1, "boot_s": 105, "wall": 17.33, "ct": 497, "tps": 28.68}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "short", "round": 2, "boot_s": 105, "wall": 1.76, "ct": 49, "tps": 27.82}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "medium", "round": 2, "boot_s": 105, "wall": 9.37, "ct": 272, "tps": 29.04}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "tag": "long", "round": 2, "boot_s": 105, "wall": 16.85, "ct": 497, "tps": 29.5}
+{"host": "lab-worker-a3-01", "name": "q25_7b_pp2", "state": "t3", "tp": 2, "pp": 2, "dp": 1, "boot_s": 105, "cards": "0 1 2 3", "gm_tok_s": 28.667, "n_ok": 6, "verdict": "OK", "errs": ""}

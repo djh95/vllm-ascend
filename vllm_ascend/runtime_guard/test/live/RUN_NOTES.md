@@ -1484,3 +1484,38 @@ health=200 + short/long 输出 sane + manual_pt>0 且 ranks 恰为 [dp0_tp0_pp0_
 
 ### E. 脚本修复（已合 canonical）
 - t3 引号 bug：`$([ ... ] && echo --additional-config "$ADDCFG")` word-split 拆散 JSON → api_server `unrecognized arguments` 必现 BOOT_FAIL；160/162 两机各自就地修复，canonical 版改为 `T3ARGS`/`DPARGS` 数组传参（本提交）
+
+## 2026-09-30 阶段 4 PP2 开销定位（160 三态二分）：检测器 per-wave 事件式 stall，reload 清白；优化建议
+
+> 数据 `matrix160_bisect.jsonl`（6 runs，t1→t2→t3 交替 ×2）已入 `perf/scripts/tip15_round2/`；
+> 远端产物 `/home/d00824595/rg_matrix_160_bisect/`。脚本新增 STATE=t2（reload 开、检测器全关）。
+
+### A. 三态结果（q25_7b PP2×TP2，gm tok/s，12 点合并）
+| 状态 | gm | 说明 |
+|---|---|---|
+| t1（纯基建） | 29.484 | 无 config |
+| t2（reload 开/检测器关） | 29.567 | **+0.28% = 噪声，reload/file-poll 清白** |
+| t3（reload+3 检测器） | 29.003 | **t3/t2 = -1.91% = 检测器开销** |
+
+- t2/t1 两轮变号（-0.49%/+1.05%），配对 5/12 变慢——纯噪声
+- t3/t2 两轮同号（-0.15%/-3.63%），合并 -1.91%，中位 -2.38%
+
+### B. 机制证据（三条独立证据链）
+1. **分 tag 摊薄曲线**：short（49 tok）-3.8% / medium（272 tok）-2.0% / long（497 tok）+0.0%——固定 per-wave/请求开销随生成长度摊薄 → **事件式 stall，非 per-token 计算**
+2. **窗内同步等待实锤**：t3 测量窗内 2 次 `merged bus not finished before end-of-wave; waiting on the due broadcast (forward did not fully hide the collective)`（Worker_PP1，13:12:50/13:13:20）；t2 同样有 4 条 bus 心跳警告却零掉速 → **差异来自 t3 时 bus 携带检测器结果+report 动作，等待变贵**
+3. **reload 服务期零活动**：t2/t3 的 12 条 reload 行全在 boot 段；3s poll 线程测量窗内零日志、日志体量差仅 ~15 行——与 t2 零开销吻合
+
+### C. 口径修正
+- 交替协议下 t3/t1 总亏损 -1.63%，旧 retest 口径 -4.35% 中约 2.5pct 为 run 间漂移（今日 t1 基线 29.48 vs retest 30.18）
+- **PP2 真实稳定开销：-1.6%~-1.9%**，逐轮波动大（-0.15% vs -3.63%）进一步支持偶发事件机制
+- 对照：PP1 下 C123 的 C3（检测器）= 0.99369（-0.6%）——PP2 放大至 ~-1.9%，符合「PP 流水线 bubble + bus 等待」模型
+
+### D. 优化建议（按预期收益排序）
+1. **检测器结果广播与 forward 重叠**（processor_bus merged bus 路径）：当前 end-of-wave 才等待广播结果，PP1 的 forward 未完全隐藏 collective——把检测器结果的提交时机提前到 wave head、或把等待改为 quiesce 阶段 poll，目标消化 -1.9% 主体
+2. **非 last-PP rank 检测器禁用**：logits/token_repeat 的输入只在 last-PP 完整（logits 唯一在 last-PP；spec_acceptance 同理）；若当前 PP0×TP2 的 2 个 rank 也在跑检测器钩子，纯属浪费——检查 detector placement（上游曾有 "Pin detectors to TP0" 提交，PP 维度待确认）
+3. **report 动作异步化验证**：t3 与 t2 的另一差异是 on_trigger=report 的动作路径；dump/report 落盘若在引擎线程做 statvfs（free_headroom 检查），PP2 下波短更敏感——加 D2H/IO 计时打点确认
+4. **测量协议固化**：t1/t3（/t2）交替轮换为标准协议，整块顺序执行产生的基线漂移（本日 2 处伪影：TP4 +6.9% 翻正、PP2 4.35%→1.9%）已两次证明不可靠
+
+### E. 达标总判定（阶段 3+4 汇总）
+- 11 配置（160 主矩阵）+ TP4/DP/PP1 复测：**无可证实 >1% 开销，达标**
+- PP2×TP2：**唯一未达标点，-1.6~-1.9%，已定位到检测器 per-wave 事件式 bus 等待，给出 4 条优化路径**，其中建议 1+2 为产品侧 actionable 改动
