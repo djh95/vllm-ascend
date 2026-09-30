@@ -229,9 +229,21 @@ def test_ascend_log_enabled_unknown_key_rejected():
         validate_runtime_config(data)
 
 
-def test_startup_overlay_reload_interval_overridden_by_ctor(tmp_path: Path):
-    from vllm_ascend.observability.runtime_config._defaults import HOT_RELOAD_INTERVAL_SECONDS
+def test_validate_rejects_top_level_reload_interval() -> None:
+    """Unknown top-level keys (incl. retired reload_interval_seconds) hard-fail."""
+    from copy import deepcopy
 
+    from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
+    from vllm_ascend.observability.runtime_config.config import validate_runtime_config
+
+    data = deepcopy(_DEFAULTS)
+    data["reload_interval_seconds"] = 999
+    with pytest.raises(ValueError, match="unknown top-level key"):
+        validate_runtime_config(data)
+
+
+def test_startup_overlay_unknown_top_level_reload_interval_falls_back(tmp_path: Path):
+    """Bad overlay is rejected at bootstrap; service keeps defaults (no soft-pop)."""
     cfg_path = tmp_path / "runtime_config.json"
     _write(cfg_path, {})
     cfg = RuntimeConfig(
@@ -244,12 +256,9 @@ def test_startup_overlay_reload_interval_overridden_by_ctor(tmp_path: Path):
             "detector": {"token_repeat": {"enabled": True}},
         },
     )
-    # Ctor hot_reload is authoritative; overlay's retired interval key is ignored.
-    assert cfg.reload_interval_seconds == HOT_RELOAD_INTERVAL_SECONDS
-    assert cfg.hot_reload_enabled is True
     assert "reload_interval_seconds" not in cfg._data
-    # Overlay still applies other (non-frozen) keys.
-    assert cfg.detector_get("token_repeat", "enabled") is True
+    # Entire overlay dropped when validate fails — detector overlay not applied.
+    assert cfg.detector_get("token_repeat", "enabled") is False
 
 
 def test_retired_p0_p1_keys_soft_popped(tmp_path: Path):

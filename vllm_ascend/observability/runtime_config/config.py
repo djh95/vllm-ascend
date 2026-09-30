@@ -60,7 +60,6 @@ from vllm_ascend.observability.runtime_config._defaults import (
     _RETIRED_DETECTOR_KEYS,
     _RETIRED_DUMP_KEYS,
     _RETIRED_REPORT_KEYS,
-    _RETIRED_TOP_LEVEL_KEYS,
     ACTION_QUEUE_MAX_SIZE,
     ACTIONS_KEYS,
     ASCEND_LOG_KEYS,
@@ -322,9 +321,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     validation is safe regardless of whether the caller normalized first.
     """
     _normalize_config_sections_into(data)
-    # Drop retired keys so old on-disk JSON still loads.
-    for key in _RETIRED_TOP_LEVEL_KEYS:
-        data.pop(key, None)
     unknown_top = sorted(set(data) - TOP_LEVEL_KEYS)
     if unknown_top:
         raise ValueError(f"runtime config has unknown top-level key(s) {unknown_top}; allowed={sorted(TOP_LEVEL_KEYS)}")
@@ -597,8 +593,6 @@ class RuntimeConfig:
         merged = deepcopy(_DEFAULTS)
         if use_overlay and self._startup_overlay:
             overlay = deepcopy(self._startup_overlay)
-            # Hot-reload is startup-only; ignore any retired JSON key in overlay.
-            overlay.pop("reload_interval_seconds", None)
             pre = deepcopy(merged)
             merged = _deep_merge(merged, overlay)
             overlay_changes = _leaf_changes(pre, merged)
@@ -608,8 +602,6 @@ class RuntimeConfig:
                     len(overlay_changes),
                     "; ".join(overlay_changes[:12]) + (" ..." if len(overlay_changes) > 12 else ""),
                 )
-        # Strip retired display key if present (e.g. old on-disk JSON / overlay).
-        merged.pop("reload_interval_seconds", None)
         if self._startup_dump_dir:
             merged.setdefault("dump", {})["dump_dir"] = self._startup_dump_dir
         # validate_runtime_config normalizes ascend_log in place.

@@ -30,8 +30,8 @@ DUMP_FREE_HEADROOM_BYTES: int = 5 * 1024 * 1024 * 1024
 SPEC_SHORT_LOG_INTERVAL_SECONDS: float = 2.0
 LOGITS_FINITE_DEFERRED_QUEUE_MAX: int = 256
 
-# Retired JSON keys: silently dropped on validate so old on-disk configs still load.
-_RETIRED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"reload_interval_seconds"})
+# Retired nested JSON keys: silently dropped on validate so old on-disk configs
+# still load. Unknown *top-level* keys are rejected (no soft-pop).
 _RETIRED_DUMP_KEYS: frozenset[str] = frozenset({"free_headroom_bytes"})
 _RETIRED_REPORT_KEYS: frozenset[str] = frozenset({"decode_token_ids", "include_block_ids"})
 _RETIRED_ACTIONS_KEYS: frozenset[str] = frozenset({"queue_max_size"})
