@@ -25,7 +25,7 @@ import torch
 
 from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
-# ---- token_utils.py ----
+# ---- token helpers ----
 
 
 def is_int_list(value: Any) -> bool:
@@ -99,7 +99,7 @@ def load_model_tokenizer(runner: Any) -> Any | None:
     return cached_tokenizer_from_config(model_config)
 
 
-# ---- io_snapshot.py ----
+# ---- I/O snapshot ----
 
 
 def _raw_output_token_ids(runner: Any, req_id: str, req_idx: int | None) -> Any:

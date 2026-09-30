@@ -17,7 +17,7 @@
 """Runtime control plane (``runtime_config.json``).
 
 Package façade: :class:`RuntimeConfig`, path helpers, and
-``additional_config`` bootstrap (formerly ``from_additional_config``).
+``additional_config`` bootstrap via :func:`build_runtime_config_from_additional`.
 """
 
 from __future__ import annotations

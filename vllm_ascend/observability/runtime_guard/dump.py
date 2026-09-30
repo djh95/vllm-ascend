@@ -38,7 +38,7 @@ from vllm_ascend.observability.runtime_guard.rank_gate import (
 
 logger = init_logger_ascend(__name__)
 
-# ---- dump_io.py ----
+# ---- dump path / free space ----
 
 # Cap how far we walk toward an existing ancestor when probing free space for
 # a path that does not exist yet (mkdir happens later).
@@ -210,7 +210,7 @@ def write_kv_dump_request_info(
         return None
 
 
-# ---- kv_block_meta.py ----
+# ---- KV block metadata ----
 
 
 def block_ids_for_request(
@@ -378,7 +378,7 @@ def _block_table_for_group(input_batch: Any, kv_cache_group: int) -> Any | None:
         return multi if kv_cache_group == 0 else None
 
 
-# ---- kv_cache_reader.py ----
+# ---- KV cache reader ----
 
 
 def _pp_start_layer(runner: Any) -> int:

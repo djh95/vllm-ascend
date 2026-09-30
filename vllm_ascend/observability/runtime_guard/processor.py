@@ -687,7 +687,7 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
             store.finish_cpu_jobs(req_ids_job)
 
 
-# ---- sampling_meta_debug (merged) ----
+# ---- sampling meta debug ----
 
 
 def log_sampling_meta_debug(runner: Any, req_ids: list[str] | None) -> None:

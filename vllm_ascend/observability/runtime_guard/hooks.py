@@ -184,7 +184,7 @@ def runtime_guard_sample_tokens(sample_tokens_fn):
     return wrapper
 
 
-# ---- runner_bridge (merged) ----
+# ---- runner bind / sample hooks ----
 
 # Written from ModelRunner.postprocess_sampled; read only by sample-phase hooks.
 _POSTPROCESS_SAMPLED_ATTR = "_obs_postprocess_sampled_tokens"

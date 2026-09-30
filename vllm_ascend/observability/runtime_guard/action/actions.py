@@ -443,7 +443,7 @@ def get_action(name: str) -> Action | None:
     return _ACTIONS.get(name)
 
 
-# ---- executor (merged) ----
+# ---- action executor ----
 
 # Same fallback as ``_DEFAULTS["actions"]["defaults"]["on_trigger"]``.
 _DEFAULT_ACTIONS: list[str] = list(_DEFAULTS["actions"]["defaults"]["on_trigger"])

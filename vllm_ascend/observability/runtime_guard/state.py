@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 logger = init_logger_ascend(__name__)
 
-# ---- incident.py ----
+# ---- incident types ----
 
 # Align with msprobe response_anomaly ILLDetector ill_type codes.
 ILL_TYPE_NONE = 0
@@ -142,7 +142,7 @@ class TriggerEvent:
         return out
 
 
-# ---- wave_tracker.py ----
+# ---- wave tracker ----
 
 
 class WaveTracker:
@@ -218,7 +218,7 @@ class WaveTracker:
                     self._sample_waves.pop(str(req_id), None)
 
 
-# ---- quota.py ----
+# ---- dump quota ----
 
 
 class DumpQuota:
@@ -285,7 +285,7 @@ class DumpQuota:
         return self._total_count, self._max_times
 
 
-# ---- request_state.py ----
+# ---- request store ----
 
 # Finished but sample_waves still non-empty this many real-steps later → force reap.
 MAX_DEFERRED_REAP_WAVES = 8

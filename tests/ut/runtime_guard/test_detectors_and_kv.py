@@ -350,13 +350,13 @@ def test_free_bytes_at_walks_to_existing_ancestor(tmp_path: Path):
 
 
 def test_free_bytes_at_returns_none_on_statvfs_error(tmp_path: Path, monkeypatch):
-    from vllm_ascend.observability.runtime_guard import dump as dump_io
+    from vllm_ascend.observability.runtime_guard import dump as dump_mod
 
     def _boom(_path):
         raise OSError("no statvfs")
 
-    monkeypatch.setattr(dump_io.os, "statvfs", _boom)
-    assert dump_io.free_bytes_at(tmp_path) is None
+    monkeypatch.setattr(dump_mod.os, "statvfs", _boom)
+    assert dump_mod.free_bytes_at(tmp_path) is None
 
 
 def test_estimate_dump_bytes_scales_with_blocks():
