@@ -309,7 +309,6 @@ def test_retired_p0_p1_keys_soft_popped(tmp_path: Path):
     assert cfg.reload(force=True) is True
     assert cfg.action_queue_max_size() == ACTION_QUEUE_MAX_SIZE
     assert cfg.report_decode_token_ids() is True  # follows save_sensitive
-    assert cfg.report_include_block_ids() is True
     assert DUMP_FREE_HEADROOM_BYTES > 0
     assert "queue_max_size" not in cfg._data.get("actions", {})
     assert "free_headroom_bytes" not in cfg._data.get("dump", {})

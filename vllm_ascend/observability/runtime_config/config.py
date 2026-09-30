@@ -18,7 +18,7 @@
 Design (multi-DP safe — avoid full-world / cross-PP collectives):
 
 1. **One writer / monitor per EngineCore (per DP replica)**
-   Reads & writes the JSON (``ensure_persisted`` / ``save`` for rare clears).
+   Materializes JSON via ``ensure_persisted`` at bind (overwrite).
    ``dump.manual_dump`` is a read-only watermark — never rewritten by consume.
    Prefer ``inner_dp_world`` first rank; else TP0∧PP0 when ``dp_size>1``; else
    global world rank0 / ``RANK==0``.
@@ -87,7 +87,6 @@ from vllm_ascend.observability.runtime_config.dist import (
     _log_file_poll_fallback_once,
     _process_role_tag,
 )
-from vllm_ascend.observability.runtime_config.schema import coerce_list_int
 
 # ---- JSONC ------------------------------------------------------------
 
@@ -280,11 +279,6 @@ def _normalize_config_sections(data: dict[str, Any]) -> dict[str, Any]:
 # ---- validate --------------------------------------------------------
 
 
-def normalize_ignore_token_ids(raw: Any) -> list[int]:
-    """Validate config ``ignore_token_ids`` as a flat list of ints."""
-    return coerce_list_int(raw, "ignore_token_ids")
-
-
 def int_field(value: Any, field: str, *, min_value: int | None = None) -> int:
     # C3: reject None/str/NaN and silently-truncated floats (2.7 → 2) with
     # an error that names the offending field.
@@ -296,23 +290,6 @@ def int_field(value: Any, field: str, *, min_value: int | None = None) -> int:
     if min_value is not None and iv < min_value:
         raise ValueError(f"{field} must be >= {min_value}, got {iv}")
     return iv
-
-
-def float_field(
-    value: Any,
-    field: str,
-    *,
-    min_value: float | None = None,
-    max_value: float | None = None,
-) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
-        raise ValueError(f"{field} must be a number, got {value!r}")
-    fv = float(value)
-    if min_value is not None and fv < min_value:
-        raise ValueError(f"{field} must be >= {min_value}, got {fv}")
-    if max_value is not None and fv > max_value:
-        raise ValueError(f"{field} must be <= {max_value}, got {fv}")
-    return fv
 
 
 def coerce_bool_field(container: dict[str, Any], key: str, field: str) -> None:
@@ -836,9 +813,6 @@ class RuntimeConfig:
     def auto_dump_on(self) -> bool:
         return dump_auto_on(self.dump)
 
-    def manual_dump_on(self) -> bool:
-        return manual_dump_active(self.dump.get("manual_dump", False))
-
     def any_detector_enabled(self) -> bool:
         """True if at least one auto anomaly detector is enabled."""
         return bool(self._hot_path_gates_cached()["any_detector"])
@@ -846,8 +820,8 @@ class RuntimeConfig:
     def needs_cumulative_io(self) -> bool:
         """True when sampled tokens must be appended to the IO store.
 
-        Consumers: finish-time output logging, substring/repeat detectors, and
-        sensitive reports that persist cumulative ``output_token_ids``.
+        Consumers: token_repeat (and any detector with ``save_sensitive_info``)
+        that persist cumulative ``output_token_ids``.
         """
         return bool(self._hot_path_gates_cached()["needs_cumulative_io"])
 
@@ -1017,10 +991,6 @@ class RuntimeConfig:
         report = self._data.get("report") or {}
         return int(report.get("max_output_token_ids", 100000))
 
-    def report_include_block_ids(self) -> bool:
-        """Reports always include the request's current GPU ``block_ids``."""
-        return True
-
     def report_max_per_req(self) -> int:
         """Max report files per ``(incident_type, req_id)`` (default 1).
 
@@ -1059,10 +1029,6 @@ class RuntimeConfig:
     def action_queue_max_size(self) -> int:
         """ActionQueue capacity at bind (fixed internal constant)."""
         return ACTION_QUEUE_MAX_SIZE
-
-    def dump_get(self, key: str, default: Any = None) -> Any:
-        dump = self._data.get("dump") or {}
-        return dump.get(key, default)
 
     def detector_section(self, name: str) -> dict[str, Any]:
         """Return nested ``detector.<name>`` object (empty dict if missing)."""
@@ -1368,44 +1334,6 @@ class RuntimeConfig:
                 _process_role_tag(),
             )
         return True
-
-    def save(
-        self,
-        updates: dict[str, Any] | None = None,
-    ) -> bool:
-        """Merge ``updates`` and write JSON. Leader (or single-process) only.
-
-        Under the config lock, re-read disk first so a stale in-memory snapshot
-        cannot wipe concurrent hand-edits when saving (e.g. detector disable).
-        ``dump.manual_dump`` is never cleared here — it is a read-only watermark.
-        """
-        if not _is_json_writer():
-            logger.debug(
-                "[runtime_config] save ignored on non-leader path=%s",
-                self.config_path,
-            )
-            return False
-        try:
-            with self._lock_config():
-                on_disk = self._read_json_object()
-                # Disk wins over stale memory; then apply intentional updates.
-                data = _deep_merge(deepcopy(self._data), on_disk) if on_disk else deepcopy(self._data)
-                if updates:
-                    data = _deep_merge(data, updates)
-                data = _normalize_config_sections(data)
-                validate_runtime_config(data)
-                self._write_data_unlocked(data)
-                self._data = data
-                self._invalidate_hot_path_gates()
-                stat = self.config_path.stat()
-                self._mtime = stat.st_mtime
-                self._content_digest = self._digest_path(self.config_path)
-                self._version = float(stat.st_mtime)
-            logger.info("[runtime_config] saved path=%s", self.config_path)
-            return True
-        except Exception as exc:
-            logger.error("[runtime_config] save failed path=%s error=%s", self.config_path, exc)
-            return False
 
     def _lock_config(self):
         lock_path = Path(f"{self.config_path}.lock")

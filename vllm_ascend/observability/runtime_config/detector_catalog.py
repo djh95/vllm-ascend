@@ -13,11 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Registered detector schemas → defaults / keys / panel / validate.
+"""Registered detector schemas → defaults / keys / validate.
 
 Add or remove a detector: declare ``schema`` on the class, then edit
-:data:`REGISTERED_DETECTOR_TYPES` below. ``_defaults`` / ``_validate`` / panel
-readers consume this catalog only.
+:data:`REGISTERED_DETECTOR_TYPES` below. Defaults and validate consume this
+catalog only.
 """
 
 from __future__ import annotations
@@ -26,14 +26,13 @@ from typing import Any
 
 from vllm_ascend.observability.runtime_config.schema import (
     DetectorSchema,
-    panel_snapshot,
     validate_detector_section,
 )
 from vllm_ascend.observability.runtime_guard.detector.logits_finite import LogitsFiniteDetector
 from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
 from vllm_ascend.observability.runtime_guard.detector.token_repeat import TokenRepeatDetector
 
-# Registration order = DETECTOR_SECTIONS order and panel order.
+# Registration order = DETECTOR_SECTIONS order.
 REGISTERED_DETECTOR_TYPES: tuple[type, ...] = (
     SpecAcceptanceDetector,
     TokenRepeatDetector,
@@ -78,8 +77,3 @@ def validate_registered_detectors(detector: dict[str, Any]) -> None:
         if not isinstance(sec, dict):
             raise ValueError(f"detector.{name} must be an object")
         validate_detector_section(schema, sec)
-
-
-def control_panel_detectors() -> list[dict[str, Any]]:
-    """Snapshot for a control panel: register a detector → it appears here."""
-    return panel_snapshot(DETECTOR_SCHEMAS)

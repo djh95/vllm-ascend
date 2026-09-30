@@ -13,11 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Declarative runtime_config field schema (detectors + future panel modules)."""
+"""Declarative runtime_config field schema (detector sections)."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -34,8 +33,6 @@ class ConfigField:
     min_value: float | int | None = None
     max_value: float | int | None = None
     help: str = ""
-    # When False, still validated / defaulted but omitted from control-panel lists.
-    panel: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,9 +50,6 @@ class DetectorSchema:
 
     def param_keys(self) -> frozenset[str]:
         return frozenset(f.name for f in self.fields)
-
-    def panel_fields(self) -> tuple[ConfigField, ...]:
-        return tuple(f for f in self.fields if f.panel)
 
 
 def coerce_bool_inplace(container: dict[str, Any], key: str, field: str) -> None:
@@ -137,28 +131,3 @@ def validate_detector_section(schema: DetectorSchema, section: dict[str, Any]) -
             section[f.name] = coerce_list_int(section[f.name], path)
         else:
             raise ValueError(f"unknown ConfigField.kind {f.kind!r} for {path}")
-
-
-def panel_snapshot(schemas: Sequence[DetectorSchema]) -> list[dict[str, Any]]:
-    """Control-panel friendly list: one entry per registered detector section."""
-    out: list[dict[str, Any]] = []
-    for sch in schemas:
-        out.append(
-            {
-                "section_key": sch.section_key,
-                "help": sch.help,
-                "stage": sch.stage,
-                "fields": [
-                    {
-                        "name": f.name,
-                        "default": f.default,
-                        "kind": f.kind,
-                        "min_value": f.min_value,
-                        "max_value": f.max_value,
-                        "help": f.help,
-                    }
-                    for f in sch.panel_fields()
-                ],
-            }
-        )
-    return out

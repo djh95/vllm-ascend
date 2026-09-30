@@ -140,7 +140,7 @@ def runtime_guard_sample_tokens(sample_tokens_fn):
 
     - guardless → bare method call (zero guard work);
     - guard → ``run_sample_phase`` around the method, reading the
-      ``postprocess_sampled`` stash (``runner_bridge.note_postprocess_sampled``)
+      ``postprocess_sampled`` stash (``note_postprocess_sampled``)
       and the pre-pop ``execute_model_state`` peek.
     """
 

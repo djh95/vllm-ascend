@@ -1301,12 +1301,6 @@ class _ConsumeRecorder:
     def dump_root(self):
         return "/tmp/ut-rg-report/kv_cache"
 
-    def dump_get(self, key, default=None):
-        return default
-
-    def report_include_block_ids(self) -> bool:
-        return True
-
     def report_save_sensitive_info(self) -> bool:
         return False
 

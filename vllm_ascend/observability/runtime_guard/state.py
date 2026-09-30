@@ -37,15 +37,11 @@ logger = init_logger_ascend(__name__)
 
 # Align with msprobe response_anomaly ILLDetector ill_type codes.
 ILL_TYPE_NONE = 0
-ILL_TYPE_RARE = 1
-ILL_TYPE_GARBLED = 2
 ILL_TYPE_REPEAT = 3
 ILL_TYPE_NAN = 4
 
 ILL_TYPE_NAME: dict[int, str] = {
     ILL_TYPE_NONE: "none",
-    ILL_TYPE_RARE: "rare",
-    ILL_TYPE_GARBLED: "garbled",
     ILL_TYPE_REPEAT: "repetition",
     ILL_TYPE_NAN: "nan",
 }

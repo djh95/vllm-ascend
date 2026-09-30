@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Detector schema catalog drives defaults / validate / panel."""
+"""Detector schema catalog drives defaults / validate."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from vllm_ascend.observability.runtime_config.detector_catalog import (
     DETECTOR_SCHEMAS,
     DETECTOR_SECTIONS,
     REGISTERED_DETECTOR_TYPES,
-    control_panel_detectors,
 )
 
 
@@ -36,16 +35,6 @@ def test_catalog_sections_match_defaults_and_classes():
         assert cls.section_key == schema.section_key
         assert cls.schema is schema
         assert _DEFAULTS["detector"][schema.section_key] == schema.defaults_dict()
-
-
-def test_control_panel_lists_registered_detectors():
-    panel = control_panel_detectors()
-    assert [p["section_key"] for p in panel] == list(DETECTOR_SECTIONS)
-    token = next(p for p in panel if p["section_key"] == "token_repeat")
-    names = [f["name"] for f in token["fields"]]
-    assert "enabled" in names
-    assert "window" in names
-    assert "ignore_token_ids" in names
 
 
 def test_validate_uses_schema_defaults_for_missing_fields():

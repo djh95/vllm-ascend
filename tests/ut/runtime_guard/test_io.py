@@ -24,19 +24,10 @@ import torch
 
 from vllm_ascend.observability.runtime_guard.io import (
     RequestIoSnapshotManager,
-    accepted_token_counts,
     normalize_token_ids,
     prompt_token_count_for_request,
 )
 from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
-
-
-def test_accepted_token_counts_placeholder_minus_one():
-    rows = [[1, -1, -1], [-1, -1, 2]]
-    assert accepted_token_counts(rows, placeholder_token_id=-1) == [1, 1]
-    tensor = torch.tensor([[1, -1, -1], [-1, 2, -1]], dtype=torch.int32)
-    out = accepted_token_counts(tensor, placeholder_token_id=-1)
-    assert out.tolist() == [1, 1]
 
 
 def test_normalize_token_ids_tensor_and_list():

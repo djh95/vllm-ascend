@@ -39,7 +39,6 @@ from vllm_ascend.observability.runtime_guard.state import Incident, RequestGuard
 
 def _dump_rc(tmp_path: Path, **extra) -> SimpleNamespace:
     base = dict(
-        dump_get=lambda k, d=None: d,
         dump_root=lambda: str(tmp_path),
         report_save_sensitive_info=lambda: False,
         report_decode_token_ids=lambda: False,
@@ -388,7 +387,6 @@ def test_dump_kv_skips_when_free_below_payload_plus_headroom(tmp_path, monkeypat
     )
     quota = MagicMock()
     rc = SimpleNamespace(
-        dump_get=lambda k, d=None: d,
         dump_root=lambda: str(tmp_path),
     )
     ctx = _dump_ctx(
@@ -417,7 +415,7 @@ def test_dump_kv_skips_when_request_finished(tmp_path):
             incident=Incident(incident_type="token_repeat", req_id="r1", block_ids=[0]),
             quota=quota,
             rank_tag="dp0_tp0_pp0_cp0",
-            rc=_dump_rc(tmp_path, dump_get=lambda k, d=None: d),
+            rc=_dump_rc(tmp_path),
         )
         DumpKvAction().run(ctx)
         quota.try_consume.assert_not_called()

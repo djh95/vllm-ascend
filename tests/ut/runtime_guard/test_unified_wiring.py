@@ -196,17 +196,6 @@ def test_d11_async_model_runner_output_defers_after_sample():
     assert "after_sample" not in calls
 
 
-def test_d11_trim_sampled_rows_drops_pad_beyond_num_sampled():
-    """Padded v2 rows must keep only num_sampled tokens (AsyncOutput.get_output)."""
-    import numpy as np
-
-    from vllm_ascend.observability.runtime_guard.io import trim_sampled_rows
-
-    padded = np.array([[42, 0, 0, 7], [9, -1, -1, -1]], dtype=np.int64)
-    trimmed = trim_sampled_rows(padded, num_sampled=np.array([1, 1], dtype=np.int32))
-    assert trimmed == [[42], [9]]
-
-
 def test_d11_ascend_async_output_appends_trimmed_once():
     """AscendAsyncOutput.get_output is the sole after-sample append for v2."""
     from vllm_ascend.observability.runtime_guard.hooks import AscendAsyncOutput
