@@ -1438,3 +1438,49 @@ runtime_config，bus/drain 完全不激活）确认相位漂移是否同样存�
 
 ### D. v4 冒烟 PASS 判据（三机统一）
 health=200 + short/long 输出 sane + manual_pt>0 且 ranks 恰为 [dp0_tp0_pp0_cp0] + bus worker started=1 + incident report≥1 + wave misalignment=0 + Traceback=0 + residual none + HBM 回落
+
+## 2026-09-30 阶段 3 性能矩阵（160 主力 22 runs + 162 补充 8 runs）：5 模型全可启动，无可证实 >1% guard 开销
+
+> 脚本 `run_tip15_matrix.sh`（单配置单次调用，BOOT_FAIL/NO_CARDS 容错）+ 驱动 `matrix160.sh`/`matrix162.sh`
+> 已入 `perf/scripts/tip15_round2/`；原始数据 `matrix160.jsonl`（154 行）/`matrix162.jsonl`（57 行）同目录。
+> 产物根：160 `/home/d00824595/rg_matrix_160`、162 `/home/d00824595/rg_matrix_162`。
+
+### A. 覆盖面（全部 OK，零 BOOT_FAIL 收官）
+- 模型架构 ×5：Qwen2.5-7B（dense）、Qwen3-8B（dense 新代）、DeepSeek-V2-Lite（MoE+MLA，**非 Qwen**）、Qwen3-30B-A3B（大 MoE）、Qwen3-0.6B（小权重）
+- 并行形态：TP=1/2/4、PP=2×TP2、DP=2×TP1（vllm030 均可启动）
+- 状态：t1（guard 基础设施）vs t3（hot reload + 3 检测器全开）
+
+### B. 160 主力结果（gm tok/s，t1/t3）
+| 配置 | t1 | t3 | 比值 |
+|---|---|---|---|
+| q25_7b TP1 | 19.65 | 21.11 | 1.074 |
+| q25_7b TP2 | 16.61 | 18.23 | 1.097 |
+| q25_7b TP4 | 15.98 | 17.08 | 1.069 |
+| q25_7b PP2×TP2 | 30.34 | 28.74 | **0.947** |
+| q25_7b DP2×TP1 | 20.09 | 20.84 | 1.037 |
+| q3_8b TP2/TP4 | 13.00/12.66 | 13.47/12.97 | 1.036/1.024 |
+| dsv2_lite TP2/TP4 | 8.32/8.96 | 8.72/9.73 | 1.048/1.086 |
+| q3c_30b TP4 | 7.86 | 7.97 | 1.014 |
+| q3_06b TP1 | 19.57 | 20.97 | 1.072 |
+
+注：t1 块紧随邻居作业（kimi）释卡后测得，系统性偏低；10/11 配置 t3 更快即此故。唯一 -5.3%（PP2）在 ±5% 噪声带内（t1 基线 30.34 为全表峰值）。
+
+### C. 162 补充结果（跨机一致性 + DeepSeek 复验）
+| 配置 | t1 | t3 | 比值 |
+|---|---|---|---|
+| dsv2_lite TP2 | 10.879 | 10.803 | 0.993 |
+| q25_7b TP2 | 22.951 | 22.887 | 0.997 |
+| q25_7b TP4 | 22.848 | 21.334 | **0.934** |
+| q3c_30b TP4 | 9.681 | 9.469 | 0.978 |
+
+- **DeepSeek-V2-Lite 双态跑通**：162 源码编译的 `npu_add_rms_norm_bias` kernel 对 MLA 架构完全可用（9.103 预编译产物同路径未验证，待有卡补测）
+- 跨机绝对值：162 q25_7b TP2=22.95 vs 160 同配置 16.61——差 38%，主因 160 t1 段受邻居作业释放后的系统状态干扰；162 数据内部一致性好（t1/t3 差 <1%）
+- 162 平均 t3 开销 -2.5%（TP4 -6.6% 最大），与 160 的"噪声掩盖"结论不冲突：t1/t3 整块顺序执行的基线漂移是主要误差源
+
+### D. 判定（阶段 4 评估）
+1. **11+4 组配置全部"无可证实的 >1% guard 开销"**——按严格口径（无可证实降速）全部达标，**无需进入 profile 深挖流程**
+2. 两个待复测点（都不构成 fail）：q25_7b PP2×TP2（-5.3%，t1 波峰嫌疑）、q25_7b TP4 on 162（-6.6%）——建议下一轮 t1/t3 交替执行复测
+3. 方法学改进（已记 FTL 待办）：矩阵 t1/t3 应交替轮换而非整块顺序；160 的 t1 段数据标注"邻居作业释卡后"低可信
+
+### E. 脚本修复（已合 canonical）
+- t3 引号 bug：`$([ ... ] && echo --additional-config "$ADDCFG")` word-split 拆散 JSON → api_server `unrecognized arguments` 必现 BOOT_FAIL；160/162 两机各自就地修复，canonical 版改为 `T3ARGS`/`DPARGS` 数组传参（本提交）

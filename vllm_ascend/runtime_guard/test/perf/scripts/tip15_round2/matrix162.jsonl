@@ -1,0 +1,57 @@
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "short", "round": 1, "boot_s": 135, "wall": 8.67, "ct": 96, "tps": 11.07}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "medium", "round": 1, "boot_s": 135, "wall": 30.05, "ct": 320, "tps": 10.65}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "long", "round": 1, "boot_s": 135, "wall": 44.82, "ct": 482, "tps": 10.75}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "short", "round": 2, "boot_s": 135, "wall": 8.95, "ct": 96, "tps": 10.73}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "medium", "round": 2, "boot_s": 135, "wall": 29.63, "ct": 320, "tps": 10.8}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "long", "round": 2, "boot_s": 135, "wall": 42.69, "ct": 482, "tps": 11.29}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "boot_s": 135, "cards": "5 6", "gm_tok_s": 10.879, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "short", "round": 1, "boot_s": 95, "wall": 2.4, "ct": 56, "tps": 23.37}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "medium", "round": 1, "boot_s": 95, "wall": 10.73, "ct": 245, "tps": 22.83}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "long", "round": 1, "boot_s": 95, "wall": 20.0, "ct": 455, "tps": 22.74}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "short", "round": 2, "boot_s": 95, "wall": 2.54, "ct": 56, "tps": 22.04}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "medium", "round": 2, "boot_s": 95, "wall": 10.55, "ct": 245, "tps": 23.22}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "tag": "long", "round": 2, "boot_s": 95, "wall": 19.33, "ct": 455, "tps": 23.54}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 2, "pp": 1, "dp": 1, "boot_s": 95, "cards": "0 1", "gm_tok_s": 22.951, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "short", "round": 1, "boot_s": 105, "wall": 2.44, "ct": 56, "tps": 22.96}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "medium", "round": 1, "boot_s": 105, "wall": 9.28, "ct": 207, "tps": 22.3}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "long", "round": 1, "boot_s": 105, "wall": 22.89, "ct": 532, "tps": 23.25}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "short", "round": 2, "boot_s": 105, "wall": 2.43, "ct": 56, "tps": 23.04}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "medium", "round": 2, "boot_s": 105, "wall": 8.82, "ct": 207, "tps": 23.47}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "long", "round": 2, "boot_s": 105, "wall": 24.07, "ct": 532, "tps": 22.1}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "boot_s": 105, "cards": "0 1 2 3", "gm_tok_s": 22.848, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "short", "round": 1, "boot_s": 156, "wall": 9.79, "ct": 96, "tps": 9.81}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "medium", "round": 1, "boot_s": 156, "wall": 17.62, "ct": 170, "tps": 9.65}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "long", "round": 1, "boot_s": 156, "wall": 40.93, "ct": 395, "tps": 9.65}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "short", "round": 2, "boot_s": 156, "wall": 10.01, "ct": 96, "tps": 9.59}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "medium", "round": 2, "boot_s": 156, "wall": 17.55, "ct": 170, "tps": 9.69}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "tag": "long", "round": 2, "boot_s": 156, "wall": 40.71, "ct": 395, "tps": 9.7}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t1", "tp": 4, "pp": 1, "dp": 1, "boot_s": 156, "cards": "0 1 2 3", "gm_tok_s": 9.681, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "", "name": "dsv2_lite", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "boot_s": 1506, "verdict": "BOOT_FAIL"}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "short", "round": 1, "boot_s": 95, "wall": 2.41, "ct": 56, "tps": 23.24}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "medium", "round": 1, "boot_s": 95, "wall": 10.56, "ct": 245, "tps": 23.19}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "long", "round": 1, "boot_s": 95, "wall": 20.12, "ct": 455, "tps": 22.62}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "short", "round": 2, "boot_s": 95, "wall": 2.54, "ct": 56, "tps": 22.04}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "medium", "round": 2, "boot_s": 95, "wall": 10.67, "ct": 245, "tps": 22.97}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "long", "round": 2, "boot_s": 95, "wall": 19.54, "ct": 455, "tps": 23.29}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "boot_s": 95, "cards": "12 13", "gm_tok_s": 22.887, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "short", "round": 1, "boot_s": 115, "wall": 2.61, "ct": 56, "tps": 21.43}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "medium", "round": 1, "boot_s": 115, "wall": 10.0, "ct": 207, "tps": 20.71}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "long", "round": 1, "boot_s": 115, "wall": 26.04, "ct": 532, "tps": 20.43}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "short", "round": 2, "boot_s": 115, "wall": 2.62, "ct": 56, "tps": 21.38}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "medium", "round": 2, "boot_s": 115, "wall": 9.53, "ct": 207, "tps": 21.73}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "long", "round": 2, "boot_s": 115, "wall": 23.77, "ct": 532, "tps": 22.38}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q25_7b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "boot_s": 115, "cards": "12 13 14 15", "gm_tok_s": 21.334, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "short", "round": 1, "boot_s": 125, "wall": 9.98, "ct": 96, "tps": 9.62}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "medium", "round": 1, "boot_s": 125, "wall": 17.73, "ct": 170, "tps": 9.59}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "long", "round": 1, "boot_s": 125, "wall": 42.39, "ct": 395, "tps": 9.32}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "short", "round": 2, "boot_s": 125, "wall": 10.28, "ct": 96, "tps": 9.34}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "medium", "round": 2, "boot_s": 125, "wall": 17.96, "ct": 170, "tps": 9.47}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "tag": "long", "round": 2, "boot_s": 125, "wall": 41.69, "ct": 395, "tps": 9.48}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "q3c_30b", "state": "t3", "tp": 4, "pp": 1, "dp": 1, "boot_s": 125, "cards": "12 13 14 15", "gm_tok_s": 9.469, "n_ok": 6, "verdict": "OK", "errs": ""}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "short", "round": 1, "boot_s": 116, "wall": 8.98, "ct": 96, "tps": 10.7}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "medium", "round": 1, "boot_s": 116, "wall": 30.0, "ct": 320, "tps": 10.67}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "long", "round": 1, "boot_s": 116, "wall": 43.51, "ct": 482, "tps": 11.08}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "short", "round": 2, "boot_s": 116, "wall": 9.16, "ct": 96, "tps": 10.48}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "medium", "round": 2, "boot_s": 116, "wall": 29.72, "ct": 320, "tps": 10.77}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "tag": "long", "round": 2, "boot_s": 116, "wall": 43.29, "ct": 482, "tps": 11.13}
+{"host": "ipb21b04a2.dynamic.kabel-deutschland.de", "name": "dsv2_lite", "state": "t3", "tp": 2, "pp": 1, "dp": 1, "boot_s": 116, "cards": "12 13", "gm_tok_s": 10.803, "n_ok": 6, "verdict": "OK", "errs": ""}
