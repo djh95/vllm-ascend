@@ -414,7 +414,6 @@ class NPUModelRunner(GPUModelRunner):
 
         self.kvpp = KVPPRuntime()
 
-
         # Dump / PrecisionDebugger configuration now comes from AscendConfig
         dump_cfg = self.ascend_config.dump_config_path
         self.debugger = None
@@ -2928,6 +2927,7 @@ class NPUModelRunner(GPUModelRunner):
         if self.dynamic_eplb:
             self.eplb_updator.forward_end(self.eplb_heat_collection_status)
 
+        self._finalize_dump_data()
 
         if self.need_accepted_tokens:
             assert self.sampling_done_event is not None
@@ -2936,14 +2936,13 @@ class NPUModelRunner(GPUModelRunner):
                 torch.npu.stream(global_stream()),
             ):
                 global_stream().wait_event(self.sampling_done_event)
-                self._update_states_after_model_execute(
-                    sampler_output.sampled_token_ids, scheduler_output
-                )
-
-        self._finalize_dump_data()
+                self._update_states_after_model_execute(sampler_output.sampled_token_ids, scheduler_output)
 
         if not self.use_async_scheduling:
             if self.routed_experts_initialized:
+                # Sync path: D2H was issued in ``_bookkeeping_sync`` and
+                # synchronized by ``_to_list``'s event.synchronize(), so
+                # the pinned buffers are ready to be wrapped as numpy.
                 total = scheduler_output.total_num_scheduled_tokens
                 model_runner_output.routed_experts = RoutedExpertsLists(
                     routing_data=self.routed_experts_cpu[:total].numpy(),
@@ -2951,13 +2950,27 @@ class NPUModelRunner(GPUModelRunner):
                 )
             return model_runner_output
 
+        # Async path: produce a device-side snapshot that the async
+        # copy stream can D2H later. Both tensors must be private
+        # clones because:
+        #   - ``routing_data`` source is the shared capturer buffer,
+        #     which is ``clear_buffer()``-ed at the start of the
+        #     next step on the default stream.
+        #   - ``slot_mapping`` source is our own
+        #     ``routed_experts_slot_mapping_device``, which the
+        #     next ``_prepare_inputs`` overwrites on the default
+        #     stream while the D2H is still pending on the copy
+        #     stream.
+        # Without clones, the copy stream would read torn data.
         routed_experts_snapshot = None
         if self.routed_experts_initialized:
             buf = self.routed_experts_capturer.get_device_buffer()
             total = scheduler_output.total_num_scheduled_tokens
             routed_experts_snapshot = RoutedExpertsTensors(
                 routing_data=buf[:total].clone(),
-                slot_mapping=self.routed_experts_slot_mapping_device[:total].clone(),
+                slot_mapping=self.routed_experts_slot_mapping_device[
+                    :total
+                ].clone(),
             )
         async_output = AsyncGPUModelRunnerOutput(
             model_runner_output=model_runner_output,
