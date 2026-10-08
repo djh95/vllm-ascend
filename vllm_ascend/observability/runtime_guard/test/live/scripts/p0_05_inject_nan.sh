@@ -34,7 +34,7 @@ fi
 
 # Switch exists in this build: boot with env and exercise the detector.
 PORT=${PORT:-8315}
-DET_ON='{"logits_finite": {"enabled": true}, "token_repeat": {"enabled": false}, "output_substring": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
+DET_ON='{"logits_finite": {"enabled": true}, "token_repeat": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
 export RG_INJECT="${RG_INJECT:-nan_logits}"
 log "[live] RG_INJECT=$RG_INJECT recognized by build — booting to exercise logits_finite"
 CARD=$(wait_idle_card) || { fail "no idle card"; p0_verdict P0_05; }

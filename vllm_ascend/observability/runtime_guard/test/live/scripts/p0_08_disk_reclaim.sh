@@ -10,7 +10,7 @@ ROOT=${ROOT:-/data0/test-mrv2-cann91/rg_p0_08_${RUNNER}}
 source "$(cd "$(dirname "$0")" && pwd)/_common.sh"
 
 PORT=${PORT:-8318}
-DET_OFF='{"logits_finite": {"enabled": false}, "token_repeat": {"enabled": false}, "output_substring": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
+DET_OFF='{"logits_finite": {"enabled": false}, "token_repeat": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
 DUMP_DIR="$ROOT/reclaim/dump"
 
 df_used(){ df -k "$ROOT" 2>/dev/null | tail -1 | awk '{print $(NF-3)}'; }

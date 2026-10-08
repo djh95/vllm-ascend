@@ -23,7 +23,7 @@ MASTER_LOG="$ROOT/master.log"
 log(){ echo "$(date '+%F %H:%M:%S') $*"; }
 log "W6 soak master start pid=$$ name=$NAME cards=$CARDS port=$PORT runner=$RUNNER"
 
-OVERLAY='{"detector":{"token_repeat":{"enabled":true,"window":32,"repeat_sum_threshold":64,"min_tokens":32,"consecutive_hits":1},"logits_finite":{"enabled":false},"output_substring":{"enabled":false},"spec_acceptance":{"enabled":false}},"actions":{"defaults":{"on_trigger":["report","dump_kv"]}},"dump":{"auto_max_times":5,"auto_cooldown_seconds":1800,"manual_dump":false}}'
+OVERLAY='{"detector":{"token_repeat":{"enabled":true,"window":32,"repeat_sum_threshold":64,"min_tokens":32,"consecutive_hits":1},"logits_finite":{"enabled":false},"spec_acceptance":{"enabled":false}},"actions":{"defaults":{"on_trigger":["report","dump_kv"]}},"dump":{"auto_max_times":5,"auto_cooldown_seconds":1800,"manual_dump":false}}'
 
 cd "$PRODUCT"
 D="$ROOT/$NAME"

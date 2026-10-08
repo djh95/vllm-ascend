@@ -32,7 +32,6 @@ c = {
     "detector": {
         "logits_finite": {"enabled": False},
         "token_repeat": {"enabled": False},
-        "output_substring": {"enabled": False},
         "spec_acceptance": {"enabled": False},
     },
 }

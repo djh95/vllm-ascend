@@ -15,7 +15,7 @@ source "$(cd "$(dirname "$0")" && pwd)/_common.sh"
 
 PORT_T0=${PORT_T0:-8301}
 PORT_G=${PORT_G:-8302}
-DET_OFF='{"logits_finite": {"enabled": false}, "token_repeat": {"enabled": false}, "output_substring": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
+DET_OFF='{"logits_finite": {"enabled": false}, "token_repeat": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
 P_NAMES=(great_wall li_bai ai_text)
 P_TEXTS=("用一句话介绍长城" "写一篇150字的短文介绍李白" "用三句话说明什么是人工智能")
 P_MT=(64 192 128)

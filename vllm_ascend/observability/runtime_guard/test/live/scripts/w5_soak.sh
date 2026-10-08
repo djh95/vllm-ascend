@@ -37,8 +37,8 @@ boot_server(){
   echo $!
 }
 
-OV_A='{"detector":{"token_repeat":{"enabled":true,"window":32,"repeat_sum_threshold":64,"min_tokens":32,"consecutive_hits":1},"logits_finite":{"enabled":false},"output_substring":{"enabled":false},"spec_acceptance":{"enabled":false}},"actions":{"defaults":{"on_trigger":["report"]}},"dump":{"auto_max_times":0,"manual_dump":false}}'
-OV_B='{"detector":{"logits_finite":{"enabled":true},"token_repeat":{"enabled":false},"output_substring":{"enabled":false},"spec_acceptance":{"enabled":false}},"actions":{"defaults":{"on_trigger":["report"]}},"dump":{"auto_max_times":0,"manual_dump":false}}'
+OV_A='{"detector":{"token_repeat":{"enabled":true,"window":32,"repeat_sum_threshold":64,"min_tokens":32,"consecutive_hits":1},"logits_finite":{"enabled":false},"spec_acceptance":{"enabled":false}},"actions":{"defaults":{"on_trigger":["report"]}},"dump":{"auto_max_times":0,"manual_dump":false}}'
+OV_B='{"detector":{"logits_finite":{"enabled":true},"token_repeat":{"enabled":false},"spec_acceptance":{"enabled":false}},"actions":{"defaults":{"on_trigger":["report"]}},"dump":{"auto_max_times":0,"manual_dump":false}}'
 
 log "boot server A (Qwen2.5-0.5B, card 4, port 8090)"
 PID_A=$(boot_server A /data0/weights/Qwen2.5-0.5B-Instruct 4 8090 "$OV_A")

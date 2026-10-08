@@ -14,8 +14,8 @@ ROOT=${ROOT:-/data0/test-mrv2-cann91/rg_p0_02_${RUNNER}}
 source "$(cd "$(dirname "$0")" && pwd)/_common.sh"
 
 PORT=${PORT:-8312}
-DET_OFF='{"logits_finite": {"enabled": false}, "token_repeat": {"enabled": false}, "output_substring": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
-DET_ON='{"token_repeat": {"enabled": true, "window": 32, "repeat_sum_threshold": 64, "min_tokens": 8, "consecutive_hits": 1}, "logits_finite": {"enabled": false}, "output_substring": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
+DET_OFF='{"logits_finite": {"enabled": false}, "token_repeat": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
+DET_ON='{"token_repeat": {"enabled": true, "window": 32, "repeat_sum_threshold": 64, "min_tokens": 8, "consecutive_hits": 1}, "logits_finite": {"enabled": false}, "spec_acceptance": {"enabled": false}}'
 REPEAT_PROMPT="请连续输出60个哈字：$(printf '哈%.0s' {1..60})"
 CFG_BASE="$ROOT/guard_on/runtime_config.json"
 

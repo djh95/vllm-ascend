@@ -45,7 +45,6 @@ cfg={
   "detector": {
     "logits_finite": {"enabled": True},
     "token_repeat": {"enabled": False},
-    "output_substring": {"enabled": False, "patterns": ["李白"], "match_prefix": False},
     "spec_acceptance": {"enabled": False},
   },
 }
