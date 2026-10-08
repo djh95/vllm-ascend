@@ -56,10 +56,6 @@ from typing import Any
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config._defaults import (
     _DEFAULTS,
-    _RETIRED_ACTIONS_KEYS,
-    _RETIRED_DETECTOR_KEYS,
-    _RETIRED_DUMP_KEYS,
-    _RETIRED_REPORT_KEYS,
     ACTION_QUEUE_MAX_SIZE,
     ACTIONS_KEYS,
     ASCEND_LOG_KEYS,
@@ -72,9 +68,6 @@ from vllm_ascend.observability.runtime_config._defaults import (
 )
 from vllm_ascend.observability.runtime_config.detector_catalog import (
     DETECTOR_SECTIONS as _CATALOG_DETECTOR_SECTIONS,
-)
-from vllm_ascend.observability.runtime_config.detector_catalog import (
-    RETIRED_DETECTOR_SECTIONS as _RETIRED_DETECTOR_SECTIONS,
 )
 from vllm_ascend.observability.runtime_config.detector_catalog import (
     validate_registered_detectors,
@@ -333,13 +326,9 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     ):
         if section not in data or not isinstance(data[section], dict):
             raise ValueError(f"runtime config missing object section '{section}'")
-    for key in _RETIRED_ACTIONS_KEYS:
-        data["actions"].pop(key, None)
     unknown_actions = sorted(set(data["actions"]) - ACTIONS_KEYS)
     if unknown_actions:
         raise ValueError(f"actions has unknown key(s) {unknown_actions}; allowed={sorted(ACTIONS_KEYS)}")
-    for key in _RETIRED_DUMP_KEYS:
-        data["dump"].pop(key, None)
     unknown_dump = sorted(set(data["dump"]) - DUMP_KEYS)
     if unknown_dump:
         raise ValueError(f"dump has unknown key(s) {unknown_dump}; allowed={sorted(DUMP_KEYS)}")
@@ -360,8 +349,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
     if dump_dir_raw is not None and not isinstance(dump_dir_raw, str):
         raise ValueError("dump.dump_dir must be a string path or null")
     validate_dump_mutual_exclusive(data["dump"])
-    for key in _RETIRED_REPORT_KEYS:
-        data["report"].pop(key, None)
     unknown_report = sorted(set(data["report"]) - REPORT_KEYS)
     if unknown_report:
         raise ValueError(f"report has unknown key(s) {unknown_report}; allowed={sorted(REPORT_KEYS)}")
@@ -398,8 +385,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
         if not isinstance(val, str):
             raise ValueError("ascend_log.modules values must be strings")
     detector = data["detector"]
-    for key in _RETIRED_DETECTOR_SECTIONS:
-        detector.pop(key, None)
     known = set(_CATALOG_DETECTOR_SECTIONS)
     for key, value in detector.items():
         if key == "manual_trigger":
@@ -421,8 +406,6 @@ def validate_runtime_config(data: dict[str, Any]) -> None:
             )
         if not isinstance(value, dict):
             raise ValueError(f"detector.{key} must be an object")
-        for retired in _RETIRED_DETECTOR_KEYS.get(key, ()):
-            value.pop(retired, None)
         unknown_sub = sorted(set(value) - DETECTOR_KEYS[key])
         if unknown_sub:
             raise ValueError(f"detector.{key} has unknown key(s) {unknown_sub}; allowed={sorted(DETECTOR_KEYS[key])}")
@@ -472,7 +455,7 @@ def resolve_runtime_config_path(configured_path: str | None = None) -> Path:
     """Resolve config file path.
 
     Priority:
-    1. Explicit ``runtime_config_path`` / ``runtime-config`` from additional_config
+    1. Explicit ``runtime_config_path`` from additional_config
     2. Default ``<cwd>/runtime/config/runtime_config.json``
     """
     if configured_path:

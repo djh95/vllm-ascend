@@ -47,7 +47,6 @@ class SpecAcceptanceDetector(ConfigBackedDetector):
         section_key="spec_acceptance",
         stage="after_spec",
         help="Speculative-decoding acceptance rate / length drift.",
-        retired_keys=frozenset({"short_log_interval_seconds"}),
         fields=(
             ConfigField("enabled", False, "bool", help="Master switch"),
             ConfigField("window", 10, "int", min_value=1, help="Rolling window size"),
