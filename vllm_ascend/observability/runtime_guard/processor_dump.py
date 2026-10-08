@@ -26,6 +26,7 @@ from vllm.distributed.parallel_state import get_tp_group
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_config.dist import sync_task_bus
 from vllm_ascend.observability.runtime_guard.dump import (
+    REQUEST_FINISHED_AT_DUMP_KEY,
     KvCacheReader,
     block_ids_for_request,
     kv_dump_wave_dirname,
@@ -62,6 +63,7 @@ class RuntimeGuardDumpMixin:
         Delivered at the *next* wave-head dump lane (detector dump is +1 wave),
         then D2H at that wave's end after prepare. Dedupes by ``(wave, req_id)``
         while still pending (same req may arm again on a later wave).
+        Pins the req via ``dump_jobs`` until drain/drop.
         """
         if not job or not job.get("req_id"):
             return False
@@ -82,6 +84,9 @@ class RuntimeGuardDumpMixin:
                 )
                 return False
         pending.append(dict(job))
+        from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
+
+        RequestGuardStore.get().add_dump_jobs([rid])
         return True
 
     def _refund_dropped_dump_arms(self, jobs: list[dict[str, Any]]) -> None:
@@ -91,8 +96,12 @@ class RuntimeGuardDumpMixin:
         of an arm share ``arm_id``); mirrors the end-of-wave refund in
         ``_run_kv_dumps`` for arms that produced no snapshot. Quota lives on
         the arming rank (action leader = last-PP TP0), so other ranks must not
-        refund.
+        refund. Also releases ``dump_jobs`` pins for dropped reqs.
         """
+        from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
+
+        if jobs:
+            RequestGuardStore.get().finish_dump_jobs([j.get("req_id") for j in jobs if j.get("req_id")])
         quota = getattr(self, "quota", None)
         if quota is None or not jobs:
             return
@@ -216,105 +225,120 @@ class RuntimeGuardDumpMixin:
         # torch.save failure does not refund (see ops docs).
         arms: dict[str, dict[str, bool]] = defaultdict(lambda: {"debited": False, "ok": False})
         seen_req: set[str] = set()
-        for job in jobs:
-            arm_id = str(job.get("arm_id") or f"job-{id(job)}")
-            if job.get("consume_quota"):
-                arms[arm_id]["debited"] = True
-            req_id = str(job.get("req_id") or "")
-            if not req_id:
-                continue
-            if req_id in seen_req:
-                continue
-            seen_req.add(req_id)
-            incident_type = str(job.get("incident_type") or "unknown")
-            wave_i = parse_dump_arm_wave(job.get("wave"))
-            wave_dir = kv_dump_wave_dirname(wave_i)
+        drained_ids: list[str] = []
+        try:
+            for job in jobs:
+                arm_id = str(job.get("arm_id") or f"job-{id(job)}")
+                if job.get("consume_quota"):
+                    arms[arm_id]["debited"] = True
+                req_id = str(job.get("req_id") or "")
+                if not req_id:
+                    continue
+                # One finish per queued pin (dedupe only skips duplicate D2H).
+                drained_ids.append(req_id)
+                if req_id in seen_req:
+                    continue
+                seen_req.add(req_id)
+                incident_type = str(job.get("incident_type") or "unknown")
+                wave_i = parse_dump_arm_wave(job.get("wave"))
+                wave_dir = kv_dump_wave_dirname(wave_i)
 
-            def _skip(
-                reason: str,
-                *,
-                detail: dict[str, Any] | None = None,
-                _req_id: str = req_id,
-                _incident_type: str = incident_type,
-                _wave_i: int | None = wave_i,
-            ) -> None:
-                write_kv_dump_skipped(
-                    dump_root,
-                    req_id=_req_id,
-                    incident_type=_incident_type,
-                    reason=reason,
-                    stage="drain",
-                    rank_tag=rank_tag,
-                    wave=_wave_i,
-                    detail=detail,
-                )
+                def _skip(
+                    reason: str,
+                    *,
+                    detail: dict[str, Any] | None = None,
+                    _req_id: str = req_id,
+                    _incident_type: str = incident_type,
+                    _wave_i: int | None = wave_i,
+                ) -> None:
+                    write_kv_dump_skipped(
+                        dump_root,
+                        req_id=_req_id,
+                        incident_type=_incident_type,
+                        reason=reason,
+                        stage="drain",
+                        rank_tag=rank_tag,
+                        wave=_wave_i,
+                        detail=detail,
+                    )
 
-            if not store.kv_dump_allowed(req_id):
-                _skip("finished_or_reaped")
-                continue
-            block_ids = list(block_ids_for_request(self.runner, req_id, None) or [])
-            if not block_ids:
-                logger.warning(
-                    "[runtime_guard dump_kv] skip empty local block_ids req_id=%s rank=%s",
+                # Armed jobs always attempt D2H (①). Prefer frozen arm-time
+                # block_ids; fall back to live tables. Stamp finished caveat.
+                finished_at = bool(job.get(REQUEST_FINISHED_AT_DUMP_KEY)) or store.is_request_finished(req_id)
+                armed_bids = job.get("block_ids")
+                if isinstance(armed_bids, list) and armed_bids:
+                    block_ids = [int(x) for x in armed_bids]
+                else:
+                    block_ids = list(block_ids_for_request(self.runner, req_id, None) or [])
+                if not block_ids:
+                    logger.warning(
+                        "[runtime_guard dump_kv] skip empty local block_ids req_id=%s rank=%s",
+                        req_id,
+                        rank_tag,
+                    )
+                    _skip("empty_block_ids")
+                    continue
+                out_dir = dump_root / incident_type / req_id / wave_dir / rank_tag
+                produced = 0
+                try:
+                    for snap in reader.iter_request_snapshots(
+                        req_id=req_id,
+                        block_ids=block_ids,
+                        out_dir=out_dir,
+                    ):
+                        produced += 1
+                        # Stamp incident meta for async save failure markers.
+                        snap.payload.setdefault("incident_type", incident_type)
+                        if wave_i is not None:
+                            snap.payload.setdefault("dump_arm_wave", wave_i)
+                        snap.payload.setdefault("dump_root", str(dump_root))
+                        snap.payload[REQUEST_FINISHED_AT_DUMP_KEY] = finished_at
+                        job_detail = job.get("detail")
+                        if isinstance(job_detail, dict):
+                            for key in (
+                                "manual_dump_count",
+                                "manual_dump_target",
+                                "manual_dump_continuous",
+                                "source",
+                            ):
+                                if key in job_detail:
+                                    snap.payload.setdefault(key, job_detail[key])
+                        if submit is not None:
+                            submit(lambda s=snap: KvCacheReader.write_snapshots([s]))
+                        else:
+                            KvCacheReader.write_snapshots([snap])
+                except Exception as exc:
+                    logger.exception(
+                        "[runtime_guard dump_kv] dump failed req_id=%s rank=%s",
+                        req_id,
+                        rank_tag,
+                    )
+                    _skip("d2h_failed", detail={"error": f"{type(exc).__name__}: {exc}"})
+                    continue
+                if produced == 0:
+                    logger.warning(
+                        "[runtime_guard dump_kv] no tensors req_id=%s rank=%s",
+                        req_id,
+                        rank_tag,
+                    )
+                    _skip("no_tensors")
+                    continue
+                arms[arm_id]["ok"] = True
+                logger.info(
+                    "[runtime_guard dump_kv] dumped req_id=%s wave=%s rank=%s tensors=%d "
+                    "dir=%s request_finished_at_dump=%s",
                     req_id,
+                    wave_dir,
                     rank_tag,
+                    produced,
+                    out_dir,
+                    finished_at,
                 )
-                _skip("empty_block_ids")
-                continue
-            out_dir = dump_root / incident_type / req_id / wave_dir / rank_tag
-            produced = 0
-            try:
-                for snap in reader.iter_request_snapshots(
-                    req_id=req_id,
-                    block_ids=block_ids,
-                    out_dir=out_dir,
-                ):
-                    produced += 1
-                    # Stamp incident meta for async save failure markers.
-                    snap.payload.setdefault("incident_type", incident_type)
-                    if wave_i is not None:
-                        snap.payload.setdefault("dump_arm_wave", wave_i)
-                    snap.payload.setdefault("dump_root", str(dump_root))
-                    job_detail = job.get("detail")
-                    if isinstance(job_detail, dict):
-                        for key in (
-                            "manual_dump_count",
-                            "manual_dump_target",
-                            "manual_dump_continuous",
-                            "source",
-                        ):
-                            if key in job_detail:
-                                snap.payload.setdefault(key, job_detail[key])
-                    if submit is not None:
-                        submit(lambda s=snap: KvCacheReader.write_snapshots([s]))
-                    else:
-                        KvCacheReader.write_snapshots([snap])
-            except Exception as exc:
-                logger.exception(
-                    "[runtime_guard dump_kv] dump failed req_id=%s rank=%s",
-                    req_id,
-                    rank_tag,
-                )
-                _skip("d2h_failed", detail={"error": f"{type(exc).__name__}: {exc}"})
-                continue
-            if produced == 0:
-                logger.warning(
-                    "[runtime_guard dump_kv] no tensors req_id=%s rank=%s",
-                    req_id,
-                    rank_tag,
-                )
-                _skip("no_tensors")
-                continue
-            arms[arm_id]["ok"] = True
-            logger.info(
-                "[runtime_guard dump_kv] dumped req_id=%s wave=%s rank=%s tensors=%d dir=%s",
-                req_id,
-                wave_dir,
-                rank_tag,
-                produced,
-                out_dir,
-            )
-        if is_tp0 and quota is not None:
-            for meta in arms.values():
-                if meta["debited"] and not meta["ok"]:
-                    quota.refund(consume_quota=True)
+            if is_tp0 and quota is not None:
+                for meta in arms.values():
+                    if meta["debited"] and not meta["ok"]:
+                        quota.refund(consume_quota=True)
+        finally:
+            # Unpin even when D2H skipped/failed (pins were taken on TP0 queue;
+            # non-TP0 ranks that never queued are no-ops — dump_jobs stays 0).
+            store.finish_dump_jobs(drained_ids)

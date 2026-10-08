@@ -597,8 +597,9 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         here we drain those incidents. Wave stamp + IO append stay on this
         thread (sync sample or async ``get_output``).
         ``token_repeat`` runs later on ActionQueue;
-        request finish does not wait. ``dump_kv`` (any detector) is skipped
-        if the request is already finished/reaped.
+        request finish does not wait. ``dump_kv`` may still arm after
+        ``mark_finished`` (stamps ``request_finished_at_dump``); reaped ids
+        are refused at arm.
         """
 
         def _run() -> None:

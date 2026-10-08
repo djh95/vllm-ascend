@@ -402,13 +402,66 @@ def test_dump_kv_skips_when_free_below_payload_plus_headroom(tmp_path, monkeypat
     quota.try_consume.assert_not_called()
 
 
-def test_dump_kv_skips_when_request_finished(tmp_path):
+def test_dump_kv_arms_when_request_finished_stamps_flag(tmp_path):
+    """Finished-but-not-reaped may still arm; request_finished_at_dump is set."""
     from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
     from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
     RequestGuardStore.reset_for_tests()
     try:
-        RequestGuardStore.get().mark_finished(["r1"], wave=0)
+        store = RequestGuardStore.get()
+        store.mark_finished(["r1"], wave=0)
+
+        def _queue(job):
+            store.add_dump_jobs([job["req_id"]])
+            return True
+
+        guard = MagicMock()
+        guard.queue_kv_dump.side_effect = _queue
+        runner = SimpleNamespace(
+            tp_rank=0,
+            dp_rank=0,
+            dcp_rank=0,
+            dcp_size=1,
+            runtime_guard=guard,
+        )
+        ctx = _dump_ctx(
+            tmp_path=tmp_path,
+            incident=Incident(
+                incident_type="token_repeat",
+                req_id="r1",
+                block_ids=[0],
+                wave=3,
+            ),
+            runner=runner,
+            rank_tag="dp0_tp0_pp0_cp0",
+            rc=_dump_rc(tmp_path),
+        )
+        DumpKvAction().run(ctx)
+        guard.queue_kv_dump.assert_called_once()
+        job = guard.queue_kv_dump.call_args.args[0]
+        assert job["request_finished_at_dump"] is True
+        assert job["block_ids"] == [0]
+        info = tmp_path / "token_repeat" / "r1" / "wave_3" / "request_info.json"
+        assert info.is_file()
+        data = json.loads(info.read_text(encoding="utf-8"))
+        assert data["request_finished_at_dump"] is True
+        assert store.get_state("r1") is not None
+        assert store.get_state("r1").dump_jobs >= 1
+    finally:
+        RequestGuardStore.reset_for_tests()
+
+
+def test_dump_kv_skips_when_request_reaped(tmp_path):
+    from vllm_ascend.observability.runtime_guard.action.actions import DumpKvAction
+    from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
+
+    RequestGuardStore.reset_for_tests()
+    try:
+        store = RequestGuardStore.get()
+        store.mark_finished(["r1"], wave=0)
+        store.clear("r1")
+        assert store.kv_dump_allowed("r1") is False
         quota = MagicMock()
         ctx = _dump_ctx(
             tmp_path=tmp_path,
@@ -421,13 +474,10 @@ def test_dump_kv_skips_when_request_finished(tmp_path):
         quota.try_consume.assert_not_called()
         markers = list(tmp_path.glob("**/dump_skipped.json"))
         assert len(markers) == 1
-        marker = markers[0]
-        assert marker.is_file()
-        data = json.loads(marker.read_text(encoding="utf-8"))
-        assert data["reason"] == "finished_or_reaped"
+        data = json.loads(markers[0].read_text(encoding="utf-8"))
+        assert data["reason"] == "reaped"
         assert data["stage"] == "arm"
         assert data["req_id"] == "r1"
-        assert "wave_unknown" in str(marker)
     finally:
         RequestGuardStore.reset_for_tests()
 
@@ -465,6 +515,7 @@ def test_dump_kv_writes_request_info_json(tmp_path):
         assert data["incident_type"] == "token_repeat"
         assert data["dump_arm_wave"] == 7
         assert data["block_ids"] == [0, 1]
+        assert data["request_finished_at_dump"] is False
         assert data["detail"]["repeat_sum"] == 99
         assert data["detail"]["prompt_token_count"] == 3
         assert "prompt_token_ids" not in data["detail"]
@@ -479,7 +530,7 @@ def test_write_kv_dump_skipped_marker(tmp_path):
         tmp_path,
         req_id="r2",
         incident_type="logits_finite",
-        reason="finished_or_reaped",
+        reason="reaped",
         stage="drain",
         rank_tag="dp0_tp0_pp1_cp0",
         wave=3,
@@ -490,7 +541,7 @@ def test_write_kv_dump_skipped_marker(tmp_path):
     assert "dp0_tp0_pp1_cp0" in str(path)
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["stage"] == "drain"
-    assert data["reason"] == "finished_or_reaped"
+    assert data["reason"] == "reaped"
     assert data["incident_type"] == "logits_finite"
 
 
