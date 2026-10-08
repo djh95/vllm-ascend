@@ -110,7 +110,6 @@ class LogitsFiniteDetector(ConfigBackedDetector):
         section_key="logits_finite",
         stage="before_sample",
         help="Pre-sample logits NaN/Inf (isfinite + all-finite gate).",
-        retired_keys=frozenset({"deferred_queue_max"}),
         fields=(
             ConfigField("enabled", False, "bool", help="Master switch"),
             ConfigField(

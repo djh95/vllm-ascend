@@ -29,12 +29,12 @@ from vllm_ascend.observability.runtime_config import (
 from vllm_ascend.observability.runtime_config._defaults import HOT_RELOAD_INTERVAL_SECONDS
 
 
-def test_strip_keys_cover_runtime_aliases():
+def test_strip_keys_cover_runtime_keys():
     assert "runtime_config" in ADDITIONAL_CONFIG_STRIP_KEYS
     assert "runtime_config_path" in ADDITIONAL_CONFIG_STRIP_KEYS
-    assert "runtime-config" in ADDITIONAL_CONFIG_STRIP_KEYS
     assert "runtime_config_hot_reload" in ADDITIONAL_CONFIG_STRIP_KEYS
-    assert "runtime_config_reload_interval" in ADDITIONAL_CONFIG_STRIP_KEYS
+    assert "runtime_report_dir" in ADDITIONAL_CONFIG_STRIP_KEYS
+    assert "runtime_dump_dir" in ADDITIONAL_CONFIG_STRIP_KEYS
 
 
 def test_from_additional_builds_overlay(tmp_path: Path):
@@ -73,11 +73,6 @@ def test_from_additional_hot_reload_uses_fixed_interval(tmp_path: Path):
 def test_from_additional_rejects_bad_path_type():
     with pytest.raises(ValueError, match="runtime_config_path must be a string"):
         build_runtime_config_from_additional({"runtime_config_path": 123})
-
-
-def test_from_additional_rejects_retired_interval_key():
-    with pytest.raises(ValueError, match="runtime_config_reload_interval is retired"):
-        build_runtime_config_from_additional({"runtime_config_reload_interval": 5})
 
 
 def test_from_additional_rejects_non_bool_hot_reload():

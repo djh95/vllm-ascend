@@ -243,7 +243,7 @@ def test_validate_rejects_top_level_reload_interval() -> None:
 
 
 def test_startup_overlay_unknown_top_level_reload_interval_falls_back(tmp_path: Path):
-    """Bad overlay is rejected at bootstrap; service keeps defaults (no soft-pop)."""
+    """Bad overlay is rejected at bootstrap; service keeps defaults."""
     cfg_path = tmp_path / "runtime_config.json"
     _write(cfg_path, {})
     cfg = RuntimeConfig(
@@ -261,69 +261,33 @@ def test_startup_overlay_unknown_top_level_reload_interval_falls_back(tmp_path: 
     assert cfg.detector_get("token_repeat", "enabled") is False
 
 
-def test_retired_p0_p1_keys_soft_popped(tmp_path: Path):
-    """Old on-disk knobs are dropped so configs still validate / reload."""
+def test_unknown_nested_keys_hard_fail() -> None:
+    """Unknown nested keys (formerly soft-popped) must fail validation."""
     from copy import deepcopy
 
-    from vllm_ascend.observability.runtime_config._defaults import (
-        _DEFAULTS,
-        ACTION_QUEUE_MAX_SIZE,
-        DUMP_FREE_HEADROOM_BYTES,
-    )
+    from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS
     from vllm_ascend.observability.runtime_config.config import validate_runtime_config
 
-    data = deepcopy(_DEFAULTS)
-    data["actions"]["queue_max_size"] = 128
-    data["dump"]["free_headroom_bytes"] = 1
-    data["report"]["decode_token_ids"] = False
-    data["report"]["include_block_ids"] = False
-    data["report"]["save_sensitive_info"] = True
-    data["detector"]["spec_acceptance"]["short_log_interval_seconds"] = 9.0
-    data["detector"]["logits_finite"]["deferred_queue_max"] = 1
-    data["detector"]["output_substring"] = {"enabled": True, "patterns": ["x"]}
-    validate_runtime_config(data)
-    assert "queue_max_size" not in data["actions"]
-    assert "free_headroom_bytes" not in data["dump"]
-    assert "decode_token_ids" not in data["report"]
-    assert "include_block_ids" not in data["report"]
-    assert "short_log_interval_seconds" not in data["detector"]["spec_acceptance"]
-    assert "deferred_queue_max" not in data["detector"]["logits_finite"]
-    assert "output_substring" not in data["detector"]
-
-    cfg_path = tmp_path / "runtime_config.json"
-    _write(cfg_path, {})
-    cfg = RuntimeConfig(
-        config_path=cfg_path,
-        report_dir=tmp_path / "report",
-        ensure_file=True,
-        hot_reload=True,
-    )
-    _write(
-        cfg_path,
-        {
-            "actions": {"queue_max_size": 128, "defaults": {"on_trigger": ["report"]}},
-            "dump": {"free_headroom_bytes": 1, "auto_max_times": 0},
-            "report": {
-                "decode_token_ids": False,
-                "include_block_ids": False,
-                "save_sensitive_info": True,
-            },
-            "detector": {
-                "spec_acceptance": {"short_log_interval_seconds": 9.0},
-                "logits_finite": {"deferred_queue_max": 1},
-                "output_substring": {"enabled": True},
-            },
-        },
-    )
-    assert cfg.reload(force=True) is True
-    assert cfg.action_queue_max_size() == ACTION_QUEUE_MAX_SIZE
-    assert cfg.report_decode_token_ids() is True  # follows save_sensitive
-    assert DUMP_FREE_HEADROOM_BYTES > 0
-    assert "queue_max_size" not in cfg._data.get("actions", {})
-    assert "free_headroom_bytes" not in cfg._data.get("dump", {})
-    assert "decode_token_ids" not in cfg._data.get("report", {})
-    assert "include_block_ids" not in cfg._data.get("report", {})
-    assert "output_substring" not in cfg._data.get("detector", {})
+    cases = [
+        ("actions", {"queue_max_size": 128}, "queue_max_size"),
+        ("dump", {"free_headroom_bytes": 1}, "free_headroom_bytes"),
+        ("report", {"decode_token_ids": False}, "decode_token_ids"),
+        ("report", {"include_block_ids": False}, "include_block_ids"),
+        ("detector.spec_acceptance", {"short_log_interval_seconds": 9.0}, "short_log_interval_seconds"),
+        ("detector.logits_finite", {"deferred_queue_max": 1}, "deferred_queue_max"),
+        ("detector", {"output_substring": {"enabled": True}}, "output_substring"),
+    ]
+    for path, patch, needle in cases:
+        data = deepcopy(_DEFAULTS)
+        if path == "detector":
+            data["detector"].update(patch)
+        elif path.startswith("detector."):
+            section = path.split(".", 1)[1]
+            data["detector"][section].update(patch)
+        else:
+            data[path].update(patch)
+        with pytest.raises(ValueError, match=needle):
+            validate_runtime_config(data)
 
 
 def test_startup_overlay_dump_dir_overridden_by_ctor(tmp_path: Path):
