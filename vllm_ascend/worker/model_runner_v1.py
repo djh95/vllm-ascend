@@ -106,7 +106,6 @@ from vllm.v1.structured_output.utils import apply_grammar_bitmask
 from vllm.v1.utils import CpuGpuBuffer, record_function_or_nullcontext
 from vllm.v1.worker import mamba_utils
 from vllm.v1.worker.gpu_model_runner import (
-    AsyncGPUModelRunnerOutput,
     GPUModelRunner,
     nans_to_dict,
 )
@@ -177,7 +176,14 @@ from vllm_ascend.models.deepseek_v41.cache_config import (
 )
 from vllm_ascend.models.glm5next.cache_views import view_glm5_next_cache
 from vllm_ascend.models.glm5next.kv_cache import is_glm5_next_cache_spec
-from vllm_ascend.observability.runtime_guard.processor import SamplePhaseResult
+from vllm_ascend.observability.runtime_guard.hooks import (
+    build_v1_async_gpu_output,
+    is_async_output_rank,
+    runtime_guard_pre_sample_logits,
+    runtime_guard_step,
+)
+from vllm_ascend.observability.runtime_guard.io import accepted_token_counts
+from vllm_ascend.observability.runtime_guard.processor import RuntimeGuardProcessor, SamplePhaseResult
 from vllm_ascend.ops.fused_moe.force_eplb import build_force_eplb_topk
 from vllm_ascend.ops.rotary_embedding import set_cos_and_sin, update_cos_sin
 from vllm_ascend.ops.triton.spec_decode.ngram import triton_ngram_spec_decode
@@ -425,6 +431,8 @@ class NPUModelRunner(GPUModelRunner):
         self.use_score_encoder_cache = is_score_encoder_cache_manager(self.vllm_config)
 
         self.kvpp = KVPPRuntime()
+
+        self.runtime_guard = RuntimeGuardProcessor.bind(self)
 
         # Dump / PrecisionDebugger configuration now comes from AscendConfig
         dump_cfg = self.ascend_config.dump_config_path
@@ -2223,7 +2231,13 @@ class NPUModelRunner(GPUModelRunner):
         )
         return cut_tokens
 
+    # runtime_guard_step must stay INNER (below @torch.inference_mode()) so the
+    # wave sync keeps running inside the inference-mode context.
+    # runtime_guard_pre_sample_logits is INNER-most: v1 computes sample logits
+    # here, so the hook patches model.compute_logits for this call only.
     @torch.inference_mode()
+    @runtime_guard_step
+    @runtime_guard_pre_sample_logits
     def execute_model(
         self,
         scheduler_output: "SchedulerOutput",
@@ -2798,8 +2812,10 @@ class NPUModelRunner(GPUModelRunner):
         # Clear ephemeral state.
         self.execute_model_state = None
 
-        # Extracted sample body (no runtime_guard mount yet): keeps the
-        # functional path identical while preparing for run_sample_phase.
+        # Post-pre-sample hooks (run_sample_phase → check_after_sample)
+        # are owned by ``RuntimeGuardProcessor.run_sample_phase``. Pre-sample
+        # ``check_before_sample`` is installed by ``@runtime_guard_pre_sample_logits``
+        # on execute_model (must run before grammar bitmask here).
         num_nans_device_capture = None
 
         def sample_fn() -> SamplePhaseResult:
@@ -2890,6 +2906,7 @@ class NPUModelRunner(GPUModelRunner):
                 scheduler_output.total_num_scheduled_tokens,
                 spec_decode_metadata,
             )
+            num_nans_device_capture = num_nans_device
 
             with record_function_or_nullcontext("draft_token"):
                 if self.speculative_config:
@@ -2942,7 +2959,7 @@ class NPUModelRunner(GPUModelRunner):
             )
             if self.dynamic_eplb:
                 self.eplb_updator.forward_end(self.eplb_heat_collection_status)
-            num_nans_device_capture = num_nans_device
+
             return SamplePhaseResult(
                 scheduler_output=scheduler_output,
                 input_batch=self.input_batch,
@@ -2965,25 +2982,48 @@ class NPUModelRunner(GPUModelRunner):
                     result.sampler_output.sampled_token_ids, result.scheduler_output
                 )
 
-        result = sample_fn()
+        def accepted_token_nums_fn(result: SamplePhaseResult):
+            if self.need_accepted_tokens:
+                if self.num_accepted_tokens_event is not None:
+                    self.num_accepted_tokens_event.synchronize()
+                return self.input_batch.num_accepted_tokens_cpu
+            return accepted_token_counts(
+                result.sampler_output.sampled_token_ids,
+                placeholder_token_id=PLACEHOLDER_TOKEN_ID,
+            )
+
+        result, _routed_experts_result = self.runtime_guard.run_sample_phase(
+            sample_fn=sample_fn,
+            speculative_config=self.speculative_config,
+            need_accepted_tokens=self.need_accepted_tokens,
+            use_async=self.use_async_scheduling,
+            async_state_update_fn=async_state_update_fn if self.need_accepted_tokens else None,
+            routed_experts_fn=None,
+            accepted_token_nums_fn=accepted_token_nums_fn
+            if self.speculative_config is not None
+            else None,
+        )
 
         self._finalize_dump_data()
-
-        if self.need_accepted_tokens:
-            async_state_update_fn(result)
 
         if not self.use_async_scheduling:
             return result.model_runner_output
 
-        # R3 is served by the V2 runner through vLLM's AuxOutput connector.
-        async_output = AsyncGPUModelRunnerOutput(
+        need_async_check = self.runtime_guard.needs_sample_phase_hooks()
+        # After-sample detection is last-PP TP0 only. unique_reply_rank already
+        # materializes the output rank via enqueue_output; wrapping other ranks
+        # and forcing get_output() stalled the next TP collective.
+        async_output = build_v1_async_gpu_output(
             model_runner_output=result.model_runner_output,
             sampled_token_ids=result.sampler_output.sampled_token_ids,
             logprobs_tensors=result.sampler_output.logprobs_tensors,
             invalid_req_indices=result.invalid_req_indices,
             async_output_copy_stream=self.async_output_copy_stream,
             vocab_size=self.input_batch.vocab_size,
+            routed_experts=None,
             num_nans=num_nans_device_capture,
+            runner=self,
+            wrap_guard=bool(need_async_check and is_async_output_rank()),
         )
         self.input_batch.set_async_sampled_token_ids(
             async_output.sampled_token_ids_cpu,

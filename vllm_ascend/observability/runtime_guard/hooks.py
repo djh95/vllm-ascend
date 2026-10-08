@@ -26,8 +26,12 @@ add wave sync / sample-phase orchestration around them.
 
 v2 uses :func:`runtime_guard_step` on ``execute_model`` and
 :func:`runtime_guard_sample_tokens` on ``sample_tokens`` (pre-sample logits
-wrap + SamplePhaseResult assembly + async after-sample wrap). ModelRunner
-v1 is **not** wired — runtime_guard is v2-only.
+wrap + SamplePhaseResult assembly + async after-sample wrap). v1 still
+assembles :class:`SamplePhaseResult` inline (accepted-tokens /
+routed-experts / ``AsyncGPUModelRunnerOutput`` are v1-specific); Ascend
+async wrapping is centralized in :func:`build_v1_async_gpu_output`.
+v1 installs the logits wrap on ``execute_model`` via
+:func:`runtime_guard_pre_sample_logits`.
 
 Decorator placement: guard step decorators must sit INSIDE
 ``@torch.inference_mode()`` so wave sync stays in that context. The worker
@@ -45,6 +49,7 @@ from typing import Any
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
 from vllm.v1.worker.gpu.async_utils import AsyncOutput
+from vllm.v1.worker.gpu_model_runner import AsyncGPUModelRunnerOutput
 
 from vllm_ascend.logger import init_logger_ascend
 from vllm_ascend.observability.runtime_guard.processor import SamplePhaseResult
@@ -56,7 +61,7 @@ _SCHEDULER_OUTPUT_ATTR = "_pending_scheduler_output"
 
 
 def runtime_guard_step(execute_model_fn):
-    """Wave-level runtime_guard sync for ``execute_model`` (v2).
+    """Wave-level runtime_guard sync for ``execute_model`` (shared by v1/v2).
 
     - before the step body: ``sync_for_step`` (config bus, wave arm, reap)
     - ``finally``: ``end_of_wave_sync(allow_manual_dump=False)`` on no-sample paths
@@ -85,12 +90,40 @@ def runtime_guard_step(execute_model_fn):
     return wrapper
 
 
+def runtime_guard_pre_sample_logits(execute_model_fn):
+    """v1-only: patch ``model.compute_logits`` for the duration of ``execute_model``.
+
+    v1 computes sample logits inside ``execute_model`` (before grammar in
+    ``sample_tokens``). Monkey-patching here lets the runner body call bare
+    ``self.model.compute_logits(...)`` — same contract as v2's sample-phase
+    wrap, with no runner-local guard helper.
+
+    Do **not** stack this on v2: logits live in parent ``sample_tokens``,
+    already covered by :func:`runtime_guard_sample_tokens`.
+
+    Must sit INNER-most under ``@runtime_guard_step`` (and thus under
+    ``@torch.inference_mode()``).
+    """
+
+    @functools.wraps(execute_model_fn)
+    def wrapper(self, scheduler_output, *args, **kwargs):
+        guard = getattr(self, "runtime_guard", None)
+        if guard is None or not need_pre_sample_hook(guard):
+            return execute_model_fn(self, scheduler_output, *args, **kwargs)
+        # Pass None so wrap reads runner.input_batch at fire time (after
+        # _update_states / logits_indices), not the execute entry snapshot.
+        with wrap_compute_logits_for_pre_sample(self, None):
+            return execute_model_fn(self, scheduler_output, *args, **kwargs)
+
+    return wrapper
+
+
 def runtime_guard_idle_step(dummy_batch_fn):
     """Worker-level wave sync for idle DP ranks (``execute_dummy_batch``).
 
     Same lockstep gate as ``runtime_guard_step`` — do not soft-fail
     ``sync_for_step`` (busy ranks take the same collectives). Guard lives on
-    ``self.model_runner`` (v2).
+    ``self.model_runner``.
     """
 
     @functools.wraps(dummy_batch_fn)
@@ -334,6 +367,58 @@ def maybe_wrap_v2_async_output(output: Any, runner: Any) -> Any:
     if not is_async_output_rank():
         return output
     return AscendAsyncOutput(output, runner)
+
+
+def build_v1_async_gpu_output(
+    *,
+    model_runner_output: Any,
+    sampled_token_ids: Any,
+    logprobs_tensors: Any,
+    invalid_req_indices: Any,
+    async_output_copy_stream: Any,
+    vocab_size: int,
+    routed_experts: Any = None,
+    num_nans: Any = None,
+    runner: Any,
+    wrap_guard: bool,
+) -> AsyncGPUModelRunnerOutput:
+    """Build v1 async output; wrap with after-sample when ``wrap_guard`` is set.
+
+    Keeps the two ctor kwarg tables in one place (Ascend vs bare upstream).
+    Only forwards kwargs that ``AsyncGPUModelRunnerOutput`` still accepts.
+    """
+    import inspect
+
+    kwargs: dict[str, Any] = {
+        "model_runner_output": model_runner_output,
+        "sampled_token_ids": sampled_token_ids,
+        "logprobs_tensors": logprobs_tensors,
+        "invalid_req_indices": invalid_req_indices,
+        "async_output_copy_stream": async_output_copy_stream,
+        "vocab_size": vocab_size,
+        "routed_experts": routed_experts,
+        "num_nans": num_nans,
+    }
+    accepted = set(inspect.signature(AsyncGPUModelRunnerOutput.__init__).parameters)
+    kwargs = {k: v for k, v in kwargs.items() if k in accepted}
+    if wrap_guard:
+        return AscendAsyncGPUModelRunnerOutput(**kwargs, runner=runner)
+    return AsyncGPUModelRunnerOutput(**kwargs)
+
+
+class AscendAsyncGPUModelRunnerOutput(AsyncGPUModelRunnerOutput):
+    """v1 async output: run ``check_after_sample`` after D2H in ``get_output``."""
+
+    def __init__(self, *args: Any, runner: Any | None = None, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._runner = runner
+
+    def get_output(self) -> ModelRunnerOutput:
+        output = super().get_output()
+        if self._runner is None:
+            return output
+        _safe_check_after_sample(self._runner, output)
+        return output
 
 
 class AscendAsyncOutput(AsyncModelRunnerOutput):
