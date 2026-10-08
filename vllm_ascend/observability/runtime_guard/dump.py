@@ -38,6 +38,10 @@ from vllm_ascend.observability.runtime_guard.rank_gate import (
 
 logger = init_logger_ascend(__name__)
 
+# When True on request_info / .pt / report: req was already finished at arm or
+# drain time. Blocks may have been freed or reused — treat tensors as suspect.
+REQUEST_FINISHED_AT_DUMP_KEY = "request_finished_at_dump"
+
 # ---- dump path / free space ----
 
 # Cap how far we walk toward an existing ancestor when probing free space for
@@ -159,10 +163,14 @@ def write_kv_dump_request_info(
     decode_token_ids: bool = True,
     max_prompt_token_ids: int = 100000,
     max_output_token_ids: int = 100000,
+    request_finished_at_dump: bool = False,
 ) -> Path | None:
     """Last-PP TP0: write report-like request metadata next to KV ``.pt`` shards.
 
     Path: ``{dump_root}/{incident_type}/{req_id}/{wave_N}/request_info.json``
+
+    ``request_finished_at_dump``: req was already finished when dump armed;
+    KV may already be freed/reused — treat ``.pt`` as suspect.
     """
     if not req_id:
         return None
@@ -185,6 +193,7 @@ def write_kv_dump_request_info(
         "rank": str(rank_tag or ""),
         "dump_arm_wave": int(wave) if wave is not None else None,
         "block_ids": list(block_ids) if block_ids is not None else safe_detail.get("block_ids"),
+        REQUEST_FINISHED_AT_DUMP_KEY: bool(request_finished_at_dump),
         "decode_token_ids": bool(decode_token_ids and save_sensitive_info),
         "max_prompt_token_ids": int(max_prompt_token_ids),
         "max_output_token_ids": int(max_output_token_ids),

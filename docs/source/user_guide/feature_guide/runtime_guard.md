@@ -79,7 +79,7 @@ runtime/
     kv_cache/<incident_type>/<req_id>/wave_*/request_info.json
 ```
 
-Report JSON top-level includes `dump_attempted` (whether `dump_kv` was in `on_trigger`, not whether D2H finished), `dump_arm_wave`, and `dump_dir`. Same `(type, req_id)` is capped by `report.max_per_req` (default 1); reaching the cap stops detection for that request. Wave backoff (64, then doubles) spaces further writes when the cap is higher. Default `on_trigger` includes `report`.
+Report JSON top-level includes `dump_attempted` (whether `dump_kv` was in `on_trigger`, not whether D2H finished), `dump_arm_wave`, `dump_dir`, and optionally `request_finished_at_dump` (finish-wave arm — KV may be freed/reused). Same `(type, req_id)` is capped by `report.max_per_req` (default 1); reaching the cap stops detection for that request. Wave backoff (64, then doubles) spaces further writes when the cap is higher. Default `on_trigger` includes `report`.
 
 ## Detectors
 
@@ -93,7 +93,7 @@ All detectors default to **disabled**. Enable individually under `detector.<name
 
 Online KV / position meta detectors are **not** in this release; use `dump_kv` for KV capture (offline compare tooling ships later).
 
-> **Wiring (v2 only):** `@runtime_guard_sample_tokens` covers post-pre-sample hooks (`mark_finished` / `check_after_spec` / waves / `check_after_sample` when host ids are ready). Pre-sample `check_before_sample` is on the compute_logits wrap inside the sample decorator (before grammar; `logits_finite` only — default async gate D2H there, wait in after-sample; `item_sync: true` for blocking `.item()`). After-sample for async scheduling **and** for v2 `AsyncOutput` (even under sync scheduling) runs in `AscendAsyncOutput.get_output()` after D2H + `num_sampled` trim — do not append padded `AsyncOutput.sampled_token_ids` in the sync hook (W2-3 / D-11). Then drain `logits_finite` incidents and enqueue CPU detector (`token_repeat`) on `ActionQueue` (finish does not wait). `dump_kv` is skipped if the request has already finished/reaped. ModelRunner v1 is not wired.
+> **Wiring (v2 only):** `@runtime_guard_sample_tokens` covers post-pre-sample hooks (`mark_finished` / `check_after_spec` / waves / `check_after_sample` when host ids are ready). Pre-sample `check_before_sample` is on the compute_logits wrap inside the sample decorator (before grammar; `logits_finite` only — default async gate D2H there, wait in after-sample; `item_sync: true` for blocking `.item()`). After-sample for async scheduling **and** for v2 `AsyncOutput` (even under sync scheduling) runs in `AscendAsyncOutput.get_output()` after D2H + `num_sampled` trim — do not append padded `AsyncOutput.sampled_token_ids` in the sync hook (W2-3 / D-11). Then drain `logits_finite` incidents and enqueue CPU detector (`token_repeat`) on `ActionQueue` (finish does not wait). `dump_kv` may still arm after `mark_finished` (finish can precede after-sample); reports / `request_info` / `.pt` set `request_finished_at_dump: true` in that case — KV may already be freed or reused, so treat tensors as suspect. Reaped ids are refused at arm. ModelRunner v1 is not wired.
 
 ## Actions
 
@@ -119,7 +119,7 @@ Default `on_trigger` is `["report"]`. Per-detector overrides:
 - **No additional-config / defaults**: bind-only path; intended to be noise-free.
 - **Hot-reload only** (`runtime_config_hot_reload=true`, all detectors off, dump off): on last-PP TP, the TP0 due-broadcast runs on the bus worker so the inference thread can overlap it with forward (C2); end-of-wave rate-limits a warning if the collective was not hidden. Other processes poll the config file.
 - **Detectors on**: cost depends on enabled checks (light: `token_repeat`; heavier: `logits_finite` — default async gate overlaps sample; `item_sync: true` pays sync `.item()` each step).
-- **dump_kv on hit**: detector arms queue for the **next** wave-head dump lane, then D2H at that wave's `end_of_wave_sync` (after bus drain / prepare). Manual dump D2H's locally at end-of-wave (no dump-job bcast). Idle/broadcast steps submit a cheap due-vector broadcast at wave-head; per-lane `broadcast_object` runs only when that lane is due.
+- **dump_kv on hit**: detector arms queue for the **next** wave-head dump lane, then D2H at that wave's `end_of_wave_sync` (after bus drain / prepare). Manual dump D2H's locally at end-of-wave (no dump-job bcast). Idle/broadcast steps submit a cheap due-vector broadcast at wave-head; per-lane `broadcast_object` runs only when that lane is due. Finish-wave hits set `request_finished_at_dump` on the artifacts.
 
 Throughput A/B (with vs without Runtime Guard) should be measured on Ascend hardware; it is not gated by default CI.
 
