@@ -31,6 +31,7 @@ from vllm_ascend.observability.runtime_config._defaults import _DEFAULTS, DUMP_F
 from vllm_ascend.observability.runtime_config.config import RuntimeConfig
 from vllm_ascend.observability.runtime_guard.action.queue import ActionQueue
 from vllm_ascend.observability.runtime_guard.dump import (
+    REQUEST_FINISHED_AT_DUMP_KEY,
     KvCacheReader,
     free_bytes_at,
     write_kv_dump_request_info,
@@ -93,6 +94,8 @@ class ReportAction(Action):
 
     def prepare(self, ctx: ActionContext) -> ReportPrepared | None:
         # last-PP TP0 only (same gate as detectors); ReportWriter uses shared report_dir.
+        from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
+
         dump_count, dump_max_times = ctx.quota.snapshot()
         actions = ctx.action_overrides.get("_actions", [])
         dump_attempted = "dump_kv" in actions
@@ -100,6 +103,9 @@ class ReportAction(Action):
         # D2H happens in ``_run_kv_dumps`` / a separate handle — still attempted.
         if ctx.incident.incident_type == MANUAL_TRIGGER_TYPE:
             dump_attempted = True
+        finished_at_dump = False
+        if dump_attempted and ctx.incident.req_id:
+            finished_at_dump = RequestGuardStore.get().is_request_finished(str(ctx.incident.req_id))
         return ReportPrepared(
             report_writer=ctx.report_writer,
             kwargs={
@@ -112,6 +118,7 @@ class ReportAction(Action):
                 "dump_count": dump_count,
                 "dump_max_times": dump_max_times,
                 "dump_arm_wave": ctx.incident.wave,
+                REQUEST_FINISHED_AT_DUMP_KEY: finished_at_dump,
             },
         )
 
@@ -135,10 +142,11 @@ class DumpKvAction(Action):
     uses ``all_requests`` (``scope`` ignored).
 
     Detection stays last-PP TP0. This action does **not** D2H; it queues
-    ``{req_id, ...}``. At the end of ``run_sample_phase`` (or sync when this
-    step has no sample), every last-PP TP rank drains and dumps its shard
-    (block_ids resolved then). Finished/reaped requests are always skipped
-    (arm and drain). Other PP stages are not dumped.
+    ``{req_id, ...}``. Drain is +1 wave (detector) or end-of-wave (manual).
+    Reaped ids are refused at arm; finished-but-not-reaped may still arm
+    (``mark_finished`` can precede ``check_after_sample``) and stamp
+    ``request_finished_at_dump``. Armed jobs always attempt D2H. Other PP
+    stages are not dumped.
 
     Two-phase like every async action: ``prepare`` (inference thread) gates,
     estimates, consumes quota and queues jobs; ``commit`` (action worker)
@@ -159,9 +167,9 @@ class DumpKvAction(Action):
         from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
 
         # Synthetic ``__manual_trigger__`` is never a Store/KV owner — skip the
-        # per-incident finished gate; ``all_requests`` filters real reqs below.
+        # per-incident reaped gate; ``all_requests`` filters real reqs below.
         if not is_manual and not RequestGuardStore.get().kv_dump_allowed(str(incident.req_id or "")):
-            return DumpKvPrepared(skip=_dump_skip_kwargs(ctx, reason="finished_or_reaped"))
+            return DumpKvPrepared(skip=_dump_skip_kwargs(ctx, reason="reaped"))
         base = Path(ctx.runtime_config.dump_root()) / ctx.incident.incident_type
 
         targets = _resolve_dump_targets(ctx, scope)
@@ -376,14 +384,18 @@ def _build_request_infos_for_targets(
     incident_type = str(ctx.incident.incident_type or "unknown")
     wave = ctx.incident.wave
     rank_tag = dump_rank_tag(ctx.runner) if ctx.runner is not None else ctx.rank_tag
+    from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
+
+    store = RequestGuardStore.get()
     infos: list[dict[str, Any]] = []
     for req_id, block_ids in targets:
+        rid = str(req_id)
         infos.append(
             {
                 "dump_root": dump_root,
-                "req_id": str(req_id),
+                "req_id": rid,
                 "incident_type": incident_type,
-                "detail": _detail_for_dump_req(ctx, str(req_id)),
+                "detail": _detail_for_dump_req(ctx, rid),
                 "rank_tag": rank_tag,
                 "wave": wave,
                 "block_ids": list(block_ids) if block_ids else None,
@@ -392,6 +404,7 @@ def _build_request_infos_for_targets(
                 "decode_token_ids": decode_ids,
                 "max_prompt_token_ids": max_prompt,
                 "max_output_token_ids": max_output,
+                REQUEST_FINISHED_AT_DUMP_KEY: store.is_request_finished(rid),
             }
         )
     return infos
@@ -405,6 +418,7 @@ def _queue_kv_dumps(
 
     Returns the set of ``req_id`` newly queued. Pending list dedupes by
     ``(wave, req_id)`` (at most one dump job per request per arm wave).
+    Freezes arm-time ``block_ids`` and ``request_finished_at_dump`` into the job.
     """
     if runner_tp_rank(ctx.runner) != 0:
         return set()
@@ -413,12 +427,16 @@ def _queue_kv_dumps(
         return set()
     import uuid
 
+    from vllm_ascend.observability.runtime_guard.state import RequestGuardStore
+
+    store = RequestGuardStore.get()
     arm_id = uuid.uuid4().hex
     consume = bool(ctx.incident.consume_quota)
     wave = ctx.incident.wave
     queued: set[str] = set()
-    for req_id, _block_ids in targets:
+    for req_id, block_ids in targets:
         rid = str(req_id)
+        bids = list(block_ids) if block_ids else []
         added = queue(
             {
                 "req_id": rid,
@@ -426,6 +444,8 @@ def _queue_kv_dumps(
                 "consume_quota": consume,
                 "arm_id": arm_id,
                 "wave": int(wave) if wave is not None else None,
+                "block_ids": bids,
+                REQUEST_FINISHED_AT_DUMP_KEY: store.is_request_finished(rid),
             }
         )
         if added:

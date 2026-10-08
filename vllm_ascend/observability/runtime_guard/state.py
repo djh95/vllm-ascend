@@ -313,6 +313,9 @@ class RequestGuardState:
     # In-flight after-sample CPU detect jobs. Reap waits until 0 so Store /
     # detector windows survive until the ActionQueue worker finishes.
     cpu_jobs: int = 0
+    # In-flight KV dump arms (queued → drain/drop). Reap waits so finished
+    # requests can still complete an already-armed dump_kv (+1 wave).
+    dump_jobs: int = 0
 
 
 class RequestGuardStore:
@@ -445,9 +448,49 @@ class RequestGuardStore:
                 if state is not None and state.cpu_jobs > 0:
                     state.cpu_jobs -= 1
 
-    def kv_dump_allowed(self, req_id: str) -> bool:
-        """False when the request has finished or been reaped (KV may be reused).
+    def add_dump_jobs(self, req_ids: Iterable[str] | None) -> None:
+        """Pin finished reqs until armed dump_kv drains or is dropped."""
+        if not req_ids:
+            return
+        with self._lock:
+            for raw in req_ids:
+                if not raw:
+                    continue
+                rid = str(raw)
+                state = self._by_req.get(rid)
+                if state is None:
+                    self._discard_reaped_locked(rid)
+                    state = RequestGuardState(req_id=rid)
+                    self._by_req[rid] = state
+                state.dump_jobs += 1
 
+    def finish_dump_jobs(self, req_ids: Iterable[str] | None) -> None:
+        if not req_ids:
+            return
+        with self._lock:
+            for raw in req_ids:
+                if not raw:
+                    continue
+                state = self._by_req.get(str(raw))
+                if state is not None and state.dump_jobs > 0:
+                    state.dump_jobs -= 1
+
+    def is_request_finished(self, req_id: str) -> bool:
+        """True when Store has marked this req finished (not merely unknown)."""
+        if not req_id:
+            return False
+        rid = str(req_id)
+        with self._lock:
+            state = self._by_req.get(rid)
+            return bool(state is not None and state.finished)
+
+    def kv_dump_allowed(self, req_id: str) -> bool:
+        """False only when reaped (blocks may already be reused by a new owner).
+
+        Finished-but-not-reaped requests may still **arm** ``dump_kv`` (same-wave
+        detect after ``mark_finished``). Drain of an already-armed job does not
+        consult this gate — callers stamp ``request_finished_at_dump`` when the
+        req was already finished so consumers know KV may be stale/wrong.
         Unknown ids (never in Store) return True so unit tests / manual dumps
         without Store state still proceed.
         """
@@ -455,9 +498,6 @@ class RequestGuardStore:
             return False
         rid = str(req_id)
         with self._lock:
-            state = self._by_req.get(rid)
-            if state is not None:
-                return not state.finished
             return rid not in self._reaped_set
 
     def _ready_to_reap_locked(self, state: RequestGuardState, *, current_wave: int) -> bool:
@@ -466,13 +506,13 @@ class RequestGuardStore:
         mark = state.finish_mark_wave
         # Post-reap late append stamps finished=True without a mark (zombie).
         # Start the defer clock on first reap scan so max_deferred_waves can
-        # still force-reap when cpu_jobs is stuck.
+        # still force-reap when cpu_jobs / dump_jobs is stuck.
         if mark is None:
             if not state.finished:
                 return True
             mark = int(current_wave)
             state.finish_mark_wave = mark
-        if state.cpu_jobs > 0:
+        if state.cpu_jobs > 0 or state.dump_jobs > 0:
             if int(current_wave) - mark < int(self.max_deferred_waves):
                 return False
         if int(current_wave) - mark >= int(self.max_deferred_waves):

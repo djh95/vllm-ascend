@@ -403,6 +403,7 @@ class ReportWriter:
         dump_count: int | None = None,
         dump_max_times: int | None = None,
         dump_arm_wave: int | None = None,
+        request_finished_at_dump: bool = False,
     ) -> Path | None:
         """Write one pretty-printed anomaly JSON file. Returns path or None on failure.
 
@@ -411,6 +412,8 @@ class ReportWriter:
         ``dump_arm_wave`` is the real-step wave when the incident was handled;
         same-pair rate limiting uses it (64 waves, then doubles) up to
         ``max_per_req``.
+        ``request_finished_at_dump``: req already finished at arm time — KV in
+        the dump may be freed/reused (suspect).
         """
         pair = (str(incident_type or "unknown"), str(req_id or ""))
         wave_i: int | None = int(dump_arm_wave) if dump_arm_wave is not None else None
@@ -509,6 +512,8 @@ class ReportWriter:
                 "max_output_token_ids": self.max_output_token_ids,
                 "detail": safe_detail,
             }
+            if dump_attempted and request_finished_at_dump:
+                record["request_finished_at_dump"] = True
             # Surface block_ids next to req_id/dump_dir when present (K-13).
             if "block_ids" in safe_detail:
                 record["block_ids"] = safe_detail["block_ids"]
