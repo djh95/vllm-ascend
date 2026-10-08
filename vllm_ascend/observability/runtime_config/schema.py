@@ -41,7 +41,6 @@ class DetectorSchema:
 
     section_key: str
     fields: tuple[ConfigField, ...]
-    retired_keys: frozenset[str] = frozenset()
     help: str = ""
     stage: str = ""  # e.g. before_sample / after_sample / after_spec (panel hint)
 

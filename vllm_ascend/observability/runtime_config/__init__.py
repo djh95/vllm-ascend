@@ -36,10 +36,7 @@ ADDITIONAL_CONFIG_STRIP_KEYS: frozenset[str] = frozenset(
     {
         "runtime_config",
         "runtime_config_path",
-        "runtime-config",
         "runtime_config_hot_reload",
-        # Retired: interval is fixed at HOT_RELOAD_INTERVAL_SECONDS when enabled.
-        "runtime_config_reload_interval",
         "runtime_report_dir",
         "runtime_dump_dir",
     }
@@ -72,13 +69,7 @@ class RuntimeConfigBootstrap:
 
 def build_runtime_config_from_additional(additional_config: dict[str, Any]) -> RuntimeConfigBootstrap:
     """Validate runtime_* keys, construct :class:`RuntimeConfig`, start non-worker reload."""
-    if "runtime_config_reload_interval" in additional_config:
-        raise ValueError(
-            "additional_config.runtime_config_reload_interval is retired; "
-            "use runtime_config_hot_reload=true|false (fixed 3s poll when enabled)."
-        )
-
-    raw_path = additional_config.get("runtime_config_path") or additional_config.get("runtime-config")
+    raw_path = additional_config.get("runtime_config_path")
     if raw_path is not None and not isinstance(raw_path, str):
         raise ValueError(f"additional_config.runtime_config_path must be a string, got {type(raw_path).__name__}.")
 

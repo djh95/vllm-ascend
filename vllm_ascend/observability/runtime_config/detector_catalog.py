@@ -39,9 +39,6 @@ REGISTERED_DETECTOR_TYPES: tuple[type, ...] = (
     LogitsFiniteDetector,
 )
 
-# Entire detector sections retired from product JSON (soft-pop on validate).
-RETIRED_DETECTOR_SECTIONS: frozenset[str] = frozenset({"output_substring"})
-
 
 def _schema_of(cls: type) -> DetectorSchema:
     schema = getattr(cls, "schema", None)
@@ -59,10 +56,6 @@ DETECTOR_SECTIONS: tuple[str, ...] = tuple(s.section_key for s in DETECTOR_SCHEM
 def build_detector_defaults() -> dict[str, Any]:
     """``detector`` object defaults for ``runtime_config.json``."""
     return {s.section_key: s.defaults_dict() for s in DETECTOR_SCHEMAS}
-
-
-def retired_detector_keys() -> dict[str, frozenset[str]]:
-    return {s.section_key: s.retired_keys for s in DETECTOR_SCHEMAS if s.retired_keys}
 
 
 def detector_param_keys() -> dict[str, frozenset[str]]:

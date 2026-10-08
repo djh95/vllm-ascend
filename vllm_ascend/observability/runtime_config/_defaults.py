@@ -30,20 +30,11 @@ DUMP_FREE_HEADROOM_BYTES: int = 5 * 1024 * 1024 * 1024
 SPEC_SHORT_LOG_INTERVAL_SECONDS: float = 2.0
 LOGITS_FINITE_DEFERRED_QUEUE_MAX: int = 256
 
-# Retired nested JSON keys: silently dropped on validate so old on-disk configs
-# still load. Unknown *top-level* keys are rejected (no soft-pop).
-_RETIRED_DUMP_KEYS: frozenset[str] = frozenset({"free_headroom_bytes"})
-_RETIRED_REPORT_KEYS: frozenset[str] = frozenset({"decode_token_ids", "include_block_ids"})
-_RETIRED_ACTIONS_KEYS: frozenset[str] = frozenset({"queue_max_size"})
-
 # Detector catalog (imports detector classes; only needs constants above).
 from vllm_ascend.observability.runtime_config.detector_catalog import (  # noqa: E402
     build_detector_defaults,
     detector_param_keys,
-    retired_detector_keys,
 )
-
-_RETIRED_DETECTOR_KEYS: dict[str, frozenset[str]] = retired_detector_keys()
 
 _DEFAULTS: dict[str, Any] = {
     # Hot-reload on/off is startup-only (additional_config.runtime_config_hot_reload);
