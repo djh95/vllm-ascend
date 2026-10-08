@@ -83,6 +83,35 @@ def decode_token_ids(tokenizer: Any, token_ids: list[int]) -> str:
     return tokenizer.decode(token_ids, skip_special_tokens=False)
 
 
+def accepted_token_counts(
+    sampled_token_ids: Any,
+    *,
+    placeholder_token_id: int = -1,
+) -> Any:
+    """Count accepted tokens per request from rejection-sampler output.
+
+    Used by ModelRunner v1 non-hybrid MTP / speculative paths where accepted
+    counts are derived from ``PLACEHOLDER_TOKEN_ID`` padding rather than a
+    dedicated ``num_accepted_tokens`` buffer.
+    """
+    if sampled_token_ids is None:
+        return []
+    if torch.is_tensor(sampled_token_ids):
+        if sampled_token_ids.numel() == 0:
+            return torch.zeros(sampled_token_ids.size(0), dtype=torch.int32)
+        return (sampled_token_ids != placeholder_token_id).sum(dim=-1).to(dtype=torch.int32).cpu()
+    counts: list[int] = []
+    for row in sampled_token_ids:
+        if row is None:
+            counts.append(0)
+            continue
+        if torch.is_tensor(row):
+            counts.append(int((row != placeholder_token_id).sum().item()))
+        else:
+            counts.append(sum(1 for t in row if t != placeholder_token_id))
+    return counts
+
+
 def load_model_tokenizer(runner: Any) -> Any | None:
     """Load model tokenizer via ``cached_tokenizer_from_config``.
 

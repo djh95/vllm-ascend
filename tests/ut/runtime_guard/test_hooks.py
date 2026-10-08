@@ -12,6 +12,7 @@ import torch
 from vllm_ascend.observability.runtime_guard.hooks import (
     get_postprocess_sampled,
     runtime_guard_idle_step,
+    runtime_guard_pre_sample_logits,
     runtime_guard_sample_tokens,
     runtime_guard_step,
 )
@@ -30,13 +31,19 @@ def _decorator_names(fn_node: ast.FunctionDef) -> list[str]:
 
 def test_guard_step_sits_below_inference_mode():
     """runtime_guard_step must be INNER: the wave sync runs in inference mode."""
-    tree = ast.parse((_WORKER_ROOT / "v2" / "model_runner.py").read_text(encoding="utf-8"))
-    fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "execute_model"]
-    assert len(fns) == 1
-    assert _decorator_names(fns[0]) == ["inference_mode", "runtime_guard_step"]
-    # v1 must stay unwired.
-    v1 = (_WORKER_ROOT / "model_runner_v1.py").read_text(encoding="utf-8")
-    assert "runtime_guard" not in v1
+    expected = {
+        "model_runner_v1.py": [
+            "inference_mode",
+            "runtime_guard_step",
+            "runtime_guard_pre_sample_logits",
+        ],
+        "v2/model_runner.py": ["inference_mode", "runtime_guard_step"],
+    }
+    for rel, want in expected.items():
+        tree = ast.parse((_WORKER_ROOT / rel).read_text(encoding="utf-8"))
+        fns = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "execute_model"]
+        assert len(fns) == 1, rel
+        assert _decorator_names(fns[0]) == want, rel
 
 
 class _StepRunner:
@@ -277,3 +284,81 @@ def test_sample_tokens_guardless_is_bare_method_call():
     # Guardless path is a bare method call — zero guard work, no stash.
     assert runner.order == ["body", "postprocess"]
     assert get_postprocess_sampled(runner) == (None, None)
+
+
+class _LogitsModel:
+    def __init__(self):
+        self.calls = 0
+
+    def compute_logits(self, hidden_states):
+        self.calls += 1
+        return f"logits-{self.calls}"
+
+
+class _PreSampleLogitsRunner:
+    """Minimal stand-in for ``runtime_guard_pre_sample_logits`` on execute_model."""
+
+    def __init__(self, guard, input_batch="batch"):
+        self.runtime_guard = guard
+        self.input_batch = input_batch
+        self.model = _LogitsModel()
+        self.body_logits = None
+
+    @runtime_guard_pre_sample_logits
+    def execute_model(self, scheduler_output):
+        # Bare call — decorator owns the monkey-patch window.
+        self.body_logits = self.model.compute_logits("hs")
+        return self.body_logits
+
+
+def test_pre_sample_logits_decorator_patches_compute_logits():
+    guard = MagicMock()
+    # need_pre_sample_hook: logits_finite enabled + can_run_detection True.
+    guard.runtime_config = MagicMock()
+    guard.runtime_config.detector_get.return_value = True
+    guard.action_executor = MagicMock()
+    guard.action_executor.can_run_detection.return_value = True
+
+    runner = _PreSampleLogitsRunner(guard)
+    out = runner.execute_model(_scheduler_output())
+
+    assert out == "logits-1"
+    assert runner.body_logits == "logits-1"
+    assert runner.model.calls == 1
+    guard.check_before_sample.assert_called_once()
+    # Patch must be restored after the decorator exits.
+    assert "compute_logits" not in runner.model.__dict__
+
+
+def test_pre_sample_logits_decorator_skips_when_hook_not_needed():
+    guard = MagicMock()
+    guard.runtime_config = None  # need_pre_sample_hook -> False
+    runner = _PreSampleLogitsRunner(guard)
+
+    assert runner.execute_model(_scheduler_output()) == "logits-1"
+    guard.check_before_sample.assert_not_called()
+    assert "compute_logits" not in runner.model.__dict__
+
+
+def test_pre_sample_logits_decorator_uses_live_input_batch():
+    """Fire-time batch must be runner.input_batch (set mid-execute), not entry None."""
+    guard = MagicMock()
+    guard.runtime_config = MagicMock()
+    guard.runtime_config.detector_get.return_value = True
+    guard.action_executor = MagicMock()
+    guard.action_executor.can_run_detection.return_value = True
+
+    live_batch = SimpleNamespace(logits_indices=[3, 4], req_ids=["r"])
+
+    class _Runner(_PreSampleLogitsRunner):
+        @runtime_guard_pre_sample_logits
+        def execute_model(self, scheduler_output):
+            self.input_batch = live_batch  # written after decorator entered
+            self.body_logits = self.model.compute_logits("hs")
+            return self.body_logits
+
+    runner = _Runner(guard, input_batch=None)
+    runner.execute_model(_scheduler_output())
+    kwargs = guard.check_before_sample.call_args.kwargs
+    assert kwargs["input_batch"] is live_batch
+    assert kwargs["logits_indices"] == [3, 4]
