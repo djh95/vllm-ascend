@@ -29,6 +29,7 @@ from vllm_ascend.observability.runtime_guard.detector.base import (
     resolve_batch_req_ids,
 )
 from vllm_ascend.observability.runtime_guard.detector.logits_finite import LogitsFiniteDetector
+from vllm_ascend.observability.runtime_guard.detector.rare_chars import RareCharsDetector
 from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
 from vllm_ascend.observability.runtime_guard.detector.token_logprob import TokenLogprobDetector
 from vllm_ascend.observability.runtime_guard.detector.token_repeat import TokenRepeatDetector
@@ -88,12 +89,17 @@ class DetectorManager:
             runtime_config=runtime_config,
             runner=runner,
         )
+        self._rare_chars_det = RareCharsDetector(
+            runtime_config=runtime_config,
+            runner=runner,
+        )
         self._registry = DetectorRegistry()
         for det in (
             self._spec_det,
             self._token_repeat_det,
             self._logits_finite_det,
             self._token_logprob_det,
+            self._rare_chars_det,
         ):
             self._registry.register(det)
 
@@ -172,6 +178,16 @@ class DetectorManager:
         if self._runtime_config is not None and self._runtime_config.hot_reload_enabled:
             return bool(self._runtime_config.detector_get("token_logprob", "enabled", False))
         return bool(self._token_logprob_det.enabled)
+
+    def rare_chars_enabled(self) -> bool:
+        """True when Guard should stash logits and run rc4 rare_chars."""
+        if self._runtime_config is not None and self._runtime_config.hot_reload_enabled:
+            return bool(self._runtime_config.detector_get("rare_chars", "enabled", False))
+        return bool(self._rare_chars_det.enabled)
+
+    def needs_pre_sample_logits(self) -> bool:
+        """True when any detector needs Guard-stashed pre-sample logits."""
+        return self.token_logprob_enabled() or self.rare_chars_enabled()
 
     def check_after_spec(
         self,
@@ -302,3 +318,36 @@ class DetectorManager:
             req_ids=req_ids,
             skip_req_ids=skip,
         )
+
+    def check_rare_chars(
+        self,
+        *,
+        logits: "torch.Tensor | None",
+        sampled_token_ids: Any,
+        req_ids: list[str] | None = None,
+    ) -> list[Incident]:
+        """Run rc4 rare_chars from Guard-stashed logits (top1 + chosen)."""
+        if self._gated("rare_chars"):
+            return []
+        if logits is None:
+            return []
+        skip = RequestGuardStore.get().stopped_req_ids()
+        return self._rare_chars_det.check_from_logits(
+            logits=logits,
+            sampled_token_ids=sampled_token_ids,
+            req_ids=req_ids,
+            skip_req_ids=skip,
+        )
+
+    def finish_rare_chars(self, req_ids: list[str] | set[str] | tuple[str, ...]) -> list[Incident]:
+        """Flush rc4 look-ahead state when requests finish."""
+        if not self.rare_chars_enabled():
+            return []
+        alerts: list[Incident] = []
+        for rid in req_ids:
+            if not rid:
+                continue
+            alert = self._rare_chars_det.finish_request(str(rid))
+            if alert is not None:
+                alerts.append(alert)
+        return alerts

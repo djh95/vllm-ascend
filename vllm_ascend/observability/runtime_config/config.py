@@ -848,6 +848,7 @@ class RuntimeConfig:
             "token_repeat": "token_repeat",
             "logits_finite": "logits_finite",
             "token_logprob": "token_logprob",
+            "rare_chars": "rare_chars",
         }
         names: list[str] = []
         for section in RuntimeConfig.DETECTOR_SECTIONS:

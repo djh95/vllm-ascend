@@ -26,6 +26,7 @@ __all__ = [
     "DetectorManager",
     "DetectorRegistry",
     "LogitsFiniteDetector",
+    "RareCharsDetector",
     "SpecAcceptanceDetector",
     "TokenLogprobDetector",
     "TokenRepeatDetector",
@@ -53,6 +54,10 @@ def __getattr__(name: str) -> Any:
         from vllm_ascend.observability.runtime_guard.detector.spec_acceptance import SpecAcceptanceDetector
 
         return SpecAcceptanceDetector
+    if name == "RareCharsDetector":
+        from vllm_ascend.observability.runtime_guard.detector.rare_chars import RareCharsDetector
+
+        return RareCharsDetector
     if name == "TokenLogprobDetector":
         from vllm_ascend.observability.runtime_guard.detector.token_logprob import TokenLogprobDetector
 

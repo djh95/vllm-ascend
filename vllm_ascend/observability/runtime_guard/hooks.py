@@ -213,7 +213,7 @@ _PRE_SAMPLE_LOGITS_ATTR = "_rg_pre_sample_logits"
 
 
 def stash_pre_sample_logits(runner: Any, logits: Any) -> None:
-    """Keep a reference to this step's logits for ``token_logprob`` (cleared after use)."""
+    """Keep a reference to this step's logits for Guard logprob detectors (cleared after use)."""
     setattr(runner, _PRE_SAMPLE_LOGITS_ATTR, logits)
 
 
@@ -231,8 +231,10 @@ def take_pre_sample_logits(runner: Any) -> Any:
 def need_pre_sample_hook(guard: Any) -> bool:
     """True when wrapping ``compute_logits`` is useful (detector on + gate open)."""
     cfg = guard.runtime_config
-    need_logits = bool(cfg.detector_get("logits_finite", "enabled", False)) or bool(
-        cfg.detector_get("token_logprob", "enabled", False)
+    need_logits = (
+        bool(cfg.detector_get("logits_finite", "enabled", False))
+        or bool(cfg.detector_get("token_logprob", "enabled", False))
+        or bool(cfg.detector_get("rare_chars", "enabled", False))
     )
     if not need_logits:
         return False
@@ -246,16 +248,19 @@ def check_before_sample_from_batch(
 ) -> None:
     """Pack batch fields and call :meth:`RuntimeGuardProcessor.check_before_sample`.
 
-    Also stashes logits for ``token_logprob`` so selected-token logprobs can be
-    computed after sample without ``SamplingParams.logprobs``.
+    Also stashes logits for ``token_logprob`` / ``rare_chars`` so Guard-side
+    logprobs can be computed after sample without ``SamplingParams.logprobs``.
     """
-    if bool(guard.runtime_config.detector_get("token_logprob", "enabled", False)):
+    cfg = guard.runtime_config
+    if bool(cfg.detector_get("token_logprob", "enabled", False)) or bool(
+        cfg.detector_get("rare_chars", "enabled", False)
+    ):
         stash_pre_sample_logits(guard.runner, logits)
     logits_indices = getattr(input_batch, "logits_indices", None)
     if logits_indices is None:
         logits_indices = getattr(guard.runner, "logits_indices", None)
     # logits_finite path is a no-op when that detector is off.
-    if bool(guard.runtime_config.detector_get("logits_finite", "enabled", False)):
+    if bool(cfg.detector_get("logits_finite", "enabled", False)):
         guard.check_before_sample(
             logits=logits,
             logits_indices=logits_indices,

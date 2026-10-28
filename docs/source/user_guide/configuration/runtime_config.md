@@ -123,6 +123,21 @@ Guard computes selected-token logprobs from stashed pre-sample logits after
 sampling. Clients do **not** need to set ``SamplingParams.logprobs``; results
 are detection-only and are never written into the user-facing response.
 
+### rare_chars
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Alert on visible garbled / foreign-script / illegal UTF-8 (rc4) |
+| `table` | str | `"qwen3"` | Shipped name (`qwen3` / `glm` / `dsv4`) or path to a `*_rare.npz` built from the served tokenizer |
+| `think_end` | str | `"auto"` | `"</think>"` token id, `auto` for shipped tables, or `none` (chat / no think boundary) |
+| `alert_monitor` | bool | `false` | Also raise on rc4 monitor-tier rules (looser FPR band) |
+
+Guard collects `(top1, chosen)` natural-log logprobs from the same pre-sample
+logits stash as `token_logprob` (shared pop). Tables are per-tokenizer; `rc4_gb`
+is shared. Prefer shadow/`report` first — strict-tier holdout FPR can exceed
+0.1% on some corpora. Complementary to `token_logprob` (low-confidence ASCII
+nonsense vs visible rare-script garble).
+
 Each step runs a device ``isfinite`` reduction and one all-finite gate. Default
 path launches a non-blocking host copy of that gate and waits in
 ``check_deferred``. On a hit only, bad rows / ``logits_indices`` / ``finite_kind``

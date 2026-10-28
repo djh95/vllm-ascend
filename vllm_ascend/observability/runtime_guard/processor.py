@@ -371,9 +371,16 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         :meth:`~RequestGuardStore.mark_finished` runs here so the last stamp /
         detect / append still see the same state. Sidecars + clear happen in
         :meth:`_reap_finished_requests`.
+
+        Also flushes ``rare_chars`` look-ahead (rc4 decides the held-back last
+        token at stream end) before the Store finished bit is set.
         """
         if not finished_req_ids:
             return
+        ids = [str(r) for r in finished_req_ids if r]
+        if ids and bool(self.runtime_config.detector_get("rare_chars", "enabled", False)):
+            for alert in self.detectors.finish_rare_chars(ids):
+                self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
         RequestGuardStore.get().mark_finished(finished_req_ids, wave=self._current_wave())
 
     def _current_wave(self) -> int:
@@ -496,11 +503,12 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         # Retain wave batch for block_ids after MRV2 clears execute_model_state.
         if result.input_batch is not None:
             self._last_input_batch = result.input_batch
-        # Hook 2b: token_logprob from Guard-stashed logits (no API SamplingParams.logprobs).
-        # Must run before logits tensor reuse / async after-sample deferral.
+        # Hook 2b: token_logprob / rare_chars from Guard-stashed logits
+        # (no API SamplingParams.logprobs). Must run before logits reuse /
+        # async after-sample deferral. One stash pop shared by both detectors.
         self._soft_fail(
-            "check_token_logprob",
-            lambda: self.check_token_logprob(
+            "check_guard_logprob_detectors",
+            lambda: self.check_guard_logprob_detectors(
                 sampled_token_ids=getattr(result.sampler_output, "sampled_token_ids", None),
                 req_ids=result.req_ids_output_copy,
             ),
@@ -564,13 +572,13 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
 
         self._soft_fail("check_before_sample", _run)
 
-    def check_token_logprob(
+    def check_guard_logprob_detectors(
         self,
         *,
         sampled_token_ids: Any,
         req_ids: list[str] | None = None,
     ) -> None:
-        """After-sample: score selected-token logprobs from stashed pre-sample logits.
+        """After-sample: ``token_logprob`` and/or ``rare_chars`` from stashed logits.
 
         Does not require ``SamplingParams.logprobs`` and does not attach logprobs
         to the user-facing response. Soft-fail wrapper is applied by the caller.
@@ -578,18 +586,44 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
         # Lazy import avoids hooks ↔ processor cycle (hooks imports SamplePhaseResult).
         from vllm_ascend.observability.runtime_guard.hooks import take_pre_sample_logits
 
+        want_tlp = bool(self.runtime_config.detector_get("token_logprob", "enabled", False))
+        want_rare = bool(self.runtime_config.detector_get("rare_chars", "enabled", False))
+        if not want_tlp and not want_rare:
+            # Drop any stale stash so logits are not retained across steps.
+            take_pre_sample_logits(self.runner)
+            return
+
         logits = take_pre_sample_logits(self.runner)
         if logits is None:
             return
-        if not bool(self.runtime_config.detector_get("token_logprob", "enabled", False)):
-            return
 
-        for alert in self.detectors.check_token_logprob(
-            logits=logits,
+        if want_tlp:
+            for alert in self.detectors.check_token_logprob(
+                logits=logits,
+                sampled_token_ids=sampled_token_ids,
+                req_ids=req_ids,
+            ):
+                self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
+
+        if want_rare:
+            for alert in self.detectors.check_rare_chars(
+                logits=logits,
+                sampled_token_ids=sampled_token_ids,
+                req_ids=req_ids,
+            ):
+                self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
+
+    # Back-compat alias for callers / tests that still name the tlp hook.
+    def check_token_logprob(
+        self,
+        *,
+        sampled_token_ids: Any,
+        req_ids: list[str] | None = None,
+    ) -> None:
+        self.check_guard_logprob_detectors(
             sampled_token_ids=sampled_token_ids,
             req_ids=req_ids,
-        ):
-            self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
+        )
 
     def check_after_sample(
         self,
