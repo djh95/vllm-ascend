@@ -580,8 +580,9 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
     ) -> None:
         """After-sample: ``token_logprob`` and/or ``rare_chars`` from stashed logits.
 
-        Does not require ``SamplingParams.logprobs`` and does not attach logprobs
-        to the user-facing response. Soft-fail wrapper is applied by the caller.
+        ``rare_chars`` uses sampler-side narrow collect (fused max+LSE+gather on
+        raw logits → ``(top1, chosen)`` only — no full logprob table, no ranks,
+        no ``SamplingParams.logprobs``). Soft-fail wrapper is applied by the caller.
         """
         # Lazy import avoids hooks ↔ processor cycle (hooks imports SamplePhaseResult).
         from vllm_ascend.observability.runtime_guard.hooks import take_pre_sample_logits
@@ -606,12 +607,56 @@ class RuntimeGuardProcessor(RuntimeGuardBusMixin, RuntimeGuardDumpMixin, Runtime
                 self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
 
         if want_rare:
+            top1_lp, chosen_lp = self._narrow_collect_top1_chosen(logits, sampled_token_ids)
             for alert in self.detectors.check_rare_chars(
                 logits=logits,
                 sampled_token_ids=sampled_token_ids,
                 req_ids=req_ids,
+                top1_logprobs=top1_lp,
+                chosen_logprobs=chosen_lp,
             ):
                 self._handle_alert(alert, detector=self.detectors.get(alert.incident_type))
+
+    def _narrow_collect_top1_chosen(
+        self,
+        logits: Any,
+        sampled_token_ids: Any,
+    ) -> tuple[Any, Any]:
+        """Sampler-side narrow collect: ``(top1, chosen)`` from raw logits.
+
+        Returns ``(None, None)`` on failure so ``rare_chars`` can fall back to
+        its own fused/portable collect path.
+        """
+        try:
+            import torch
+
+            from vllm_ascend.observability.runtime_guard.detector.rare_chars import (
+                top1_and_chosen_logprobs,
+            )
+            from vllm_ascend.observability.runtime_guard.detector.token_logprob import (
+                _flatten_sampled_token_ids,
+            )
+
+            if not isinstance(logits, torch.Tensor) or logits.numel() == 0:
+                return None, None
+            rows = _flatten_sampled_token_ids(sampled_token_ids)
+            n = min(len(rows), int(logits.shape[0]))
+            token_ids_for_rows: list[int] = []
+            row_to_req: list[int] = []
+            for i in range(n):
+                ids = rows[i]
+                if not ids:
+                    continue
+                token_ids_for_rows.append(int(ids[-1]))
+                row_to_req.append(i)
+            if not token_ids_for_rows:
+                return None, None
+            row_idx = torch.tensor(row_to_req, dtype=torch.long, device=logits.device)
+            logits_rows = logits.index_select(0, row_idx)
+            tid_t = torch.tensor(token_ids_for_rows, dtype=torch.long, device=logits.device)
+            return top1_and_chosen_logprobs(logits_rows, tid_t)
+        except Exception:
+            return None, None
 
     # Back-compat alias for callers / tests that still name the tlp hook.
     def check_token_logprob(

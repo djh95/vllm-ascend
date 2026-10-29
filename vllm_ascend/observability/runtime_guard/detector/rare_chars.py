@@ -15,9 +15,10 @@
 
 """Runtime Guard wrapper for rare_chars rc4 (visible garbled / foreign-script).
 
-Collects ``(top1_logprob, chosen_logprob)`` from Guard-stashed pre-sample logits
-+ sampled ids — does **not** require ``SamplingParams.logprobs`` and never
-injects logprobs into the API response. CPU rules use the vendored rc4
+Collects ``(top1_logprob, chosen_logprob)`` via sampler-side narrow collect on
+Guard-stashed pre-sample logits + sampled ids (fused max+LSE+gather — no full
+logprob table / ranks). Does **not** require ``SamplingParams.logprobs`` and
+never injects logprobs into the API response. CPU rules use the vendored rc4
 ``RareDetector`` (see ``detector/rare/``).
 """
 
@@ -55,7 +56,9 @@ def top1_and_chosen_logprobs(
     """Natural-log top-1 and selected-token logprobs per row (raw logits).
 
     Same units as vLLM ``raw_logprobs`` (natural log). rc4 converts to log10
-    internally. Uses one ``log_softmax`` so top1/chosen share a distribution.
+    internally. Prefers the Ascend V2 sampler fused max+LSE+gather kernel
+    (``compute_top1_and_chosen_logprobs``) — no full ``log_softmax`` table and
+    no ranks. Falls back to portable ``log_softmax`` + max/gather for CPU / UT.
     """
     if not isinstance(logits, torch.Tensor) or not isinstance(token_ids, torch.Tensor):
         raise TypeError("logits and token_ids must be torch.Tensor")
@@ -64,10 +67,17 @@ def top1_and_chosen_logprobs(
     ids = token_ids.reshape(-1).to(dtype=torch.long, device=logits.device)
     if ids.numel() != logits.shape[0]:
         raise ValueError(f"token_ids length {ids.numel()} != logits rows {logits.shape[0]}")
-    log_probs = torch.log_softmax(logits.float(), dim=-1)
-    top1 = log_probs.max(dim=-1).values
-    chosen = log_probs.gather(1, ids.unsqueeze(-1)).squeeze(1)
-    return top1, chosen
+
+    try:
+        from vllm_ascend.worker.v2.sample.logprob import compute_top1_and_chosen_logprobs
+
+        return compute_top1_and_chosen_logprobs(logits, ids)
+    except Exception:
+        # CPU UT / missing Triton: full-row log_softmax is fine at test vocab.
+        log_probs = torch.log_softmax(logits.float(), dim=-1)
+        top1 = log_probs.max(dim=-1).values
+        chosen = log_probs.gather(1, ids.unsqueeze(-1)).squeeze(1)
+        return top1, chosen
 
 
 def _resolve_table(table: str) -> str:
@@ -114,9 +124,9 @@ class RareCharsDetector(ConfigBackedDetector):
         stage="after_sample",
         help=(
             "Visible garbled text (rc4 rare_chars): foreign-script fragments, "
-            "illegal UTF-8, low-confidence rare tokens. Guard computes "
-            "(top1, chosen) logprobs from stashed pre-sample logits — "
-            "API SamplingParams.logprobs not required."
+            "illegal UTF-8, low-confidence rare tokens. Guard uses sampler-side "
+            "narrow collect (fused max+LSE+gather) on stashed pre-sample logits "
+            "for (top1, chosen) — API SamplingParams.logprobs not required."
         ),
         fields=(
             ConfigField("enabled", False, "bool", help="Master switch"),
@@ -136,7 +146,7 @@ class RareCharsDetector(ConfigBackedDetector):
                 "alert_monitor",
                 False,
                 "bool",
-                help="Also alert on rc4 monitor-tier rules (looser FPR band)",
+                help="Also alert on rc4 monitor-tier rules (looser false-positive band)",
             ),
         ),
     )
@@ -194,15 +204,24 @@ class RareCharsDetector(ConfigBackedDetector):
     def check_from_logits(
         self,
         *,
-        logits: torch.Tensor,
+        logits: torch.Tensor | None,
         sampled_token_ids: Any,
         req_ids: list[str] | None = None,
         skip_req_ids: set[str] | None = None,
+        top1_logprobs: Sequence[float] | torch.Tensor | None = None,
+        chosen_logprobs: Sequence[float] | torch.Tensor | None = None,
     ) -> list[Incident]:
-        """Score (top1, chosen) from stashed logits and feed rc4."""
+        """Score (top1, chosen) from stashed logits (or precomputed) and feed rc4.
+
+        When ``top1_logprobs`` / ``chosen_logprobs`` are provided (sampler-side
+        narrow collect already ran), skips the NPU collect and only feeds CPU
+        rules. Otherwise runs fused max+LSE+gather on ``logits``.
+        """
         if not self._precheck():
             return []
-        if not isinstance(logits, torch.Tensor) or logits.numel() == 0:
+
+        has_precomputed = top1_logprobs is not None and chosen_logprobs is not None
+        if not has_precomputed and (not isinstance(logits, torch.Tensor) or logits.numel() == 0):
             return []
 
         runner = self._runner
@@ -212,8 +231,10 @@ class RareCharsDetector(ConfigBackedDetector):
         if not req_ids or not rows:
             return []
 
-        num_logit_rows = int(logits.shape[0])
-        n = min(len(req_ids), len(rows), num_logit_rows)
+        num_rows_cap = len(req_ids)
+        if isinstance(logits, torch.Tensor) and logits.numel() > 0:
+            num_rows_cap = min(num_rows_cap, int(logits.shape[0]))
+        n = min(num_rows_cap, len(rows))
         if n <= 0:
             return []
 
@@ -229,12 +250,19 @@ class RareCharsDetector(ConfigBackedDetector):
             return []
 
         try:
-            row_idx = torch.tensor(row_to_req, dtype=torch.long, device=logits.device)
-            logits_rows = logits.index_select(0, row_idx)
-            tid_t = torch.tensor(token_ids_for_rows, dtype=torch.long, device=logits.device)
-            top1_t, chosen_t = top1_and_chosen_logprobs(logits_rows, tid_t)
-            top1_list = [float(x) for x in top1_t.detach().float().cpu().tolist()]
-            chosen_list = [float(x) for x in chosen_t.detach().float().cpu().tolist()]
+            if top1_logprobs is not None and chosen_logprobs is not None:
+                top1_list, chosen_list = self._coerce_pair_lists(
+                    top1_logprobs, chosen_logprobs, len(token_ids_for_rows)
+                )
+            else:
+                if not isinstance(logits, torch.Tensor) or logits.numel() == 0:
+                    return []
+                row_idx = torch.tensor(row_to_req, dtype=torch.long, device=logits.device)
+                logits_rows = logits.index_select(0, row_idx)
+                tid_t = torch.tensor(token_ids_for_rows, dtype=torch.long, device=logits.device)
+                top1_t, chosen_t = top1_and_chosen_logprobs(logits_rows, tid_t)
+                top1_list = [float(x) for x in top1_t.detach().float().cpu().tolist()]
+                chosen_list = [float(x) for x in chosen_t.detach().float().cpu().tolist()]
         except Exception as exc:
             logger.warning("[runtime_guard: rare_chars] logprob collect failed: %s", exc)
             return []
@@ -263,6 +291,27 @@ class RareCharsDetector(ConfigBackedDetector):
             if alert is not None:
                 alerts.append(alert)
         return alerts
+
+    @staticmethod
+    def _coerce_pair_lists(
+        top1_logprobs: Sequence[float] | torch.Tensor,
+        chosen_logprobs: Sequence[float] | torch.Tensor,
+        n: int,
+    ) -> tuple[list[float], list[float]]:
+        """Normalize precomputed (top1, chosen) to host float lists of length ``n``."""
+        if isinstance(top1_logprobs, torch.Tensor):
+            top1_list = [float(x) for x in top1_logprobs.detach().float().cpu().reshape(-1).tolist()]
+        else:
+            top1_list = [float(x) for x in top1_logprobs]
+        if isinstance(chosen_logprobs, torch.Tensor):
+            chosen_list = [float(x) for x in chosen_logprobs.detach().float().cpu().reshape(-1).tolist()]
+        else:
+            chosen_list = [float(x) for x in chosen_logprobs]
+        if len(top1_list) < n or len(chosen_list) < n:
+            raise ValueError(
+                f"precomputed logprobs too short: top1={len(top1_list)} chosen={len(chosen_list)} need={n}"
+            )
+        return top1_list[:n], chosen_list[:n]
 
     def check_host(
         self,

@@ -86,6 +86,81 @@ def compute_token_logprobs(logits: torch.Tensor, token_ids: torch.Tensor) -> tor
     return logprobs
 
 
+@triton.jit
+def _top1_and_chosen_logprob_kernel(
+    top1_ptr,
+    chosen_ptr,
+    logits_ptr,
+    logits_stride,
+    chosen_ids_ptr,
+    vocab_size,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Fused max + log-sum-exp + gather for rare_chars / rc3 narrow collect.
+
+    Emits only two scalars per row (top1 logprob, chosen logprob). Never
+    materializes a full ``log_softmax`` table and does not compute ranks.
+    ``top1 = -log(sum(exp(x - max)))``; ``chosen = x[id] - max - lse``.
+    """
+    req_idx = tl.program_id(0)
+    row_ptr = logits_ptr + req_idx * logits_stride
+
+    max_val = float("-inf")
+    for i in range(0, vocab_size, BLOCK_SIZE):
+        block = i + tl.arange(0, BLOCK_SIZE)
+        logits = tl.load(row_ptr + block, mask=block < vocab_size, other=float("-inf"))
+        max_val = tl.max(tl.maximum(logits, max_val, propagate_nan=tl.PropagateNan.ALL))
+    max_val = max_val.to(tl.float32)  # type: ignore
+
+    se = 0.0
+    for i in range(0, vocab_size, BLOCK_SIZE):
+        block = i + tl.arange(0, BLOCK_SIZE)
+        logits = tl.load(row_ptr + block, mask=block < vocab_size, other=float("-inf"))
+        logits = logits.to(tl.float32)
+        e = tl.exp(logits - max_val)
+        se += tl.sum(e)
+    lse = tl.log(se)
+
+    # max(log_softmax) == -lse when lse is log(sum(exp(x - max))).
+    tl.store(top1_ptr + req_idx, -lse)
+
+    chosen_id = tl.load(chosen_ids_ptr + req_idx)
+    chosen_logit = tl.load(row_ptr + chosen_id).to(tl.float32)
+    tl.store(chosen_ptr + req_idx, chosen_logit - max_val - lse)
+
+
+def compute_top1_and_chosen_logprobs(
+    logits: torch.Tensor,
+    chosen_token_ids: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sampler-side narrow collect: top-1 and chosen logprobs from raw logits.
+
+    Two Triton reductions over the vocabulary (max, then LSE) plus a gather of
+    the chosen id — no full logprob table, no top-k list, no ranks. Intended for
+    Guard ``rare_chars`` / rc3-style detectors that only need ``(lp1, lpc)``.
+    """
+    if logits.dim() != 2:
+        raise ValueError(f"logits must be 2-D [rows, vocab], got shape={tuple(logits.shape)}")
+    batch_size, vocab_size = logits.shape
+    ids = chosen_token_ids.reshape(-1).to(dtype=torch.int64, device=logits.device)
+    if ids.numel() != batch_size:
+        raise ValueError(f"chosen_token_ids length {ids.numel()} != logits rows {batch_size}")
+
+    top1 = logits.new_empty((batch_size,), dtype=torch.float32)
+    chosen = logits.new_empty((batch_size,), dtype=torch.float32)
+    _top1_and_chosen_logprob_kernel[(batch_size,)](
+        top1,
+        chosen,
+        logits,
+        logits.stride(0),
+        ids,
+        vocab_size,
+        BLOCK_SIZE=12944,
+        multibuffer=False,
+    )
+    return top1, chosen
+
+
 @triton.jit(do_not_specialize=["batch_size", "rows_per_core"])
 def _ranks_kernel(
     output_ptr,

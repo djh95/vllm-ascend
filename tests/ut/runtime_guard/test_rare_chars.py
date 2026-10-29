@@ -72,6 +72,60 @@ def test_top1_and_chosen_match_log_softmax():
     assert torch.allclose(chosen.cpu(), ref_c.cpu(), rtol=1e-4, atol=1e-4)
 
 
+def test_narrow_collect_formula_matches_log_softmax():
+    """Fused max+LSE+gather math (sampler kernel) matches full log_softmax."""
+    torch.manual_seed(1)
+    logits = torch.randn(8, 64)
+    tids = torch.randint(0, 64, (8,))
+    # Same reduction the Triton kernel uses (no full log_softmax table).
+    max_val = logits.float().max(dim=-1).values
+    lse = torch.log(torch.sum(torch.exp(logits.float() - max_val.unsqueeze(-1)), dim=-1))
+    top1 = -lse
+    chosen = logits.float().gather(1, tids.unsqueeze(-1)).squeeze(1) - max_val - lse
+    lp = torch.log_softmax(logits.float(), dim=-1)
+    assert torch.allclose(top1, lp.max(dim=-1).values, rtol=1e-5, atol=1e-5)
+    ref_c = lp.gather(1, tids.unsqueeze(-1)).squeeze(1)
+    assert torch.allclose(chosen, ref_c, rtol=1e-5, atol=1e-5)
+    # MAE ~0 for rc4 units (natural log).
+    assert float((top1 - lp.max(dim=-1).values).abs().mean()) < 1e-6
+    assert float((chosen - ref_c).abs().mean()) < 1e-6
+
+
+def test_rare_chars_consumes_precomputed_pairs(tmp_path: Path):
+    """Sampler-side precomputed (top1, chosen) skips logits collect."""
+    from vllm_ascend.observability.runtime_guard.detector.rare.rare_vocab import load as load_rare
+
+    T = load_rare("qwen3")
+    bad_ids = np.flatnonzero(T["u8"])
+    tid = int(bad_ids[0])
+    V = len(T["rcls"])
+    logits = torch.full((1, V), -20.0)
+    logits[0, tid] = 5.0
+    top1, chosen = top1_and_chosen_logprobs(logits, torch.tensor([tid]))
+
+    cfg = _cfg(tmp_path, table="qwen3", think_end="none")
+    det = RareCharsDetector(runtime_config=cfg, runner=SimpleNamespace(tp_rank=0))
+    # Empty logits would fail without precomputed pairs.
+    empty = torch.empty(0)
+    alerts = det.check_from_logits(
+        logits=empty,
+        sampled_token_ids=[[tid]],
+        req_ids=["r1"],
+        top1_logprobs=top1,
+        chosen_logprobs=chosen,
+    )
+    alerts2 = det.check_from_logits(
+        logits=empty,
+        sampled_token_ids=[[tid]],
+        req_ids=["r1"],
+        top1_logprobs=top1,
+        chosen_logprobs=chosen,
+    )
+    finish = det.finish_request("r1")
+    fired = alerts + alerts2 + ([finish] if finish is not None else [])
+    assert any(a.incident_type == "rare_chars" for a in fired)
+
+
 def test_rare_detector_bad_utf8_rule_fires():
     """rc4 strict ``bad_utf8`` fires on a lone continuation byte (from upstream synth)."""
     from vllm_ascend.observability.runtime_guard.detector.rare.rare_vocab import load as load_rare

@@ -302,7 +302,7 @@ class DetectorManager:
     def check_token_logprob(
         self,
         *,
-        logits: "torch.Tensor | None",
+        logits: torch.Tensor | None,
         sampled_token_ids: Any,
         req_ids: list[str] | None = None,
     ) -> list[Incident]:
@@ -322,14 +322,21 @@ class DetectorManager:
     def check_rare_chars(
         self,
         *,
-        logits: "torch.Tensor | None",
+        logits: torch.Tensor | None,
         sampled_token_ids: Any,
         req_ids: list[str] | None = None,
+        top1_logprobs: Any = None,
+        chosen_logprobs: Any = None,
     ) -> list[Incident]:
-        """Run rc4 rare_chars from Guard-stashed logits (top1 + chosen)."""
+        """Run rc4 rare_chars from Guard-stashed logits or precomputed (top1, chosen).
+
+        Prefer sampler-side narrow collect (``top1_logprobs`` / ``chosen_logprobs``)
+        so the detector skips a second full-vocab softmax. Falls back to fused
+        LSE+gather on ``logits`` when pairs are not provided.
+        """
         if self._gated("rare_chars"):
             return []
-        if logits is None:
+        if logits is None and (top1_logprobs is None or chosen_logprobs is None):
             return []
         skip = RequestGuardStore.get().stopped_req_ids()
         return self._rare_chars_det.check_from_logits(
@@ -337,6 +344,8 @@ class DetectorManager:
             sampled_token_ids=sampled_token_ids,
             req_ids=req_ids,
             skip_req_ids=skip,
+            top1_logprobs=top1_logprobs,
+            chosen_logprobs=chosen_logprobs,
         )
 
     def finish_rare_chars(self, req_ids: list[str] | set[str] | tuple[str, ...]) -> list[Incident]:
