@@ -8,5 +8,17 @@ them. Re-export new feature handlers here so the YAML reference
 """
 
 from vllm_ascend.observability.ms_metrics.handlers.eplb import eplb_do_update_hotness_handler
+from vllm_ascend.observability.ms_metrics.handlers.schedule_execute import (
+    lb_pause_preempt_handler,
+    recompute_preempt_handler,
+    sample_tokens_handler,
+    schedule_preempt_handler,
+)
 
-__all__ = ["eplb_do_update_hotness_handler"]
+__all__ = [
+    "eplb_do_update_hotness_handler",
+    "lb_pause_preempt_handler",
+    "recompute_preempt_handler",
+    "sample_tokens_handler",
+    "schedule_preempt_handler",
+]
