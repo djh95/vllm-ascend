@@ -1,0 +1,12 @@
+# Release note fragment. See release_notes/README.md.
+# TODO: replace pr number with the new PR id before opening the PR.
+pr: 19776-kvpool
+entries:
+  - category: feature
+    text: >
+      Add KV Pool transfer failure metrics: kvpool:put_failure_keys_total
+      counts keys whose KV Pool store write failed from the per-key result
+      returned by the Ascend store backends, with a normalized backend label
+      (memcake/mooncake/yuanrong), and kvpool:load_error_blocks_total counts
+      blocks that failed to load back into the engine, so KV Pool transfer
+      failures are visible.
